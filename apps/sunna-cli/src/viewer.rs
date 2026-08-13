@@ -10,11 +10,16 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 
 use sunna_codec::DecodedFrame;
+use sunna_proto::messages::InputEvent;
+use tokio::sync::mpsc::UnboundedSender;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
+
+use crate::keymap;
 
 /// Shared between the network thread (writer) and the viewer (reader).
 #[derive(Default)]
@@ -33,12 +38,14 @@ pub fn create_event_loop() -> anyhow::Result<EventLoop<FrameReady>> {
 pub fn run_viewer(
     event_loop: EventLoop<FrameReady>,
     shared: Arc<SharedFrame>,
+    input: UnboundedSender<InputEvent>,
     title: String,
     width: u32,
     height: u32,
 ) -> anyhow::Result<()> {
     let mut app = ViewerApp {
         shared,
+        input,
         title,
         stream_size: (width.max(1), height.max(1)),
         window: None,
@@ -50,6 +57,7 @@ pub fn run_viewer(
 
 struct ViewerApp {
     shared: Arc<SharedFrame>,
+    input: UnboundedSender<InputEvent>,
     title: String,
     stream_size: (u32, u32),
     window: Option<Arc<Window>>,
@@ -161,6 +169,58 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             WindowEvent::Resized(_) => {
                 if let Some(window) = &self.window {
                     window.request_redraw();
+                }
+            }
+            // Input forwarding: window coordinates → normalized host
+            // coordinates; keys → mac virtual keycodes (see keymap.rs).
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(window) = &self.window {
+                    let size = window.inner_size();
+                    if size.width > 0 && size.height > 0 {
+                        let _ = self.input.send(InputEvent::MouseMoveAbs {
+                            x: (position.x / size.width as f64).clamp(0.0, 1.0) as f32,
+                            y: (position.y / size.height as f64).clamp(0.0, 1.0) as f32,
+                        });
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                use sunna_proto::messages::MouseButton as Proto;
+                let button = match button {
+                    winit::event::MouseButton::Left => Proto::Left,
+                    winit::event::MouseButton::Right => Proto::Right,
+                    winit::event::MouseButton::Middle => Proto::Middle,
+                    winit::event::MouseButton::Back => Proto::X1,
+                    winit::event::MouseButton::Forward => Proto::X2,
+                    winit::event::MouseButton::Other(_) => return,
+                };
+                let _ = self.input.send(InputEvent::MouseButton {
+                    button,
+                    pressed: state == ElementState::Pressed,
+                });
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 32.0, y * 32.0),
+                    MouseScrollDelta::PixelDelta(position) => {
+                        (position.x as f32, position.y as f32)
+                    }
+                };
+                let _ = self.input.send(InputEvent::Scroll {
+                    dx,
+                    dy,
+                    phase: None,
+                    momentum: false,
+                });
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if let Some(scancode) = keymap::mac_keycode(code) {
+                        let _ = self.input.send(InputEvent::Key {
+                            scancode,
+                            pressed: event.state == ElementState::Pressed,
+                        });
+                    }
                 }
             }
             _ => {}

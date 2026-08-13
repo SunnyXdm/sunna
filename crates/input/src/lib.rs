@@ -9,9 +9,24 @@
 
 use sunna_proto::messages::InputEvent;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 /// Host side: apply a remote input event to the local OS.
 pub trait InputInjector: Send {
     fn inject(&mut self, event: &InputEvent) -> anyhow::Result<()>;
+}
+
+/// The best injector this platform offers (log-only where none exists yet).
+pub fn make_injector() -> Box<dyn InputInjector> {
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(macos::MacInjector::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Box::new(LogInjector)
+    }
 }
 
 /// Milestone 0a injector: logs events instead of injecting them, so the

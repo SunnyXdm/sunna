@@ -8,17 +8,42 @@ A low-latency game-streaming / remote-desktop system. Goal: faster where it coun
 
 Reliability v0 (`--simulate-loss` exercises it): per-frame XOR parity FEC (1 per 8 chunks, ~12.5% overhead) recovers single losses per group with zero feedback delay; frame-continuity tracking catches wholly-lost frames; a lost frame triggers a keyframe request and P-frames are skipped until the IDR arrives (no corrupt frames ever decode); per-second receiver reports drive AIMD bitrate adaptation applied to the *next* encoded frame — the seed of the encoder-coupled congestion controller. Ping/Pong estimates host↔client clock offset at min-RTT so cross-machine latency numbers are meaningful.
 
-Loopback bench: 60 fps 0 drops clean; at 20% simulated loss still 0 drops (all FEC-recovered); at 35% the keyframe recovery path holds the stream together. Capture→decode ~5-7 ms p50 including hardware encode+decode. Still to come in 0b: ScreenCaptureKit capture and a wgpu render window (both need an interactive GUI session / Screen Recording permission).
+Loopback bench: 60 fps 0 drops clean; at 20% simulated loss still 0 drops (all FEC-recovered); at 35% the keyframe recovery path holds the stream together. Capture→decode ~5-7 ms p50 including hardware encode+decode.
 
-## Quickstart
+**Testable end-to-end on macOS**: `sunnad --source screen` captures the real display (CGDisplayStream; SCK backend later), `sunna-cli view` opens a viewer window (winit + softbuffer CPU blit; wgpu presenter later) and forwards mouse/scroll/keyboard, injected host-side via CGEventPost. Both directions of permission apply: Screen Recording for the host's capture, Accessibility for the host's input injection.
+
+## Try it (macOS)
+
+**Stream your screen and control it from a window:**
 
 ```sh
-# In-process loopback benchmark (server + client in one process):
+cargo build --release
+
+# Host: stream the main display (macOS prompts once for Screen Recording
+# permission for your terminal; grant it and run again). For remote input to
+# work, also grant Accessibility permission to the terminal.
+./target/release/sunnad --source screen
+
+# Client (same machine, or another Mac on the LAN with --listen 0.0.0.0:48800
+# on the host): opens a viewer window; mouse, scroll and keyboard are
+# forwarded to the host while the window is focused.
+./target/release/sunna-cli view 127.0.0.1:48800
+```
+
+Same-machine viewing is a hall-of-mirrors (you're seeing your own screen) — it's still the fastest way to sanity-check latency and input. The real test is two machines on one LAN.
+
+**Headless checks (no permissions needed):**
+
+```sh
+# In-process loopback benchmark (synthetic source, hardware H.264 on macOS):
 cargo run --release -p sunna-cli -- bench --seconds 5
 
-# Or run the daemon and connect to it:
+# With simulated packet loss to watch FEC + keyframe recovery work:
+cargo run --release -p sunna-cli -- bench --seconds 5 --simulate-loss 0.2
+
+# Synthetic daemon + headless client:
 cargo run --release -p sunnad
-cargo run --release -p sunna-cli -- connect 127.0.0.1:48800
+cargo run --release -p sunna-cli -- connect 127.0.0.1:48800 --seconds 5
 ```
 
 `sunnad` binds 127.0.0.1 by default. There is **no authentication yet** (dev TLS is self-signed + skip-verify) — do not expose it beyond localhost/LAN you trust. Pairing/auth lands in Milestone 2.

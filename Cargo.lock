@@ -2037,6 +2037,7 @@ dependencies = [
  "sunna-codec",
  "sunna-host",
  "sunna-input",
+ "sunna-proto",
  "sunna-transport",
  "tokio",
  "tracing",

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use sunna_codec::make_decoder;
 use sunna_proto::media::Reassembler;
-use sunna_proto::messages::ControlMessage;
+use sunna_proto::messages::{ControlMessage, InputEvent};
 use sunna_proto::stats::Percentiles;
 use sunna_transport::quinn::Connection;
 use sunna_transport::ControlChannel;
@@ -100,11 +100,15 @@ impl std::fmt::Display for BenchReport {
 /// `on_frame` is the render-on-arrival hook: called with every decoded frame,
 /// in arrival order, from the network task. Keep it cheap (store + wake a
 /// renderer); heavy work here delays the receive loop.
+///
+/// `input` carries local input events to forward to the host; drop the sender
+/// (or pass a channel that never sends) for view-only sessions.
 pub async fn run_client(
     connection: Connection,
     client_name: &str,
     duration: Option<Duration>,
     mut on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send,
+    mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
     control
@@ -183,9 +187,16 @@ pub async fn run_client(
     let deadline_sleep =
         tokio::time::sleep(duration.unwrap_or(Duration::from_secs(60 * 60 * 24 * 365)));
     tokio::pin!(deadline_sleep);
+    let mut input_open = true;
 
     loop {
         tokio::select! {
+            event = input.recv(), if input_open => {
+                match event {
+                    Some(event) => control.send(&ControlMessage::Input(event)).await?,
+                    None => input_open = false,
+                }
+            }
             datagram = connection.read_datagram() => {
                 let Ok(datagram) = datagram else { break };
                 bytes_received += datagram.len() as u64;

@@ -4,6 +4,7 @@
 //! `connect` joins headless (stats only). `bench` runs host + client in one
 //! process over loopback QUIC and prints the end-to-end latency report.
 
+mod keymap;
 mod viewer;
 
 use std::net::SocketAddr;
@@ -103,6 +104,7 @@ fn view(addr: SocketAddr, server_name: String) -> anyhow::Result<()> {
     let connection = client.connection.clone();
 
     let network_shared = Arc::clone(&shared);
+    let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(String, u32, u32)>();
     std::thread::spawn(move || {
         let _endpoint_guard = client.endpoint;
@@ -119,6 +121,7 @@ fn view(addr: SocketAddr, server_name: String) -> anyhow::Result<()> {
                 *network_shared.latest.lock().unwrap() = Some(frame);
                 let _ = proxy.send_event(viewer::FrameReady);
             },
+            input_rx,
         ));
         match result {
             Ok(report) => println!("{report}"),
@@ -135,6 +138,7 @@ fn view(addr: SocketAddr, server_name: String) -> anyhow::Result<()> {
     viewer::run_viewer(
         event_loop,
         shared,
+        input_tx,
         format!("Sunna — {title}"),
         width,
         height,
@@ -151,11 +155,13 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
         } => {
             tracing::warn!("dev TLS: server certificate is NOT verified");
             let client = connect_insecure(addr, &server_name).await?;
+            let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let report = run_client(
                 client.connection,
                 "sunna-cli",
                 seconds.map(Duration::from_secs),
                 |_| {},
+                input_rx,
             )
             .await?;
             println!("{report}");
@@ -197,11 +203,13 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             ));
 
             let client = connect_trusted(addr, "sunna", &cert).await?;
+            let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let report = run_client(
                 client.connection,
                 "bench-client",
                 Some(Duration::from_secs(seconds)),
                 |_| {},
+                input_rx,
             )
             .await?;
             host_task.abort();

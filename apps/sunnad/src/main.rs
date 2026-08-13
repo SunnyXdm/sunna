@@ -12,7 +12,7 @@ use clap::{Parser, ValueEnum};
 use sunna_capture::{FrameSource, SyntheticSource};
 use sunna_codec::{default_codec_name, make_encoder};
 use sunna_host::{HostConfig, run_host};
-use sunna_input::{InputInjector, LogInjector};
+use sunna_input::make_injector;
 use sunna_transport::Server;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -155,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
                 make_encoder(&codec, width, height, fps, bitrate_bps)
                     .expect("encoder was validated at startup")
             }),
-            Box::new(|| Box::new(LogInjector) as Box<dyn InputInjector>),
+            Box::new(make_injector),
         ) => result,
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("shutting down");
