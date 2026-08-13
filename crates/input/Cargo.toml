@@ -1,0 +1,10 @@
+[package]
+name = "sunna-input"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+sunna-proto.workspace = true
+tracing.workspace = true

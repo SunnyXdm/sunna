@@ -1,0 +1,11 @@
+[package]
+name = "sunna-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true

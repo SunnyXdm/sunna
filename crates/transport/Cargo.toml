@@ -1,0 +1,19 @@
+[package]
+name = "sunna-transport"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sunna-proto.workspace = true
+bytes.workspace = true
+postcard.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

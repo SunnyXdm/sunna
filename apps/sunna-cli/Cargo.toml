@@ -1,0 +1,18 @@
+[package]
+name = "sunna-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+sunna-capture.workspace = true
+sunna-client.workspace = true
+sunna-codec.workspace = true
+sunna-host.workspace = true
+sunna-input.workspace = true
+sunna-transport.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

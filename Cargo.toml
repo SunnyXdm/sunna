@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/proto",
+    "crates/transport",
+    "crates/capture",
+    "crates/codec",
+    "crates/input",
+    "crates/host",
+    "crates/client",
+    "apps/sunnad",
+    "apps/sunna-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+sunna-proto = { path = "crates/proto" }
+sunna-transport = { path = "crates/transport" }
+sunna-capture = { path = "crates/capture" }
+sunna-codec = { path = "crates/codec" }
+sunna-input = { path = "crates/input" }
+sunna-host = { path = "crates/host" }
+sunna-client = { path = "crates/client" }
+
+anyhow = "1"
+bytes = "1"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+clap = { version = "4", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+quinn = "0.11"
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
