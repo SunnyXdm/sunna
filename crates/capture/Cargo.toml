@@ -8,3 +8,8 @@ publish.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 sunna-proto.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+core-foundation-sys.workspace = true

@@ -1,9 +1,276 @@
-//! macOS capture backend — Milestone 0b.
+//! macOS screen capture via CGDisplayStream.
 //!
-//! Plan (research/03 §1): ScreenCaptureKit `SCStream` with small `queueDepth`,
-//! `minimumFrameInterval` at native refresh, IOSurface-backed sample buffers
-//! handed zero-copy to VideoToolbox. Handle the "no new frame on static screen"
-//! case with a keepalive timer; Screen Recording TCC permission required
-//! (Sequoia re-prompts monthly — surface this in the host UI).
+//! Why CGDisplayStream and not ScreenCaptureKit (the research/03 §1 pick):
+//! it is a small, stable C API — the right risk profile for the first
+//! testable build. It delivers BGRA IOSurfaces on a dispatch queue at
+//! compositor cadence with optional GPU downscaling, and it requires the same
+//! Screen Recording permission SCK does. The SCK backend (zero-copy IOSurface
+//! straight into VideoToolbox, per-window capture, HDR) replaces this in a
+//! later milestone; the `FrameSource` seam is unchanged.
 //!
-//! Candidate binding crate: `screencapturekit-rs`; fall back to objc2 bindings.
+//! Milestone 0 limitation: frames are copied out of the IOSurface into CPU
+//! memory here, and copied again into a CVPixelBuffer by the encoder. The
+//! zero-copy path (hand the IOSurface to VTCompressionSession directly) is the
+//! first optimization once the end-to-end picture works.
+
+use std::ffi::{c_char, c_void, CString};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
+use block2::RcBlock;
+use bytes::Bytes;
+use core_foundation_sys::dictionary::CFDictionaryRef;
+
+use crate::{FrameSource, PixelFormat, VideoFrame};
+
+type CGDisplayStreamRef = *mut c_void;
+type IOSurfaceRef = *mut c_void;
+type DispatchQueueT = *mut c_void;
+
+const PIXEL_FORMAT_BGRA: i32 = 0x42475241; // 'BGRA'
+const FRAME_STATUS_COMPLETE: i32 = 0; // kCGDisplayStreamFrameStatusFrameComplete
+const IOSURFACE_LOCK_READ_ONLY: u32 = 1;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayPixelsWide(display: u32) -> usize;
+    fn CGDisplayPixelsHigh(display: u32) -> usize;
+    fn CGDisplayStreamCreateWithDispatchQueue(
+        display: u32,
+        output_width: usize,
+        output_height: usize,
+        pixel_format: i32,
+        properties: CFDictionaryRef,
+        queue: DispatchQueueT,
+        handler: *const c_void,
+    ) -> CGDisplayStreamRef;
+    fn CGDisplayStreamStart(stream: CGDisplayStreamRef) -> i32;
+    fn CGDisplayStreamStop(stream: CGDisplayStreamRef) -> i32;
+    fn CGPreflightScreenCaptureAccess() -> u8;
+    fn CGRequestScreenCaptureAccess() -> u8;
+}
+
+#[link(name = "IOSurface", kind = "framework")]
+extern "C" {
+    fn IOSurfaceLock(buffer: IOSurfaceRef, options: u32, seed: *mut u32) -> i32;
+    fn IOSurfaceUnlock(buffer: IOSurfaceRef, options: u32, seed: *mut u32) -> i32;
+    fn IOSurfaceGetBaseAddress(buffer: IOSurfaceRef) -> *mut c_void;
+    fn IOSurfaceGetBytesPerRow(buffer: IOSurfaceRef) -> usize;
+    fn IOSurfaceGetWidth(buffer: IOSurfaceRef) -> usize;
+    fn IOSurfaceGetHeight(buffer: IOSurfaceRef) -> usize;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFRelease(cf: *const c_void);
+}
+
+// libdispatch ships in libSystem, which every binary links.
+extern "C" {
+    fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> DispatchQueueT;
+}
+
+/// The native pixel size of the main display's current mode (points, not
+/// backing pixels — retina full-res capture is a later refinement).
+pub fn main_display_size() -> (u32, u32) {
+    unsafe {
+        let display = CGMainDisplayID();
+        (
+            CGDisplayPixelsWide(display) as u32,
+            CGDisplayPixelsHigh(display) as u32,
+        )
+    }
+}
+
+/// Check (and if needed, request) the Screen Recording permission. Returns
+/// false when not granted; the request makes macOS show its one-time prompt /
+/// System Settings deep link for the *hosting* process (e.g. your terminal).
+pub fn ensure_screen_capture_access() -> bool {
+    unsafe {
+        if CGPreflightScreenCaptureAccess() != 0 {
+            return true;
+        }
+        CGRequestScreenCaptureAccess() != 0
+    }
+}
+
+#[derive(Default)]
+struct Latest {
+    frame: Mutex<Option<VideoFrame>>,
+    ready: Condvar,
+}
+
+/// Captures the main display. Frames arrive on a dispatch queue when the
+/// screen changes; `next_frame` re-delivers the last frame at the target fps
+/// when the screen is static so the encoder keeps its cadence.
+pub struct ScreenSource {
+    stream: CGDisplayStreamRef,
+    // Owned so the handler outlives the stream; CG retains its own reference.
+    _handler: RcBlock<dyn Fn(i32, u64, *mut c_void, *mut c_void)>,
+    latest: Arc<Latest>,
+    last: Option<VideoFrame>,
+    /// Output frame ids are assigned here, not in the capture handler, so
+    /// re-delivered static frames and fresh frames share one monotonic series.
+    next_id: u64,
+    width: u32,
+    height: u32,
+    fps: u32,
+}
+
+// Raw pointers are only touched from `next_frame`/`Drop` (single owner) and
+// the dispatch-queue handler, which synchronizes through `Latest`.
+unsafe impl Send for ScreenSource {}
+
+impl ScreenSource {
+    pub fn new(width: Option<u32>, height: Option<u32>, fps: u32) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            ensure_screen_capture_access(),
+            "Screen Recording permission is not granted. macOS should have shown a prompt; \
+             enable it in System Settings → Privacy & Security → Screen Recording for the \
+             app that launched sunnad (e.g. your terminal), then run again."
+        );
+
+        let (native_w, native_h) = main_display_size();
+        let width = width.unwrap_or(native_w).max(2) & !1; // encoders want even dims
+        let height = height.unwrap_or(native_h).max(2) & !1;
+
+        let latest = Arc::new(Latest::default());
+        let handler = {
+            let latest = Arc::clone(&latest);
+            RcBlock::new(
+                move |status: i32, _display_time: u64, surface: *mut c_void, _update: *mut c_void| {
+                    if status != FRAME_STATUS_COMPLETE || surface.is_null() {
+                        return;
+                    }
+                    if let Some(frame) = copy_surface(surface) {
+                        *latest.frame.lock().unwrap() = Some(frame);
+                        latest.ready.notify_one();
+                    }
+                },
+            )
+        };
+
+        let stream = unsafe {
+            let label = CString::new("app.sunna.capture").expect("static label");
+            let queue = dispatch_queue_create(label.as_ptr(), std::ptr::null());
+            CGDisplayStreamCreateWithDispatchQueue(
+                CGMainDisplayID(),
+                width as usize,
+                height as usize,
+                PIXEL_FORMAT_BGRA,
+                std::ptr::null(),
+                queue,
+                &*handler as *const block2::Block<_> as *const c_void,
+            )
+        };
+        anyhow::ensure!(
+            !stream.is_null(),
+            "CGDisplayStreamCreate failed (is Screen Recording permission granted?)"
+        );
+        let status = unsafe { CGDisplayStreamStart(stream) };
+        if status != 0 {
+            unsafe { CFRelease(stream as _) };
+            anyhow::bail!("CGDisplayStreamStart failed: CGError {status}");
+        }
+        tracing::info!(width, height, "screen capture started (CGDisplayStream)");
+
+        Ok(Self {
+            stream,
+            _handler: handler,
+            latest,
+            last: None,
+            next_id: 0,
+            width,
+            height,
+            fps: fps.max(1),
+        })
+    }
+}
+
+fn copy_surface(surface: IOSurfaceRef) -> Option<VideoFrame> {
+    unsafe {
+        if IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
+            return None;
+        }
+        let width = IOSurfaceGetWidth(surface);
+        let height = IOSurfaceGetHeight(surface);
+        let stride = IOSurfaceGetBytesPerRow(surface);
+        let base = IOSurfaceGetBaseAddress(surface) as *const u8;
+        let frame = if base.is_null() {
+            None
+        } else {
+            let row_bytes = width * 4;
+            let mut data = vec![0u8; row_bytes * height];
+            for row in 0..height {
+                std::ptr::copy_nonoverlapping(
+                    base.add(row * stride),
+                    data.as_mut_ptr().add(row * row_bytes),
+                    row_bytes,
+                );
+            }
+            Some(VideoFrame {
+                frame_id: 0, // assigned by `next_frame`
+                width: width as u32,
+                height: height as u32,
+                format: PixelFormat::Bgra8,
+                data: Bytes::from(data),
+                capture_ts_us: sunna_proto::now_us(),
+            })
+        };
+        IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
+        frame
+    }
+}
+
+impl FrameSource for ScreenSource {
+    fn next_frame(&mut self) -> anyhow::Result<VideoFrame> {
+        let interval = Duration::from_secs_f64(1.0 / self.fps as f64);
+        let mut guard = self.latest.frame.lock().unwrap();
+        loop {
+            if let Some(mut frame) = guard.take() {
+                drop(guard);
+                frame.frame_id = self.next_id;
+                self.next_id += 1;
+                self.last = Some(frame.clone());
+                return Ok(frame);
+            }
+            let (next_guard, timeout) = self.latest.ready.wait_timeout(guard, interval).unwrap();
+            guard = next_guard;
+            if timeout.timed_out() {
+                // Static screen: re-deliver the last frame with a fresh id and
+                // timestamp so cadence (and latency stats) stay honest.
+                if let Some(mut frame) = self.last.clone() {
+                    frame.frame_id = self.next_id;
+                    self.next_id += 1;
+                    frame.capture_ts_us = sunna_proto::now_us();
+                    self.last = Some(frame.clone());
+                    return Ok(frame);
+                }
+                // No frame ever arrived yet: keep waiting (first frame can
+                // take a moment after stream start).
+            }
+        }
+    }
+
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn fps(&self) -> u32 {
+        self.fps
+    }
+}
+
+impl Drop for ScreenSource {
+    fn drop(&mut self) {
+        unsafe {
+            CGDisplayStreamStop(self.stream);
+            CFRelease(self.stream as _);
+        }
+    }
+}

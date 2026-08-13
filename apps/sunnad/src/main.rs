@@ -1,28 +1,41 @@
 //! sunnad — the headless Sunna host daemon.
 //!
-//! Milestone 0a: streams a synthetic test pattern over the raw passthrough
-//! codec and logs (rather than injects) incoming input. No authentication yet:
-//! binds localhost by default; do not expose beyond a trusted LAN.
+//! `--source screen` streams the real display (macOS only for now; requires
+//! the Screen Recording permission for the process that launches sunnad).
+//! `--source synthetic` streams a test pattern. Input is logged, not injected,
+//! until the injection backend lands. No authentication yet: binds localhost
+//! by default; do not expose beyond a trusted LAN.
 
 use std::net::SocketAddr;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use sunna_capture::{FrameSource, SyntheticSource};
 use sunna_codec::{default_codec_name, make_encoder};
 use sunna_host::{HostConfig, run_host};
 use sunna_input::{InputInjector, LogInjector};
 use sunna_transport::Server;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum Source {
+    Synthetic,
+    /// Capture the main display (macOS only for now).
+    Screen,
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "sunnad", about = "Sunna headless host daemon (Milestone 0a)")]
+#[command(name = "sunnad", about = "Sunna headless host daemon")]
 struct Args {
     /// Address to listen on. Loopback by default — there is no auth yet.
     #[arg(long, default_value = "127.0.0.1:48800")]
     listen: SocketAddr,
-    #[arg(long, default_value_t = 640)]
-    width: u32,
-    #[arg(long, default_value_t = 360)]
-    height: u32,
+    #[arg(long, value_enum, default_value_t = Source::Synthetic)]
+    source: Source,
+    /// Stream width. Default: 640 for synthetic, native display width for screen.
+    #[arg(long)]
+    width: Option<u32>,
+    /// Stream height. Default: 360 for synthetic, native display height for screen.
+    #[arg(long)]
+    height: Option<u32>,
     #[arg(long, default_value_t = 60)]
     fps: u32,
     /// Codec to encode with ("h264" on macOS, "raw" fallback).
@@ -40,6 +53,61 @@ struct Args {
     name: String,
 }
 
+fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
+    match args.source {
+        Source::Synthetic => Ok((args.width.unwrap_or(640), args.height.unwrap_or(360))),
+        Source::Screen => {
+            #[cfg(target_os = "macos")]
+            {
+                anyhow::ensure!(
+                    sunna_capture::macos::ensure_screen_capture_access(),
+                    "Screen Recording permission is not granted. Enable it in System Settings → \
+                     Privacy & Security → Screen Recording for the app that launched sunnad \
+                     (e.g. your terminal), then run again."
+                );
+                let (native_w, native_h) = sunna_capture::macos::main_display_size();
+                // Even dimensions for the encoder; must match what ScreenSource uses.
+                Ok((
+                    args.width.unwrap_or(native_w).max(2) & !1,
+                    args.height.unwrap_or(native_h).max(2) & !1,
+                ))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                anyhow::bail!("--source screen is only supported on macOS so far (research/06 M0c)")
+            }
+        }
+    }
+}
+
+fn make_source_factory(
+    source: Source,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Box<dyn Fn() -> Box<dyn FrameSource> + Send + Sync> {
+    match source {
+        Source::Synthetic => Box::new(move || {
+            Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>
+        }),
+        Source::Screen => {
+            #[cfg(target_os = "macos")]
+            {
+                Box::new(move || {
+                    Box::new(
+                        sunna_capture::macos::ScreenSource::new(Some(width), Some(height), fps)
+                            .expect("screen capture was validated at startup"),
+                    ) as Box<dyn FrameSource>
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                unreachable!("rejected in resolve_dimensions")
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -50,10 +118,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
 
+    let (width, height) = resolve_dimensions(&args)?;
     let server = Server::bind(args.listen)?;
     tracing::info!(
         addr = %server.local_addr()?,
-        source = format!("synthetic {}x{}@{}", args.width, args.height, args.fps),
+        source = ?args.source,
+        stream = format!("{}x{}@{}", width, height, args.fps),
         codec = %args.codec,
         "sunnad listening"
     );
@@ -64,14 +134,14 @@ async fn main() -> anyhow::Result<()> {
     let bitrate_bps = args.bitrate_kbps.saturating_mul(1000);
     let config = HostConfig {
         name: args.name.clone(),
-        width: args.width,
-        height: args.height,
+        width,
+        height,
         fps: args.fps,
         codec: args.codec.clone(),
         max_bitrate_bps: bitrate_bps,
         simulate_loss: args.simulate_loss,
     };
-    let (width, height, fps) = (args.width, args.height, args.fps);
+    let fps = args.fps;
     let codec = args.codec.clone();
     // Fail fast on an unbuildable codec instead of per-connection.
     make_encoder(&codec, width, height, fps, bitrate_bps)?;
@@ -80,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
         result = run_host(
             server,
             config,
-            Box::new(move || Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>),
+            make_source_factory(args.source, width, height, fps),
             Box::new(move || {
                 make_encoder(&codec, width, height, fps, bitrate_bps)
                     .expect("encoder was validated at startup")
