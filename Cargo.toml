@@ -27,9 +27,12 @@ sunna-host = { path = "crates/host" }
 sunna-client = { path = "crates/client" }
 
 anyhow = "1"
+block2 = "0.6"
 bytes = "1"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+softbuffer = "0.4"
+winit = "0.30"
 clap = { version = "4", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 quinn = "0.11"

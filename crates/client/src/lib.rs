@@ -96,10 +96,15 @@ impl std::fmt::Display for BenchReport {
 }
 
 /// Run a receive session until the connection closes or `duration` elapses.
+///
+/// `on_frame` is the render-on-arrival hook: called with every decoded frame,
+/// in arrival order, from the network task. Keep it cheap (store + wake a
+/// renderer); heavy work here delays the receive loop.
 pub async fn run_client(
     connection: Connection,
     client_name: &str,
     duration: Option<Duration>,
+    mut on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
     control
@@ -233,8 +238,7 @@ pub async fn run_client(
                             e2e_samples.push(sample);
                             window_samples.push(sample);
                             window_frames += 1;
-                            // Render-on-arrival hook: the present pass goes
-                            // here once there is a surface to present to.
+                            on_frame(decoded);
                         }
                         Err(error) => {
                             tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
