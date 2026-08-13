@@ -31,11 +31,16 @@ const PIXEL_FORMAT_BGRA: i32 = 0x42475241; // 'BGRA'
 const FRAME_STATUS_COMPLETE: i32 = 0; // kCGDisplayStreamFrameStatusFrameComplete
 const IOSURFACE_LOCK_READ_ONLY: u32 = 1;
 
+type CGDisplayModeRef = *mut c_void;
+
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGDisplayPixelsHigh(display: u32) -> usize;
+    fn CGDisplayCopyDisplayMode(display: u32) -> CGDisplayModeRef;
+    fn CGDisplayModeGetPixelWidth(mode: CGDisplayModeRef) -> usize;
+    fn CGDisplayModeGetPixelHeight(mode: CGDisplayModeRef) -> usize;
     fn CGDisplayStreamCreateWithDispatchQueue(
         display: u32,
         output_width: usize,
@@ -71,8 +76,7 @@ extern "C" {
     fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> DispatchQueueT;
 }
 
-/// The native pixel size of the main display's current mode (points, not
-/// backing pixels — retina full-res capture is a later refinement).
+/// The main display's size in points (logical resolution).
 pub fn main_display_size() -> (u32, u32) {
     unsafe {
         let display = CGMainDisplayID();
@@ -80,6 +84,27 @@ pub fn main_display_size() -> (u32, u32) {
             CGDisplayPixelsWide(display) as u32,
             CGDisplayPixelsHigh(display) as u32,
         )
+    }
+}
+
+/// The main display's size in backing pixels (retina resolution) — what
+/// screen capture should default to for sharp text.
+pub fn main_display_pixel_size() -> (u32, u32) {
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(CGMainDisplayID());
+        if mode.is_null() {
+            return main_display_size();
+        }
+        let size = (
+            CGDisplayModeGetPixelWidth(mode) as u32,
+            CGDisplayModeGetPixelHeight(mode) as u32,
+        );
+        CFRelease(mode as _);
+        if size.0 == 0 || size.1 == 0 {
+            main_display_size()
+        } else {
+            size
+        }
     }
 }
 

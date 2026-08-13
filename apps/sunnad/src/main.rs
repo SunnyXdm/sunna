@@ -42,8 +42,9 @@ struct Args {
     #[arg(long, default_value = default_codec_name())]
     codec: String,
     /// Encoder target bitrate in kilobits per second.
-    #[arg(long, default_value_t = 20_000)]
-    bitrate_kbps: u32,
+    /// Default: 40000 for screen capture (retina resolutions need it), 20000 synthetic.
+    #[arg(long)]
+    bitrate_kbps: Option<u32>,
     /// Dev-only: fraction of media datagrams to drop (0.0..1.0) to exercise
     /// FEC and keyframe recovery.
     #[arg(long, default_value_t = 0.0)]
@@ -65,7 +66,7 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
                      Privacy & Security → Screen Recording for the app that launched sunnad \
                      (e.g. your terminal), then run again."
                 );
-                let (native_w, native_h) = sunna_capture::macos::main_display_size();
+                let (native_w, native_h) = sunna_capture::macos::main_display_pixel_size();
                 // Even dimensions for the encoder; must match what ScreenSource uses.
                 Ok((
                     args.width.unwrap_or(native_w).max(2) & !1,
@@ -131,7 +132,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("listening beyond loopback with NO authentication (dev TLS only)");
     }
 
-    let bitrate_bps = args.bitrate_kbps.saturating_mul(1000);
+    let bitrate_kbps = args.bitrate_kbps.unwrap_or(match args.source {
+        Source::Screen => 40_000,
+        Source::Synthetic => 20_000,
+    });
+    let bitrate_bps = bitrate_kbps.saturating_mul(1000);
     let config = HostConfig {
         name: args.name.clone(),
         width,
