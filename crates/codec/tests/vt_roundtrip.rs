@@ -47,7 +47,10 @@ fn hardware_h264_roundtrip() {
         let frame = test_frame(frame_id, width, height);
 
         let encode_start = std::time::Instant::now();
-        let encoded = encoder.encode(&frame).expect("encode");
+        let encoded = encoder
+            .encode(&frame)
+            .expect("encode")
+            .expect("tiny test frames should never be dropped");
         encode_total_us += encode_start.elapsed().as_micros() as u64;
 
         assert_eq!(encoded.frame_id, frame_id);

@@ -58,7 +58,10 @@ pub struct DecodedFrame {
 }
 
 pub trait Encoder: Send {
-    fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<EncodedFrame>;
+    /// `Ok(None)` means the encoder dropped this frame (load/rate control) —
+    /// a normal event under pressure, not an error. The reference chain is
+    /// unbroken: the next emitted frame references the last *emitted* one.
+    fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>>;
     /// Congestion-control hook: applies from the *next* frame (research/03 §4).
     fn set_target_bitrate(&mut self, bits_per_second: u32);
     fn request_keyframe(&mut self);
@@ -88,8 +91,8 @@ impl Passthrough {
 }
 
 impl Encoder for Passthrough {
-    fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<EncodedFrame> {
-        Ok(EncodedFrame {
+    fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>> {
+        Ok(Some(EncodedFrame {
             frame_id: frame.frame_id,
             codec: Codec::Raw,
             keyframe: true,
@@ -99,7 +102,7 @@ impl Encoder for Passthrough {
             width: frame.width,
             height: frame.height,
             format: frame.format,
-        })
+        }))
     }
 
     fn set_target_bitrate(&mut self, _bits_per_second: u32) {}

@@ -38,27 +38,40 @@ struct EncodedSample {
     pps: Vec<Vec<u8>>,
 }
 
+/// The encoder legitimately drops frames under load/rate-control pressure
+/// (null sample buffer or the FrameDropped info flag) — that is not a failure.
+enum EncodeOutcome {
+    Sample(EncodedSample),
+    Dropped,
+    Failed(OSStatusCode),
+}
+
 #[derive(Default)]
 struct EncoderShared {
-    result: Mutex<Option<Result<EncodedSample, OSStatusCode>>>,
+    result: Mutex<Option<EncodeOutcome>>,
 }
 
 type OSStatusCode = i32;
+
+const VT_ENCODE_INFO_FRAME_DROPPED: u32 = 1 << 1;
 
 extern "C" fn compression_callback(
     refcon: *mut c_void,
     _source_frame_refcon: *mut c_void,
     status: i32,
-    _info_flags: u32,
+    info_flags: u32,
     sample_buffer: CMSampleBufferRef,
 ) {
     let shared = unsafe { &*(refcon as *const EncoderShared) };
     let outcome = if status != 0 {
-        Err(status)
-    } else if sample_buffer.is_null() {
-        Err(-1)
+        EncodeOutcome::Failed(status)
+    } else if info_flags & VT_ENCODE_INFO_FRAME_DROPPED != 0 || sample_buffer.is_null() {
+        EncodeOutcome::Dropped
     } else {
-        extract_sample(sample_buffer)
+        match extract_sample(sample_buffer) {
+            Ok(sample) => EncodeOutcome::Sample(sample),
+            Err(code) => EncodeOutcome::Failed(code),
+        }
     };
     *shared.result.lock().unwrap() = Some(outcome);
 }
@@ -293,11 +306,12 @@ impl VtEncoder {
 }
 
 impl Encoder for VtEncoder {
-    fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<EncodedFrame> {
+    fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>> {
         let pixel_buffer = self.make_pixel_buffer(frame)?;
         self.shared.result.lock().unwrap().take();
 
-        let frame_properties = if self.force_keyframe {
+        let keyframe_wanted = self.force_keyframe;
+        let frame_properties = if keyframe_wanted {
             Some(CFDictionary::from_CFType_pairs(&[(
                 cf_key(unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }).as_CFType(),
                 CFBoolean::true_value().as_CFType(),
@@ -333,14 +347,25 @@ impl Encoder for VtEncoder {
             bail!("VTCompressionSessionCompleteFrames failed: {status}");
         }
 
-        let sample = self
+        let outcome = self
             .shared
             .result
             .lock()
             .unwrap()
             .take()
-            .context("encoder produced no output")?
-            .map_err(|status| anyhow::anyhow!("encode callback failed: OSStatus {status}"))?;
+            .context("encoder produced no output")?;
+        let sample = match outcome {
+            EncodeOutcome::Sample(sample) => sample,
+            EncodeOutcome::Dropped => {
+                // Don't lose a pending keyframe request to a dropped frame.
+                self.force_keyframe |= keyframe_wanted;
+                return Ok(None);
+            }
+            EncodeOutcome::Failed(status) => {
+                self.force_keyframe |= keyframe_wanted;
+                anyhow::bail!("encode callback failed: OSStatus {status}");
+            }
+        };
 
         // Wire format: Annex B, parameter sets prepended on keyframes.
         let mut annexb = Vec::with_capacity(sample.avcc.len() + 128);
@@ -351,7 +376,7 @@ impl Encoder for VtEncoder {
         }
         h264::avcc_to_annexb(&sample.avcc, &mut annexb);
 
-        Ok(EncodedFrame {
+        Ok(Some(EncodedFrame {
             frame_id: frame.frame_id,
             codec: Codec::H264,
             keyframe: sample.keyframe,
@@ -361,7 +386,7 @@ impl Encoder for VtEncoder {
             width: self.width,
             height: self.height,
             format: frame.format,
-        })
+        }))
     }
 
     fn set_target_bitrate(&mut self, bits_per_second: u32) {

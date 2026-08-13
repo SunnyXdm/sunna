@@ -138,6 +138,11 @@ fn media_loop(
 ) {
     let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
     let mut sent_frames: u64 = 0;
+    // Wire frame ids are a contiguous series over frames actually *sent* —
+    // decoupled from capture ids so encoder drops don't look like network
+    // loss to the client's gap detection (which would request keyframes).
+    let mut wire_frame_id: u64 = 0;
+    let mut consecutive_encode_failures: u32 = 0;
     let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
     // Deterministic xorshift for dev loss simulation; no RNG dependency.
     let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -166,19 +171,34 @@ fn media_loop(
             }
         };
         let encoded = match encoder.encode(&frame) {
-            Ok(encoded) => encoded,
+            Ok(Some(encoded)) => {
+                consecutive_encode_failures = 0;
+                encoded
+            }
+            Ok(None) => {
+                // Normal under load/rate-control pressure; the next emitted
+                // frame still references the last emitted one.
+                tracing::debug!(frame_id = frame.frame_id, "encoder dropped frame");
+                continue;
+            }
             Err(error) => {
-                tracing::warn!(%error, "encode failed, stopping media loop");
-                break;
+                consecutive_encode_failures += 1;
+                if consecutive_encode_failures >= 120 {
+                    tracing::warn!(%error, "encoder failing persistently, stopping media loop");
+                    break;
+                }
+                tracing::debug!(%error, "encode failed, skipping frame");
+                continue;
             }
         };
         let datagrams = packetize(
-            encoded.frame_id,
+            wire_frame_id,
             encoded.capture_ts_us,
             encoded.keyframe,
             &encoded.data,
             max_datagram,
         );
+        wire_frame_id += 1;
         for datagram in datagrams {
             if simulate_loss > 0.0 && roll() < simulate_loss {
                 continue;
