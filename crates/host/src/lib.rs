@@ -106,7 +106,9 @@ async fn serve(
     let stop = Arc::new(AtomicBool::new(false));
     let signals = Arc::new(SessionSignals {
         force_keyframe: AtomicBool::new(false),
-        target_bitrate_bps: AtomicU32::new(config.max_bitrate_bps),
+        // Start well below the ceiling and ramp up — starting hot congests
+        // constrained paths for seconds before adaptation can react.
+        target_bitrate_bps: AtomicU32::new(config.max_bitrate_bps.min(15_000_000)),
     });
     let media_thread = {
         let connection = connection.clone();
@@ -143,7 +145,11 @@ fn media_loop(
     // loss to the client's gap detection (which would request keyframes).
     let mut wire_frame_id: u64 = 0;
     let mut consecutive_encode_failures: u32 = 0;
+    let mut sender_dropped: u64 = 0;
+    // The encoder factory configured the ceiling; align it with the actual
+    // starting target before the first frame.
     let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
+    encoder.set_target_bitrate(applied_bitrate);
     // Deterministic xorshift for dev loss simulation; no RNG dependency.
     let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut roll = move || {
@@ -198,6 +204,19 @@ fn media_loop(
             &encoded.data,
             max_datagram,
         );
+        // Latest-frame-wins at the sender: if the network is behind and this
+        // frame won't fit in the send buffer, drop it here rather than queue
+        // stale video (delivering seconds-old frames is worse than skipping).
+        // Keyframes are always sent — overflow evicts older queued datagrams,
+        // which is exactly the stale data we want gone.
+        let frame_bytes: usize = datagrams.iter().map(|datagram| datagram.len()).sum();
+        if !encoded.keyframe && connection.datagram_send_buffer_space() < frame_bytes {
+            sender_dropped += 1;
+            if sender_dropped % 30 == 1 {
+                tracing::debug!(sender_dropped, "network backlog: dropping frames at sender");
+            }
+            continue;
+        }
         wire_frame_id += 1;
         for datagram in datagrams {
             if simulate_loss > 0.0 && roll() < simulate_loss {
@@ -227,10 +246,12 @@ async fn control_loop(
     signals: &SessionSignals,
     max_bitrate_bps: u32,
 ) -> anyhow::Result<()> {
-    // AIMD v0: multiplicative decrease on any dropped frame, slow additive
-    // recovery on clean windows. Placeholder until delay-based CC (M1 proper),
-    // but it exercises the per-frame encoder-coupling seam end to end.
+    // AIMD v0.1: multiplicative decrease on dropped frames OR on latency
+    // inflation (delayed frames never show up as drops — congestion queues
+    // them instead), slow additive recovery on clean windows. Placeholder
+    // until real delay-based CC (M1), but it stops multi-second spirals.
     let min_bitrate_bps = (max_bitrate_bps / 20).max(100_000);
+    let mut p95_baseline_us: Option<u64> = None;
     loop {
         match control.recv().await {
             Ok(ControlMessage::Input(event)) => injector.inject(&event)?,
@@ -253,8 +274,21 @@ async fn control_loop(
                 e2e_p95_us,
             }) => {
                 let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
-                let next = if frames_dropped > 0 {
-                    signals.force_keyframe.store(true, Ordering::Relaxed);
+                // Latency inflation vs the best p95 this session = queues are
+                // building somewhere on the path.
+                let inflated = if e2e_p95_us > 0 {
+                    let baseline = p95_baseline_us.get_or_insert(e2e_p95_us);
+                    if e2e_p95_us < *baseline {
+                        *baseline = e2e_p95_us;
+                    }
+                    e2e_p95_us > *baseline + 100_000
+                } else {
+                    false
+                };
+                let next = if frames_dropped > 0 || inflated {
+                    if frames_dropped > 0 {
+                        signals.force_keyframe.store(true, Ordering::Relaxed);
+                    }
                     (current * 3 / 4).max(min_bitrate_bps)
                 } else {
                     current
