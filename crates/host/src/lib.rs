@@ -10,6 +10,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sunna_capture::FrameSource;
 use sunna_codec::Encoder;
@@ -104,6 +105,7 @@ async fn serve(
         .await?;
 
     let stop = Arc::new(AtomicBool::new(false));
+    let min_bitrate_bps = (config.max_bitrate_bps / 20).max(100_000);
     let signals = Arc::new(SessionSignals {
         force_keyframe: AtomicBool::new(false),
         // Start well below the ceiling and ramp up — starting hot congests
@@ -118,7 +120,15 @@ async fn serve(
         let encoder = new_encoder();
         let simulate_loss = config.simulate_loss;
         std::thread::spawn(move || {
-            media_loop(connection, source, encoder, stop, signals, simulate_loss)
+            media_loop(
+                connection,
+                source,
+                encoder,
+                stop,
+                signals,
+                simulate_loss,
+                min_bitrate_bps,
+            )
         })
     };
 
@@ -137,9 +147,15 @@ fn media_loop(
     stop: Arc<AtomicBool>,
     signals: Arc<SessionSignals>,
     simulate_loss: f64,
+    min_bitrate_bps: u32,
 ) {
+    /// Above this queued-bytes level the path is congested no matter how much
+    /// buffer space remains (~2 frame intervals at 15 Mbps).
+    const MAX_SENDER_BACKLOG: usize = 300 * 1024;
+
     let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
     let mut sent_frames: u64 = 0;
+    let mut last_local_cut = Instant::now() - Duration::from_secs(1);
     // Wire frame ids are a contiguous series over frames actually *sent* —
     // decoupled from capture ids so encoder drops don't look like network
     // loss to the client's gap detection (which would request keyframes).
@@ -204,16 +220,32 @@ fn media_loop(
             &encoded.data,
             max_datagram,
         );
-        // Latest-frame-wins at the sender: if the network is behind and this
-        // frame won't fit in the send buffer, drop it here rather than queue
-        // stale video (delivering seconds-old frames is worse than skipping).
-        // Keyframes are always sent — overflow evicts older queued datagrams,
-        // which is exactly the stale data we want gone.
+        // Latest-frame-wins at the sender: if the network is behind, drop the
+        // frame here rather than queue stale video — a frame delivered seconds
+        // late is worse than a skipped one. This applies to keyframes too
+        // (a keyframe stuck behind a stalled path is stale on arrival); when
+        // one is dropped, a fresh IDR is forced as soon as the path clears.
+        // A sender-side drop is also the fastest congestion signal we have:
+        // cut the bitrate immediately instead of waiting for receiver reports.
         let frame_bytes: usize = datagrams.iter().map(|datagram| datagram.len()).sum();
-        if !encoded.keyframe && connection.datagram_send_buffer_space() < frame_bytes {
+        let space = connection.datagram_send_buffer_space();
+        let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE.saturating_sub(space);
+        if space < frame_bytes || backlog > MAX_SENDER_BACKLOG {
             sender_dropped += 1;
-            if sender_dropped % 30 == 1 {
-                tracing::debug!(sender_dropped, "network backlog: dropping frames at sender");
+            if encoded.keyframe {
+                signals.force_keyframe.store(true, Ordering::Relaxed);
+            }
+            if last_local_cut.elapsed() > Duration::from_millis(500) {
+                last_local_cut = Instant::now();
+                let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
+                let next = (current * 3 / 4).max(min_bitrate_bps);
+                signals.target_bitrate_bps.store(next, Ordering::Relaxed);
+                tracing::debug!(
+                    sender_dropped,
+                    backlog,
+                    bitrate = next,
+                    "network backlog: dropping at sender, cutting bitrate"
+                );
             }
             continue;
         }
@@ -285,11 +317,22 @@ async fn control_loop(
                 } else {
                     false
                 };
+                // Hold zone: mild inflation (> baseline + 40ms) means we're at
+                // the path's edge — stop growing before we build a standing
+                // queue, cut only on real inflation (> baseline + 100ms).
+                let holding = if e2e_p95_us > 0 {
+                    p95_baseline_us
+                        .map_or(false, |baseline| e2e_p95_us > baseline + 40_000)
+                } else {
+                    false
+                };
                 let next = if frames_dropped > 0 || inflated {
                     if frames_dropped > 0 {
                         signals.force_keyframe.store(true, Ordering::Relaxed);
                     }
                     (current * 3 / 4).max(min_bitrate_bps)
+                } else if holding {
+                    current
                 } else {
                     current
                         .saturating_add(max_bitrate_bps / 20)

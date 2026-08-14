@@ -25,8 +25,8 @@ const KEEP_ALIVE: Duration = Duration::from_secs(2);
 /// Send side is deliberately small: it bounds how much stale video can queue
 /// when the path stalls (latest-frame-wins must hold at the sender too), while
 /// still fitting one large keyframe. The host also drops whole frames at the
-/// source when the buffer lacks space (see sunna-host).
-const DATAGRAM_SEND_BUFFER: usize = 1024 * 1024;
+/// source when the buffer backs up (see sunna-host).
+pub const DATAGRAM_SEND_BUFFER_SIZE: usize = 1024 * 1024;
 const DATAGRAM_RECV_BUFFER: usize = 4 * 1024 * 1024;
 
 #[derive(thiserror::Error, Debug)]
@@ -64,7 +64,7 @@ fn transport_config() -> TransportConfig {
     config.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("valid idle timeout")));
     config.keep_alive_interval(Some(KEEP_ALIVE));
     config.datagram_receive_buffer_size(Some(DATAGRAM_RECV_BUFFER));
-    config.datagram_send_buffer_size(DATAGRAM_SEND_BUFFER);
+    config.datagram_send_buffer_size(DATAGRAM_SEND_BUFFER_SIZE);
     config
 }
 

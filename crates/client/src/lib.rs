@@ -158,11 +158,14 @@ pub async fn run_client(
     let mut rtt_samples: Vec<u64> = Vec::new();
     let mut ping_seq: u32 = 0;
 
-    // Keyframe-gated recovery state.
+    // Keyframe-gated recovery state. Requests are re-sent while waiting: the
+    // host may legitimately drop an IDR under backlog and force a fresh one
+    // only when the path clears.
     let mut awaiting_keyframe = false;
     let mut keyframes_requested: u64 = 0;
     let mut frames_skipped: u64 = 0;
     let mut seen_dropped: u64 = 0;
+    let mut last_keyframe_request = std::time::Instant::now();
     // Continuity tracking: a frame whose every datagram was lost never appears
     // in the reassembler at all — only a gap in decoded frame ids reveals it.
     let mut last_decoded: Option<u64> = None;
@@ -210,6 +213,7 @@ pub async fn run_client(
                     if !awaiting_keyframe {
                         awaiting_keyframe = true;
                         keyframes_requested += 1;
+                        last_keyframe_request = std::time::Instant::now();
                         control.send(&ControlMessage::RequestKeyframe).await?;
                     }
                 }
@@ -256,6 +260,7 @@ pub async fn run_client(
                             if !awaiting_keyframe {
                                 awaiting_keyframe = true;
                                 keyframes_requested += 1;
+                                last_keyframe_request = std::time::Instant::now();
                                 control.send(&ControlMessage::RequestKeyframe).await?;
                             }
                         }
@@ -284,6 +289,13 @@ pub async fn run_client(
                 control.send(&ControlMessage::Ping { seq: ping_seq, t_us: sunna_proto::now_us() }).await?;
             }
             _ = report_interval.tick() => {
+                if awaiting_keyframe
+                    && last_keyframe_request.elapsed() > Duration::from_millis(500)
+                {
+                    keyframes_requested += 1;
+                    last_keyframe_request = std::time::Instant::now();
+                    control.send(&ControlMessage::RequestKeyframe).await?;
+                }
                 let total_dropped = reassembler.dropped_frames + gap_lost;
                 let dropped = total_dropped - window_dropped_base;
                 window_dropped_base = total_dropped;
