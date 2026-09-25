@@ -1,4 +1,4 @@
-//! H.264 Annex B utilities.
+//! H.264 / HEVC Annex B utilities.
 //!
 //! Wire format decision: encoded frames travel as Annex B (start-code
 //! delimited NAL units), with SPS/PPS prepended to every keyframe so a client
@@ -81,6 +81,63 @@ pub fn push_annexb_nal(out: &mut Vec<u8>, nal: &[u8]) {
 /// Convert an Annex B stream to AVCC, dropping SPS/PPS units (the decoder
 /// receives those out of band via its format description). Returns the AVCC
 /// buffer plus any SPS/PPS units encountered.
+/// HEVC NAL unit types (a 2-byte header; type is bits 1..7 of byte 0).
+pub mod hevc {
+    pub const NAL_VPS: u8 = 32;
+    pub const NAL_SPS: u8 = 33;
+    pub const NAL_PPS: u8 = 34;
+
+    pub fn nal_type(nal: &[u8]) -> Option<u8> {
+        nal.first().map(|&byte| (byte >> 1) & 0x3f)
+    }
+}
+
+/// Rank of a parameter-set NAL (the order decoders want them in), or `None`
+/// for other NAL units. H.264: SPS, PPS. HEVC: VPS, SPS, PPS.
+pub fn parameter_set_rank(nal: &[u8], is_hevc: bool) -> Option<u8> {
+    if is_hevc {
+        match hevc::nal_type(nal)? {
+            hevc::NAL_VPS => Some(0),
+            hevc::NAL_SPS => Some(1),
+            hevc::NAL_PPS => Some(2),
+            _ => None,
+        }
+    } else {
+        match nal_type(nal)? {
+            NAL_SPS => Some(0),
+            NAL_PPS => Some(1),
+            _ => None,
+        }
+    }
+}
+
+/// An Annex B access unit split for a hardware decoder: parameter sets (in
+/// decoder order) apart, everything else as 4-byte length-prefixed NALs.
+pub struct AccessUnit<'a> {
+    pub avcc: Vec<u8>,
+    pub parameter_sets: Vec<&'a [u8]>,
+}
+
+pub fn annexb_to_access_unit(data: &[u8], is_hevc: bool) -> AccessUnit<'_> {
+    let mut unit = AccessUnit {
+        avcc: Vec::with_capacity(data.len()),
+        parameter_sets: Vec::new(),
+    };
+    let mut ranked = Vec::new();
+    for nal in split_annexb(data) {
+        match parameter_set_rank(nal, is_hevc) {
+            Some(rank) => ranked.push((rank, nal)),
+            None => {
+                unit.avcc.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+                unit.avcc.extend_from_slice(nal);
+            }
+        }
+    }
+    ranked.sort_by_key(|(rank, _)| *rank);
+    unit.parameter_sets = ranked.into_iter().map(|(_, nal)| nal).collect();
+    unit
+}
+
 pub struct AnnexbFrame<'a> {
     pub avcc: Vec<u8>,
     pub sps: Vec<&'a [u8]>,
@@ -150,5 +207,19 @@ mod tests {
         assert_eq!(frame.pps, vec![&[0x68u8, 0xbb][..]]);
         assert!(frame.has_idr);
         assert_eq!(frame.avcc, avcc);
+    }
+
+    #[test]
+    fn hevc_parameter_sets_are_split_and_ordered() {
+        // PPS, VPS, SPS (out of order), then a slice NAL (type 19, IDR_W_RADL).
+        let mut stream = Vec::new();
+        push_annexb_nal(&mut stream, &[34 << 1, 1, 0xaa]);
+        push_annexb_nal(&mut stream, &[32 << 1, 1, 0xbb]);
+        push_annexb_nal(&mut stream, &[33 << 1, 1, 0xcc]);
+        push_annexb_nal(&mut stream, &[19 << 1, 1, 0xdd, 0xee]);
+        let unit = annexb_to_access_unit(&stream, true);
+        let types: Vec<u8> = unit.parameter_sets.iter().map(|nal| hevc::nal_type(nal).unwrap()).collect();
+        assert_eq!(types, vec![hevc::NAL_VPS, hevc::NAL_SPS, hevc::NAL_PPS]);
+        assert_eq!(unit.avcc, vec![0, 0, 0, 4, 19 << 1, 1, 0xdd, 0xee]);
     }
 }

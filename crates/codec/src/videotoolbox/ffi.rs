@@ -26,6 +26,7 @@ pub type VTSessionRef = *mut c_void;
 
 pub const kCVPixelFormatType_32BGRA: OSType = 0x42475241; // 'BGRA'
 pub const kCMVideoCodecType_H264: OSType = 0x61766331; // 'avc1'
+pub const kCMVideoCodecType_HEVC: OSType = 0x68766331; // 'hvc1'
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -180,6 +181,23 @@ extern "C" {
         parameterSetCountOut: *mut usize,
         NALUnitHeaderLengthOut: *mut i32,
     ) -> OSStatus;
+    pub fn CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+        videoDesc: CMFormatDescriptionRef,
+        parameterSetIndex: usize,
+        parameterSetPointerOut: *mut *const u8,
+        parameterSetSizeOut: *mut usize,
+        parameterSetCountOut: *mut usize,
+        NALUnitHeaderLengthOut: *mut i32,
+    ) -> OSStatus;
+    pub fn CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+        allocator: CFAllocatorRef,
+        parameterSetCount: usize,
+        parameterSetPointers: *const *const u8,
+        parameterSetSizes: *const usize,
+        NALUnitHeaderLength: i32,
+        extensions: CFDictionaryRef,
+        formatDescriptionOut: *mut CMFormatDescriptionRef,
+    ) -> OSStatus;
     pub fn CMVideoFormatDescriptionCreateFromH264ParameterSets(
         allocator: CFAllocatorRef,
         parameterSetCount: usize,
@@ -206,6 +224,7 @@ extern "C" {
     pub static kVTCompressionPropertyKey_YCbCrMatrix: CFStringRef;
     pub static kVTProfileLevel_H264_Main_AutoLevel: CFStringRef;
     pub static kVTProfileLevel_H264_High_AutoLevel: CFStringRef;
+    pub static kVTProfileLevel_HEVC_Main_AutoLevel: CFStringRef;
     pub static kVTVideoEncoderSpecification_EnableLowLatencyRateControl: CFStringRef;
     pub static kVTEncodeFrameOptionKey_ForceKeyFrame: CFStringRef;
 

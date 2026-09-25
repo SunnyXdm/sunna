@@ -7,7 +7,7 @@ use bytes::Bytes;
 use sunna_capture::macos::SurfaceFrame;
 use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 use sunna_codec::videotoolbox::{VtDecoder, VtEncoder};
-use sunna_codec::{h264, Decoder, Encoder};
+use sunna_codec::{h264, Codec, Decoder, Encoder};
 
 fn test_pixels(frame_id: u64, width: u32, height: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
@@ -54,8 +54,8 @@ fn test_surface_frame(frame_id: u64, width: u32, height: u32) -> VideoFrame {
 fn hardware_h264_roundtrip() {
     let (width, height, fps) = (320u32, 240u32, 30u32);
     let mut encoder =
-        VtEncoder::new(width, height, fps, 2_000_000).expect("create hardware encoder");
-    let mut decoder = VtDecoder::new();
+        VtEncoder::new(Codec::H264, width, height, fps, 2_000_000).expect("create hardware encoder");
+    let mut decoder = VtDecoder::new(Codec::H264);
 
     let mut encode_total_us = 0u64;
     let mut decode_total_us = 0u64;
@@ -109,8 +109,8 @@ fn hardware_h264_roundtrip() {
 fn hardware_h264_roundtrip_from_iosurface() {
     let (width, height, fps) = (320u32, 240u32, 30u32);
     let mut encoder =
-        VtEncoder::new(width, height, fps, 2_000_000).expect("create hardware encoder");
-    let mut decoder = VtDecoder::new();
+        VtEncoder::new(Codec::H264, width, height, fps, 2_000_000).expect("create hardware encoder");
+    let mut decoder = VtDecoder::new(Codec::H264);
     for frame_id in 0..10 {
         let frame = test_surface_frame(frame_id, width, height);
         let encoded = encoder
@@ -125,8 +125,31 @@ fn hardware_h264_roundtrip_from_iosurface() {
 }
 
 #[test]
+fn hardware_hevc_roundtrip_from_iosurface() {
+    let (width, height, fps) = (320u32, 240u32, 30u32);
+    let mut encoder =
+        VtEncoder::new(Codec::Hevc, width, height, fps, 2_000_000).expect("create HEVC encoder");
+    let mut decoder = VtDecoder::new(Codec::Hevc);
+    for frame_id in 0..10 {
+        let frame = test_surface_frame(frame_id, width, height);
+        let encoded = encoder
+            .encode(&frame)
+            .expect("encode")
+            .expect("tiny test frames should never be dropped");
+        if frame_id == 0 {
+            let unit = h264::annexb_to_access_unit(&encoded.data, true);
+            assert_eq!(unit.parameter_sets.len(), 3, "HEVC keyframe must carry VPS/SPS/PPS");
+        }
+        let decoded = decoder
+            .decode(encoded.frame_id, encoded.capture_ts_us, encoded.keyframe, &encoded.data)
+            .expect("decode");
+        assert_eq!((decoded.width, decoded.height), (width, height));
+    }
+}
+
+#[test]
 fn decoder_waits_for_keyframe() {
-    let mut decoder = VtDecoder::new();
+    let mut decoder = VtDecoder::new(Codec::H264);
     // A P-frame-ish NAL with no SPS/PPS must fail gracefully, not crash.
     let mut annexb = Vec::new();
     h264::push_annexb_nal(&mut annexb, &[0x41, 0x9a, 0x00, 0x01]);

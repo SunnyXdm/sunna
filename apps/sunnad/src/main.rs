@@ -42,8 +42,8 @@ struct Args {
     height: Option<u32>,
     #[arg(long, default_value_t = 60)]
     fps: u32,
-    /// Codec to encode with ("h264" on macOS, "raw" fallback).
-    #[arg(long, default_value = default_codec_name())]
+    /// Codec to encode with: "h264" or "hevc" on macOS, "raw" elsewhere.
+    #[arg(long, env = "SUNNA_CODEC", default_value = default_codec_name())]
     codec: String,
     /// Encoder target bitrate in kilobits per second.
     /// Default: 40000 for screen capture (retina resolutions need it), 20000 synthetic.

@@ -59,6 +59,7 @@ struct EncoderShared {
     rearm_keyframe: AtomicBool,
     width: AtomicU32,
     height: AtomicU32,
+    is_hevc: AtomicBool,
 }
 
 type OSStatusCode = i32;
@@ -86,7 +87,7 @@ extern "C" fn compression_callback(
     } else if info_flags & VT_ENCODE_INFO_FRAME_DROPPED != 0 || sample_buffer.is_null() {
         EncoderOutput::Dropped { frame_id: pending.frame_id }
     } else {
-        match extract_sample(sample_buffer) {
+        match extract_sample(sample_buffer, shared.is_hevc.load(Ordering::Relaxed)) {
             Ok(sample) => EncoderOutput::Frame(to_encoded_frame(&pending, sample, shared)),
             Err(code) => EncoderOutput::Failed {
                 frame_id: pending.frame_id,
@@ -109,14 +110,14 @@ fn to_encoded_frame(
 ) -> EncodedFrame {
     let mut annexb = Vec::with_capacity(sample.avcc.len() + 128);
     if sample.keyframe {
-        for set in sample.sps.iter().chain(sample.pps.iter()) {
+        for set in &sample.parameter_sets {
             h264::push_annexb_nal(&mut annexb, set);
         }
     }
     h264::avcc_to_annexb(&sample.avcc, &mut annexb);
     EncodedFrame {
         frame_id: pending.frame_id,
-        codec: Codec::H264,
+        codec: if shared.is_hevc.load(Ordering::Relaxed) { Codec::Hevc } else { Codec::H264 },
         keyframe: sample.keyframe,
         data: Bytes::from(annexb),
         capture_ts_us: pending.capture_ts_us,
@@ -131,11 +132,19 @@ fn to_encoded_frame(
 struct EncodedSample {
     avcc: Vec<u8>,
     keyframe: bool,
-    sps: Vec<Vec<u8>>,
-    pps: Vec<Vec<u8>>,
+    /// On keyframes: SPS/PPS (H.264) or VPS/SPS/PPS (HEVC), in decoder order.
+    parameter_sets: Vec<Vec<u8>>,
 }
 
-fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSStatusCode> {
+fn extract_sample(
+    sample_buffer: CMSampleBufferRef,
+    is_hevc: bool,
+) -> Result<EncodedSample, OSStatusCode> {
+    let get_parameter_set = if is_hevc {
+        CMVideoFormatDescriptionGetHEVCParameterSetAtIndex
+    } else {
+        CMVideoFormatDescriptionGetH264ParameterSetAtIndex
+    };
     unsafe {
         // Keyframe: absence of the NotSync attachment (or NotSync == false).
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sample_buffer, 0);
@@ -149,8 +158,7 @@ fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSS
             not_sync.is_null() || CFBooleanGetValue(not_sync as _) == 0
         };
 
-        let mut sps = Vec::new();
-        let mut pps = Vec::new();
+        let mut parameter_sets = Vec::new();
         if keyframe {
             let desc = CMSampleBufferGetFormatDescription(sample_buffer);
             if desc.is_null() {
@@ -158,7 +166,7 @@ fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSS
             }
             let mut count = 0usize;
             let mut nal_header_len = 0i32;
-            let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+            let status = get_parameter_set(
                 desc,
                 0,
                 &mut ptr::null(),
@@ -172,24 +180,17 @@ fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSS
             for index in 0..count {
                 let mut set_ptr: *const u8 = ptr::null();
                 let mut set_len = 0usize;
-                let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                    desc,
-                    index,
-                    &mut set_ptr,
-                    &mut set_len,
-                    &mut 0,
-                    &mut 0,
-                );
+                let status =
+                    get_parameter_set(desc, index, &mut set_ptr, &mut set_len, &mut 0, &mut 0);
                 if status != 0 {
                     return Err(status);
                 }
                 let set = std::slice::from_raw_parts(set_ptr, set_len).to_vec();
-                match h264::nal_type(&set) {
-                    Some(h264::NAL_SPS) => sps.push(set),
-                    Some(h264::NAL_PPS) => pps.push(set),
-                    _ => {}
+                if h264::parameter_set_rank(&set, is_hevc).is_some() {
+                    parameter_sets.push(set);
                 }
             }
+            parameter_sets.sort_by_key(|set| h264::parameter_set_rank(set, is_hevc));
         }
 
         let block = CMSampleBufferGetDataBuffer(sample_buffer);
@@ -205,8 +206,7 @@ fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSS
         Ok(EncodedSample {
             avcc,
             keyframe,
-            sps,
-            pps,
+            parameter_sets,
         })
     }
 }
@@ -227,8 +227,20 @@ pub struct VtEncoder {
 unsafe impl Send for VtEncoder {}
 
 impl VtEncoder {
-    pub fn new(width: u32, height: u32, fps: u32, bitrate_bps: u32) -> anyhow::Result<Self> {
+    pub fn new(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_bps: u32,
+    ) -> anyhow::Result<Self> {
+        let (codec_type, profile) = match codec {
+            Codec::H264 => (kCMVideoCodecType_H264, unsafe { kVTProfileLevel_H264_High_AutoLevel }),
+            Codec::Hevc => (kCMVideoCodecType_HEVC, unsafe { kVTProfileLevel_HEVC_Main_AutoLevel }),
+            other => bail!("VideoToolbox encoder: unsupported codec {}", other.name()),
+        };
         let shared = Box::<EncoderShared>::default();
+        shared.is_hevc.store(codec == Codec::Hevc, Ordering::Relaxed);
         let refcon = &*shared as *const EncoderShared as *mut c_void;
 
         let low_latency_spec = CFDictionary::from_CFType_pairs(&[(
@@ -237,23 +249,25 @@ impl VtEncoder {
             CFBoolean::true_value().as_CFType(),
         )]);
 
-        // Standard real-time session by default: at 2846x1778 on an M1 it
-        // encoded ~19 ms/frame vs ~23 ms for low-latency rate control
-        // (dogfood builds 5-6). SUNNA_VT_LOW_LATENCY=1 switches back.
-        let low_latency = std::env::var("SUNNA_VT_LOW_LATENCY").is_ok_and(|value| value == "1");
+        // Low-latency rate control by default. Full-res (2846x1778) encode on
+        // an M1, dogfood builds 5-8: low-latency ~23.6 ms (good quality);
+        // standard + PrioritizeSpeed ~19 ms (visibly softer); standard
+        // quality-first ~28.5 ms. SUNNA_VT_LOW_LATENCY=0 for the standard
+        // session.
+        let low_latency = std::env::var("SUNNA_VT_LOW_LATENCY").map_or(true, |value| value != "0");
         let spec: *const c_void = if low_latency {
             low_latency_spec.as_concrete_TypeRef() as _
         } else {
             ptr::null()
         };
-        tracing::info!(low_latency, width, height, "creating H.264 encoder");
+        tracing::info!(codec = codec.name(), low_latency, width, height, "creating encoder");
         let mut session: VTCompressionSessionRef = ptr::null_mut();
         let mut status = unsafe {
             VTCompressionSessionCreate(
                 ptr::null(),
                 width as i32,
                 height as i32,
-                kCMVideoCodecType_H264,
+                codec_type,
                 spec as _,
                 ptr::null(),
                 ptr::null(),
@@ -269,7 +283,7 @@ impl VtEncoder {
                     ptr::null(),
                     width as i32,
                     height as i32,
-                    kCMVideoCodecType_H264,
+                    codec_type,
                     ptr::null(),
                     ptr::null(),
                     ptr::null(),
@@ -306,9 +320,9 @@ impl VtEncoder {
             );
             set(
                 kVTCompressionPropertyKey_ProfileLevel,
-                // High: 8x8 transforms compress text and UI noticeably better
-                // than Main at the same bitrate; every Apple decoder has it.
-                kVTProfileLevel_H264_High_AutoLevel as _,
+                // H.264 High: 8x8 transforms compress text and UI noticeably
+                // better than Main; every Apple decoder has it. HEVC Main.
+                profile as _,
                 "ProfileLevel",
             );
             set(
@@ -596,6 +610,7 @@ extern "C" fn decompression_callback(
 }
 
 pub struct VtDecoder {
+    is_hevc: bool,
     session: VTDecompressionSessionRef,
     format_desc: CMFormatDescriptionRef,
     shared: Box<DecoderShared>,
@@ -604,40 +619,54 @@ pub struct VtDecoder {
 unsafe impl Send for VtDecoder {}
 
 impl VtDecoder {
-    /// Created lazily: the session needs SPS/PPS, which arrive with the first keyframe.
-    pub fn new() -> Self {
+    /// Created lazily: the session needs parameter sets, which arrive with
+    /// the first keyframe.
+    pub fn new(codec: Codec) -> Self {
         Self {
+            is_hevc: codec == Codec::Hevc,
             session: ptr::null_mut(),
             format_desc: ptr::null_mut(),
             shared: Box::default(),
         }
     }
 
-    fn ensure_session(&mut self, sps: &[&[u8]], pps: &[&[u8]]) -> anyhow::Result<()> {
+    fn ensure_session(&mut self, sets: &[&[u8]]) -> anyhow::Result<()> {
         if !self.session.is_null() {
             return Ok(());
         }
+        let needed = if self.is_hevc { 3 } else { 2 };
         anyhow::ensure!(
-            !sps.is_empty() && !pps.is_empty(),
-            "waiting for keyframe with SPS/PPS"
+            sets.len() >= needed,
+            "waiting for a keyframe with parameter sets"
         );
 
-        let sets: Vec<&[u8]> = sps.iter().chain(pps.iter()).copied().collect();
         let pointers: Vec<*const u8> = sets.iter().map(|set| set.as_ptr()).collect();
         let sizes: Vec<usize> = sets.iter().map(|set| set.len()).collect();
         let mut format_desc: CMFormatDescriptionRef = ptr::null_mut();
         let status = unsafe {
-            CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                ptr::null(),
-                sets.len(),
-                pointers.as_ptr(),
-                sizes.as_ptr(),
-                4,
-                &mut format_desc,
-            )
+            if self.is_hevc {
+                CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                    ptr::null(),
+                    sets.len(),
+                    pointers.as_ptr(),
+                    sizes.as_ptr(),
+                    4,
+                    ptr::null(),
+                    &mut format_desc,
+                )
+            } else {
+                CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                    ptr::null(),
+                    sets.len(),
+                    pointers.as_ptr(),
+                    sizes.as_ptr(),
+                    4,
+                    &mut format_desc,
+                )
+            }
         };
         if status != 0 || format_desc.is_null() {
-            bail!("CMVideoFormatDescriptionCreateFromH264ParameterSets failed: {status}");
+            bail!("creating the decoder format description failed: {status}");
         }
 
         // BGRA in IOSurfaces: Core Animation can show these directly, and
@@ -680,7 +709,7 @@ impl VtDecoder {
 
 impl Default for VtDecoder {
     fn default() -> Self {
-        Self::new()
+        Self::new(Codec::H264)
     }
 }
 
@@ -692,8 +721,8 @@ impl Decoder for VtDecoder {
         _keyframe: bool,
         data: &[u8],
     ) -> anyhow::Result<DecodedFrame> {
-        let parsed = h264::annexb_to_avcc(data);
-        self.ensure_session(&parsed.sps, &parsed.pps)?;
+        let parsed = h264::annexb_to_access_unit(data, self.is_hevc);
+        self.ensure_session(&parsed.parameter_sets)?;
         anyhow::ensure!(!parsed.avcc.is_empty(), "frame contained no VCL NAL units");
 
         unsafe {

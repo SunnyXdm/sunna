@@ -190,7 +190,11 @@ pub fn make_encoder(
         "raw" => Ok(Box::new(Passthrough::new(width, height, PixelFormat::Bgra8))),
         #[cfg(target_os = "macos")]
         "h264" => Ok(Box::new(videotoolbox::VtEncoder::new(
-            width, height, fps, bitrate_bps,
+            Codec::H264, width, height, fps, bitrate_bps,
+        )?)),
+        #[cfg(target_os = "macos")]
+        "hevc" => Ok(Box::new(videotoolbox::VtEncoder::new(
+            Codec::Hevc, width, height, fps, bitrate_bps,
         )?)),
         other => anyhow::bail!("no encoder for codec {other:?} on this platform"),
     }
@@ -201,7 +205,9 @@ pub fn make_decoder(codec: &str, width: u32, height: u32) -> anyhow::Result<Box<
     match codec {
         "raw" => Ok(Box::new(Passthrough::new(width, height, PixelFormat::Bgra8))),
         #[cfg(target_os = "macos")]
-        "h264" => Ok(Box::new(videotoolbox::VtDecoder::new())),
+        "h264" => Ok(Box::new(videotoolbox::VtDecoder::new(Codec::H264))),
+        #[cfg(target_os = "macos")]
+        "hevc" => Ok(Box::new(videotoolbox::VtDecoder::new(Codec::Hevc))),
         other => anyhow::bail!("no decoder for codec {other:?} on this platform"),
     }
 }
