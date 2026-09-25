@@ -33,6 +33,8 @@ type CVPixelBufferRef = *mut c_void;
 type DispatchQueueT = *mut c_void;
 
 const PIXEL_FORMAT_BGRA: i32 = 0x42475241; // 'BGRA'
+/// kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ('420v', NV12).
+const PIXEL_FORMAT_NV12_VIDEO: i32 = 0x34323076;
 const FRAME_STATUS_COMPLETE: i32 = 0; // kCGDisplayStreamFrameStatusFrameComplete
 const IOSURFACE_LOCK_READ_ONLY: u32 = 1;
 /// Surfaces in the stream's pool. We hold up to three at once (the last
@@ -71,6 +73,8 @@ extern "C" {
     fn CGRequestScreenCaptureAccess() -> u8;
     static kCGDisplayStreamQueueDepth: CFStringRef;
     static kCGDisplayStreamMinimumFrameTime: CFStringRef;
+    static kCGDisplayStreamYCbCrMatrix: CFStringRef;
+    static kCGDisplayStreamYCbCrMatrix_ITU_R_709_2: CFStringRef;
 }
 
 #[link(name = "IOSurface", kind = "framework")]
@@ -81,6 +85,7 @@ extern "C" {
     fn IOSurfaceGetBytesPerRow(buffer: IOSurfaceRef) -> usize;
     fn IOSurfaceGetWidth(buffer: IOSurfaceRef) -> usize;
     fn IOSurfaceGetHeight(buffer: IOSurfaceRef) -> usize;
+    fn IOSurfaceGetPixelFormat(buffer: IOSurfaceRef) -> u32;
     fn IOSurfaceIncrementUseCount(buffer: IOSurfaceRef);
     fn IOSurfaceDecrementUseCount(buffer: IOSurfaceRef);
 }
@@ -354,10 +359,15 @@ impl SurfaceFrame {
         unsafe { IOSurfaceGetHeight(self.inner.surface) as u32 }
     }
 
-    /// Copy the pixels out as tightly packed BGRA. Off the hot path only.
+    /// Copy the pixels out as tightly packed BGRA. Off the hot path only;
+    /// BGRA surfaces only.
     pub fn to_bytes(&self) -> anyhow::Result<Bytes> {
         let surface = self.inner.surface;
         unsafe {
+            anyhow::ensure!(
+                IOSurfaceGetPixelFormat(surface) == PIXEL_FORMAT_BGRA as u32,
+                "to_bytes supports BGRA surfaces only"
+            );
             anyhow::ensure!(
                 IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) == 0,
                 "IOSurfaceLock failed"
@@ -435,6 +445,17 @@ impl ScreenSource {
         let width = width.unwrap_or(native_w).max(2) & !1; // encoders want even dims
         let height = height.unwrap_or(native_h).max(2) & !1;
 
+        // NV12 by default: the compositor converts to YUV while it draws, so
+        // VideoToolbox skips its own RGB→YUV pass (encode was ~20 ms/frame at
+        // 2846x1778 on an M1 with BGRA input). SUNNA_CAPTURE_BGRA=1 restores
+        // BGRA for A/B comparison.
+        let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1");
+        let (pixel_format, format) = if bgra {
+            (PIXEL_FORMAT_BGRA, PixelFormat::Bgra8)
+        } else {
+            (PIXEL_FORMAT_NV12_VIDEO, PixelFormat::Nv12)
+        };
+
         let latest = Arc::new(Latest::default());
         let handler = {
             let latest = Arc::clone(&latest);
@@ -443,7 +464,7 @@ impl ScreenSource {
                     if status != FRAME_STATUS_COMPLETE || surface.is_null() {
                         return;
                     }
-                    if let Some(frame) = hold_surface(surface) {
+                    if let Some(frame) = hold_surface(surface, format) {
                         *latest.frame.lock().unwrap() = Some(frame);
                         latest.ready.notify_one();
                     }
@@ -453,16 +474,26 @@ impl ScreenSource {
 
         // Cap delivery at the stream's fps: a 120 Hz display (or bursts of
         // updates) otherwise hands us more frames than we'd ever send.
-        let properties = CFDictionary::from_CFType_pairs(&[
+        let mut properties = vec![
             (
-                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamQueueDepth) },
-                CFNumber::from(STREAM_QUEUE_DEPTH),
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamQueueDepth) }.as_CFType(),
+                CFNumber::from(STREAM_QUEUE_DEPTH).as_CFType(),
             ),
             (
-                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamMinimumFrameTime) },
-                CFNumber::from(1.0 / fps.max(1) as f64),
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamMinimumFrameTime) }
+                    .as_CFType(),
+                CFNumber::from(1.0 / fps.max(1) as f64).as_CFType(),
             ),
-        ]);
+        ];
+        if !bgra {
+            // Pin the RGB→YUV matrix so the encoder can tag it (Rec. 709).
+            properties.push((
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamYCbCrMatrix) }.as_CFType(),
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamYCbCrMatrix_ITU_R_709_2) }
+                    .as_CFType(),
+            ));
+        }
+        let properties = CFDictionary::from_CFType_pairs(&properties);
         let stream = unsafe {
             let label = CString::new("app.sunna.capture").expect("static label");
             let queue = dispatch_queue_create(label.as_ptr(), std::ptr::null());
@@ -470,7 +501,7 @@ impl ScreenSource {
                 CGMainDisplayID(),
                 width as usize,
                 height as usize,
-                PIXEL_FORMAT_BGRA,
+                pixel_format,
                 properties.as_concrete_TypeRef(),
                 queue,
                 &*handler as *const block2::Block<_> as *const c_void,
@@ -485,7 +516,7 @@ impl ScreenSource {
             unsafe { CFRelease(stream as _) };
             anyhow::bail!("CGDisplayStreamStart failed: CGError {status}");
         }
-        tracing::info!(width, height, "screen capture started (CGDisplayStream)");
+        tracing::info!(width, height, ?format, "screen capture started (CGDisplayStream)");
 
         Ok(Self {
             stream,
@@ -501,7 +532,7 @@ impl ScreenSource {
 }
 
 /// Wrap a stream surface as a frame without touching its pixels.
-fn hold_surface(surface: IOSurfaceRef) -> Option<VideoFrame> {
+fn hold_surface(surface: IOSurfaceRef, format: PixelFormat) -> Option<VideoFrame> {
     // Stamp before anything else so the timestamp is as close to the
     // compositor's delivery as this API allows.
     let capture_ts_us = sunna_proto::now_us();
@@ -510,7 +541,7 @@ fn hold_surface(surface: IOSurfaceRef) -> Option<VideoFrame> {
         frame_id: 0, // assigned by `next_frame`
         width: surface.width(),
         height: surface.height(),
-        format: PixelFormat::Bgra8,
+        format,
         data: FrameData::Surface(surface),
         capture_ts_us,
     })

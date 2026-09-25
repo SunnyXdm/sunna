@@ -104,6 +104,9 @@ extern "C" {
 extern "C" {
     pub static kCVPixelBufferPixelFormatTypeKey: CFStringRef;
     pub static kCVPixelBufferIOSurfacePropertiesKey: CFStringRef;
+    pub static kCVImageBufferColorPrimaries_ITU_R_709_2: CFStringRef;
+    pub static kCVImageBufferTransferFunction_ITU_R_709_2: CFStringRef;
+    pub static kCVImageBufferYCbCrMatrix_ITU_R_709_2: CFStringRef;
 
     pub fn CVPixelBufferCreate(
         allocator: CFAllocatorRef,
@@ -195,8 +198,9 @@ extern "C" {
     pub static kVTCompressionPropertyKey_MaxKeyFrameInterval: CFStringRef;
     pub static kVTCompressionPropertyKey_ExpectedFrameRate: CFStringRef;
     pub static kVTCompressionPropertyKey_ProfileLevel: CFStringRef;
-    pub static kVTCompressionPropertyKey_MaxFrameDelayCount: CFStringRef;
-    pub static kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality: CFStringRef;
+    pub static kVTCompressionPropertyKey_ColorPrimaries: CFStringRef;
+    pub static kVTCompressionPropertyKey_TransferFunction: CFStringRef;
+    pub static kVTCompressionPropertyKey_YCbCrMatrix: CFStringRef;
     pub static kVTProfileLevel_H264_Main_AutoLevel: CFStringRef;
     pub static kVTProfileLevel_H264_High_AutoLevel: CFStringRef;
     pub static kVTVideoEncoderSpecification_EnableLowLatencyRateControl: CFStringRef;

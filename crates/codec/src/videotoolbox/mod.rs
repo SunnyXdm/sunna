@@ -259,21 +259,26 @@ impl VtEncoder {
                 CFNumber::from(fps as i32).as_CFTypeRef(),
                 "ExpectedFrameRate",
             );
-            // Emit each frame before the next is submitted: no internal
-            // pipelining delay (we complete every frame synchronously anyway).
+            // Tag the stream Rec. 709 (matching the capture's matrix) so the
+            // decoder converts back to RGB with the same matrix.
             set(
-                kVTCompressionPropertyKey_MaxFrameDelayCount,
-                CFNumber::from(0).as_CFTypeRef(),
-                "MaxFrameDelayCount",
+                kVTCompressionPropertyKey_ColorPrimaries,
+                kCVImageBufferColorPrimaries_ITU_R_709_2 as _,
+                "ColorPrimaries",
             );
-            // Encode time was ~10 ms/frame at 1080p on an M1 — the largest
-            // single slice of end-to-end latency. Trade a little compression
-            // efficiency for speed; bitrate headroom covers it on a LAN.
             set(
-                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
-                CFBoolean::true_value().as_CFTypeRef(),
-                "PrioritizeEncodingSpeedOverQuality",
+                kVTCompressionPropertyKey_TransferFunction,
+                kCVImageBufferTransferFunction_ITU_R_709_2 as _,
+                "TransferFunction",
             );
+            set(
+                kVTCompressionPropertyKey_YCbCrMatrix,
+                kCVImageBufferYCbCrMatrix_ITU_R_709_2 as _,
+                "YCbCrMatrix",
+            );
+            // Note: MaxFrameDelayCount and PrioritizeEncodingSpeedOverQuality
+            // both return kVTPropertyNotSupportedErr (-12900) in the
+            // low-latency rate-control session on an M1 (dogfood, macOS 15.6).
             let status = VTCompressionSessionPrepareToEncodeFrames(session);
             if status != 0 {
                 tracing::debug!(status, "PrepareToEncodeFrames failed (non-fatal)");
@@ -292,11 +297,9 @@ impl VtEncoder {
 
     /// A +1 retained pixel buffer for `frame`; the caller releases it.
     fn pixel_buffer_for(&self, frame: &VideoFrame) -> anyhow::Result<CVPixelBufferRef> {
-        anyhow::ensure!(
-            frame.format == PixelFormat::Bgra8,
-            "VtEncoder expects BGRA input"
-        );
         let bytes = match &frame.data {
+            // Any surface format VideoToolbox accepts (BGRA or NV12) goes in
+            // as-is.
             FrameData::Surface(surface) => {
                 let pixel_buffer = surface.pixel_buffer();
                 unsafe { CFRetain(pixel_buffer as _) };
@@ -304,6 +307,10 @@ impl VtEncoder {
             }
             FrameData::Cpu(bytes) => bytes,
         };
+        anyhow::ensure!(
+            frame.format == PixelFormat::Bgra8,
+            "CPU frames must be BGRA"
+        );
         let (width, height) = (frame.width as usize, frame.height as usize);
         anyhow::ensure!(
             bytes.len() >= width * height * 4,
