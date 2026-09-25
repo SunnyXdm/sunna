@@ -42,6 +42,8 @@ pub struct EncodedFrame {
     pub capture_ts_us: u64,
     /// Stamped by the encoder when encoding finished (`sunna_proto::now_us`).
     pub encode_done_ts_us: u64,
+    /// Submit-to-output time inside the encoder, in microseconds.
+    pub encode_us: u64,
     pub width: u32,
     pub height: u32,
     pub format: PixelFormat,
@@ -59,11 +61,42 @@ pub struct DecodedFrame {
     pub capture_ts_us: u64,
 }
 
+/// One result per submitted frame, delivered in submission order.
+#[derive(Debug)]
+pub enum EncoderOutput {
+    Frame(EncodedFrame),
+    /// The encoder dropped this frame (load/rate control): normal under
+    /// pressure; the reference chain continues from the last emitted frame.
+    Dropped { frame_id: u64 },
+    Failed { frame_id: u64, error: String },
+}
+
+pub type EncoderSink = std::sync::mpsc::Sender<EncoderOutput>;
+
 pub trait Encoder: Send {
     /// `Ok(None)` means the encoder dropped this frame (load/rate control) —
     /// a normal event under pressure, not an error. The reference chain is
     /// unbroken: the next emitted frame references the last *emitted* one.
     fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>>;
+    /// Queue `frame` and return; its [`EncoderOutput`] arrives on `sink`,
+    /// possibly from another thread. Hardware encoders overlap several
+    /// frames this way. Default: encode synchronously.
+    fn submit(&mut self, frame: &VideoFrame, sink: &EncoderSink) -> anyhow::Result<()> {
+        let output = match self.encode(frame) {
+            Ok(Some(encoded)) => EncoderOutput::Frame(encoded),
+            Ok(None) => EncoderOutput::Dropped { frame_id: frame.frame_id },
+            Err(error) => EncoderOutput::Failed {
+                frame_id: frame.frame_id,
+                error: format!("{error:#}"),
+            },
+        };
+        let _ = sink.send(output);
+        Ok(())
+    }
+    /// Frames submitted whose output hasn't been delivered yet.
+    fn in_flight(&self) -> usize {
+        0
+    }
     /// Congestion-control hook: applies from the *next* frame (research/03 §4).
     fn set_target_bitrate(&mut self, bits_per_second: u32);
     fn request_keyframe(&mut self);
@@ -94,13 +127,16 @@ impl Passthrough {
 
 impl Encoder for Passthrough {
     fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>> {
+        let started = std::time::Instant::now();
+        let data = frame.data.to_cpu()?;
         Ok(Some(EncodedFrame {
             frame_id: frame.frame_id,
             codec: Codec::Raw,
             keyframe: true,
-            data: frame.data.to_cpu()?,
+            data,
             capture_ts_us: frame.capture_ts_us,
             encode_done_ts_us: sunna_proto::now_us(),
+            encode_us: started.elapsed().as_micros() as u64,
             width: frame.width,
             height: frame.height,
             format: frame.format,

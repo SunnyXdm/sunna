@@ -13,8 +13,10 @@
 
 mod ffi;
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use anyhow::{bail, Context};
@@ -28,31 +30,35 @@ use sunna_capture::macos::SurfaceFrame;
 use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 
 use crate::h264;
-use crate::{Codec, DecodedFrame, EncodedFrame, Decoder, Encoder};
+use crate::{Codec, DecodedFrame, EncodedFrame, Decoder, Encoder, EncoderOutput, EncoderSink};
 use ffi::*;
 
 fn cf_key(raw: core_foundation_sys::string::CFStringRef) -> CFString {
     unsafe { CFString::wrap_under_get_rule(raw) }
 }
 
-struct EncodedSample {
-    avcc: Vec<u8>,
-    keyframe: bool,
-    sps: Vec<Vec<u8>>,
-    pps: Vec<Vec<u8>>,
+
+/// A submitted frame, waiting for its compression callback.
+struct PendingFrame {
+    frame_id: u64,
+    capture_ts_us: u64,
+    format: PixelFormat,
+    submitted: std::time::Instant,
+    keyframe_forced: bool,
+    sink: EncoderSink,
 }
 
-/// The encoder legitimately drops frames under load/rate-control pressure
-/// (null sample buffer or the FrameDropped info flag) — that is not a failure.
-enum EncodeOutcome {
-    Sample(EncodedSample),
-    Dropped,
-    Failed(OSStatusCode),
-}
-
+/// State the compression callback (on a VideoToolbox thread) shares with the
+/// encoder. Pending frames are looked up by token rather than handed over as
+/// raw pointers, so a failed submit can't double-free.
 #[derive(Default)]
 struct EncoderShared {
-    result: Mutex<Option<EncodeOutcome>>,
+    pending: Mutex<HashMap<usize, PendingFrame>>,
+    in_flight: AtomicUsize,
+    /// A forced keyframe was dropped by the encoder: force the next one.
+    rearm_keyframe: AtomicBool,
+    width: AtomicU32,
+    height: AtomicU32,
 }
 
 type OSStatusCode = i32;
@@ -61,23 +67,72 @@ const VT_ENCODE_INFO_FRAME_DROPPED: u32 = 1 << 1;
 
 extern "C" fn compression_callback(
     refcon: *mut c_void,
-    _source_frame_refcon: *mut c_void,
+    source_frame_refcon: *mut c_void,
     status: i32,
     info_flags: u32,
     sample_buffer: CMSampleBufferRef,
 ) {
     let shared = unsafe { &*(refcon as *const EncoderShared) };
-    let outcome = if status != 0 {
-        EncodeOutcome::Failed(status)
+    let token = source_frame_refcon as usize;
+    let Some(pending) = shared.pending.lock().unwrap().remove(&token) else {
+        return;
+    };
+    shared.in_flight.fetch_sub(1, Ordering::AcqRel);
+    let output = if status != 0 {
+        EncoderOutput::Failed {
+            frame_id: pending.frame_id,
+            error: format!("encode callback failed: OSStatus {status}"),
+        }
     } else if info_flags & VT_ENCODE_INFO_FRAME_DROPPED != 0 || sample_buffer.is_null() {
-        EncodeOutcome::Dropped
+        EncoderOutput::Dropped { frame_id: pending.frame_id }
     } else {
         match extract_sample(sample_buffer) {
-            Ok(sample) => EncodeOutcome::Sample(sample),
-            Err(code) => EncodeOutcome::Failed(code),
+            Ok(sample) => EncoderOutput::Frame(to_encoded_frame(&pending, sample, shared)),
+            Err(code) => EncoderOutput::Failed {
+                frame_id: pending.frame_id,
+                error: format!("reading encoded sample failed: OSStatus {code}"),
+            },
         }
     };
-    *shared.result.lock().unwrap() = Some(outcome);
+    if pending.keyframe_forced && !matches!(output, EncoderOutput::Frame(_)) {
+        // Don't lose a pending keyframe request to a dropped/failed frame.
+        shared.rearm_keyframe.store(true, Ordering::Release);
+    }
+    let _ = pending.sink.send(output);
+}
+
+/// Wire format: Annex B, parameter sets prepended on keyframes.
+fn to_encoded_frame(
+    pending: &PendingFrame,
+    sample: EncodedSample,
+    shared: &EncoderShared,
+) -> EncodedFrame {
+    let mut annexb = Vec::with_capacity(sample.avcc.len() + 128);
+    if sample.keyframe {
+        for set in sample.sps.iter().chain(sample.pps.iter()) {
+            h264::push_annexb_nal(&mut annexb, set);
+        }
+    }
+    h264::avcc_to_annexb(&sample.avcc, &mut annexb);
+    EncodedFrame {
+        frame_id: pending.frame_id,
+        codec: Codec::H264,
+        keyframe: sample.keyframe,
+        data: Bytes::from(annexb),
+        capture_ts_us: pending.capture_ts_us,
+        encode_done_ts_us: sunna_proto::now_us(),
+        encode_us: pending.submitted.elapsed().as_micros() as u64,
+        width: shared.width.load(Ordering::Relaxed),
+        height: shared.height.load(Ordering::Relaxed),
+        format: pending.format,
+    }
+}
+
+struct EncodedSample {
+    avcc: Vec<u8>,
+    keyframe: bool,
+    sps: Vec<Vec<u8>>,
+    pps: Vec<Vec<u8>>,
 }
 
 fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSStatusCode> {
@@ -159,14 +214,16 @@ fn extract_sample(sample_buffer: CMSampleBufferRef) -> Result<EncodedSample, OSS
 pub struct VtEncoder {
     session: VTCompressionSessionRef,
     shared: Box<EncoderShared>,
-    width: u32,
-    height: u32,
     fps: u32,
     force_keyframe: bool,
+    next_token: usize,
+    /// Standard (not low-latency) session: rate spikes are capped with
+    /// DataRateLimits, which low-latency mode doesn't take.
+    standard_session: bool,
 }
 
 // The session is owned and driven from exactly one thread at a time; the
-// shared slot is Mutex-guarded for the callback thread.
+// shared state is synchronized for the callback thread.
 unsafe impl Send for VtEncoder {}
 
 impl VtEncoder {
@@ -180,10 +237,10 @@ impl VtEncoder {
             CFBoolean::true_value().as_CFType(),
         )]);
 
-        // SUNNA_VT_LOW_LATENCY=0 uses the standard real-time session instead
-        // of low-latency rate control, for A/B: at 2846x1778 the low-latency
-        // session took ~23 ms per frame on an M1 (dogfood, build 5).
-        let low_latency = std::env::var("SUNNA_VT_LOW_LATENCY").map_or(true, |value| value != "0");
+        // Standard real-time session by default: at 2846x1778 on an M1 it
+        // encoded ~19 ms/frame vs ~23 ms for low-latency rate control
+        // (dogfood builds 5-6). SUNNA_VT_LOW_LATENCY=1 switches back.
+        let low_latency = std::env::var("SUNNA_VT_LOW_LATENCY").is_ok_and(|value| value == "1");
         let spec: *const c_void = if low_latency {
             low_latency_spec.as_concrete_TypeRef() as _
         } else {
@@ -296,11 +353,25 @@ impl VtEncoder {
                     CFNumber::from(0).as_CFTypeRef(),
                     "MaxFrameDelayCount",
                 );
-                set(
-                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
-                    CFBoolean::true_value().as_CFTypeRef(),
-                    "PrioritizeEncodingSpeedOverQuality",
+                // Accepted in the standard session, but it visibly softened
+                // the picture (dogfood session A); opt-in only.
+                if std::env::var("SUNNA_VT_PRIORITIZE_SPEED").is_ok_and(|value| value == "1") {
+                    set(
+                        kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                        CFBoolean::true_value().as_CFTypeRef(),
+                        "PrioritizeEncodingSpeedOverQuality",
+                    );
+                }
+                // AverageBitRate alone let peaks reach ~46 Mbps against a
+                // 40 Mbps target; bursts like that clog Wi-Fi queues.
+                let status = VTSessionSetProperty(
+                    session,
+                    kVTCompressionPropertyKey_DataRateLimits,
+                    data_rate_limits(bitrate_bps).as_CFTypeRef(),
                 );
+                if status != 0 {
+                    tracing::info!(status, "encoder property NOT applied: DataRateLimits");
+                }
             }
             let status = VTCompressionSessionPrepareToEncodeFrames(session);
             if status != 0 {
@@ -308,13 +379,15 @@ impl VtEncoder {
             }
         }
 
+        shared.width.store(width, Ordering::Relaxed);
+        shared.height.store(height, Ordering::Relaxed);
         Ok(Self {
             session,
             shared,
-            width,
-            height,
             fps,
             force_keyframe: true,
+            next_token: 1,
+            standard_session: !low_latency,
         })
     }
 
@@ -371,21 +444,58 @@ impl VtEncoder {
     }
 }
 
+/// At most 1.5x the target over any one second.
+fn data_rate_limits(
+    bitrate_bps: u32,
+) -> core_foundation::array::CFArray<core_foundation::base::CFType> {
+    let bytes_per_second = (bitrate_bps as f64 * 1.5 / 8.0) as i64;
+    core_foundation::array::CFArray::from_CFTypes(&[
+        CFNumber::from(bytes_per_second).as_CFType(),
+        CFNumber::from(1.0).as_CFType(),
+    ])
+}
+
 impl Encoder for VtEncoder {
     fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>> {
-        let pixel_buffer = self.pixel_buffer_for(frame)?;
-        self.shared.result.lock().unwrap().take();
+        let (sink, outputs) = std::sync::mpsc::channel();
+        self.submit(frame, &sink)?;
+        let status = unsafe { VTCompressionSessionCompleteFrames(self.session, CMTime::invalid()) };
+        if status != 0 {
+            bail!("VTCompressionSessionCompleteFrames failed: {status}");
+        }
+        match outputs.try_recv().context("encoder produced no output")? {
+            EncoderOutput::Frame(encoded) => Ok(Some(encoded)),
+            EncoderOutput::Dropped { .. } => Ok(None),
+            EncoderOutput::Failed { error, .. } => bail!(error),
+        }
+    }
 
-        let keyframe_wanted = self.force_keyframe;
-        let frame_properties = if keyframe_wanted {
-            Some(CFDictionary::from_CFType_pairs(&[(
+    fn submit(&mut self, frame: &VideoFrame, sink: &EncoderSink) -> anyhow::Result<()> {
+        let pixel_buffer = self.pixel_buffer_for(frame)?;
+        let keyframe_wanted =
+            self.force_keyframe || self.shared.rearm_keyframe.swap(false, Ordering::AcqRel);
+        self.force_keyframe = false;
+        let frame_properties = keyframe_wanted.then(|| {
+            CFDictionary::from_CFType_pairs(&[(
                 cf_key(unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }).as_CFType(),
                 CFBoolean::true_value().as_CFType(),
-            )]))
-        } else {
-            None
-        };
-        self.force_keyframe = false;
+            )])
+        });
+
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1).max(1);
+        self.shared.pending.lock().unwrap().insert(
+            token,
+            PendingFrame {
+                frame_id: frame.frame_id,
+                capture_ts_us: frame.capture_ts_us,
+                format: frame.format,
+                submitted: std::time::Instant::now(),
+                keyframe_forced: keyframe_wanted,
+                sink: sink.clone(),
+            },
+        );
+        self.shared.in_flight.fetch_add(1, Ordering::AcqRel);
 
         let pts = CMTime::new(frame.frame_id as i64, self.fps.max(1) as i32);
         let duration = CMTime::new(1, self.fps.max(1) as i32);
@@ -399,60 +509,24 @@ impl Encoder for VtEncoder {
                     .as_ref()
                     .map(|dict| dict.as_concrete_TypeRef() as _)
                     .unwrap_or(ptr::null()),
-                ptr::null_mut(),
+                token as *mut c_void,
                 ptr::null_mut(),
             )
         };
-        if status != 0 {
-            unsafe { CFRelease(pixel_buffer as _) };
-            bail!("VTCompressionSessionEncodeFrame failed: {status}");
-        }
-        let status = unsafe { VTCompressionSessionCompleteFrames(self.session, CMTime::invalid()) };
         unsafe { CFRelease(pixel_buffer as _) };
         if status != 0 {
-            bail!("VTCompressionSessionCompleteFrames failed: {status}");
+            // If the callback didn't already take it, this submit is ours to undo.
+            if self.shared.pending.lock().unwrap().remove(&token).is_some() {
+                self.shared.in_flight.fetch_sub(1, Ordering::AcqRel);
+            }
+            self.force_keyframe |= keyframe_wanted;
+            bail!("VTCompressionSessionEncodeFrame failed: {status}");
         }
+        Ok(())
+    }
 
-        let outcome = self
-            .shared
-            .result
-            .lock()
-            .unwrap()
-            .take()
-            .context("encoder produced no output")?;
-        let sample = match outcome {
-            EncodeOutcome::Sample(sample) => sample,
-            EncodeOutcome::Dropped => {
-                // Don't lose a pending keyframe request to a dropped frame.
-                self.force_keyframe |= keyframe_wanted;
-                return Ok(None);
-            }
-            EncodeOutcome::Failed(status) => {
-                self.force_keyframe |= keyframe_wanted;
-                anyhow::bail!("encode callback failed: OSStatus {status}");
-            }
-        };
-
-        // Wire format: Annex B, parameter sets prepended on keyframes.
-        let mut annexb = Vec::with_capacity(sample.avcc.len() + 128);
-        if sample.keyframe {
-            for set in sample.sps.iter().chain(sample.pps.iter()) {
-                h264::push_annexb_nal(&mut annexb, set);
-            }
-        }
-        h264::avcc_to_annexb(&sample.avcc, &mut annexb);
-
-        Ok(Some(EncodedFrame {
-            frame_id: frame.frame_id,
-            codec: Codec::H264,
-            keyframe: sample.keyframe,
-            data: Bytes::from(annexb),
-            capture_ts_us: frame.capture_ts_us,
-            encode_done_ts_us: sunna_proto::now_us(),
-            width: self.width,
-            height: self.height,
-            format: frame.format,
-        }))
+    fn in_flight(&self) -> usize {
+        self.shared.in_flight.load(Ordering::Acquire)
     }
 
     fn set_target_bitrate(&mut self, bits_per_second: u32) {
@@ -466,6 +540,15 @@ impl Encoder for VtEncoder {
         if status != 0 {
             tracing::debug!(status, "bitrate update not applied");
         }
+        if self.standard_session {
+            unsafe {
+                VTSessionSetProperty(
+                    self.session,
+                    kVTCompressionPropertyKey_DataRateLimits,
+                    data_rate_limits(bits_per_second).as_CFTypeRef(),
+                );
+            }
+        }
     }
 
     fn request_keyframe(&mut self) {
@@ -476,9 +559,13 @@ impl Encoder for VtEncoder {
 impl Drop for VtEncoder {
     fn drop(&mut self) {
         unsafe {
+            // Flush so every pending frame's callback runs (and its sink
+            // clone is dropped) before the shared state goes away.
+            VTCompressionSessionCompleteFrames(self.session, CMTime::invalid());
             VTCompressionSessionInvalidate(self.session);
             CFRelease(self.session as _);
         }
+        self.shared.pending.lock().unwrap().clear();
     }
 }
 

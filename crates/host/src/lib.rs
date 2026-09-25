@@ -217,61 +217,95 @@ fn tokens_match(presented: &str, expected: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Frames inside the encoder at once. Two lets the hardware encode frame N
+/// while frame N+1 is captured and submitted, without building a queue:
+/// encoding one frame at a time capped a 2846x1778 stream at ~40 fps and made
+/// every capture wait ~8 ms for the previous encode (dogfood build 6).
+const MAX_IN_FLIGHT: usize = 2;
+
+/// Above this queued-bytes level the path is congested no matter how much
+/// buffer space remains. That is ~160 ms of queue at 15 Mbps, far more than
+/// we want; a time-based admission rule replaces it (research/08 §5.7).
+const MAX_SENDER_BACKLOG: usize = 300 * 1024;
+
+/// Immediate bitrate cut on a sender-side drop — the fastest congestion
+/// signal we have — at most every 500 ms. Shared by both media threads.
+struct LocalCut {
+    last: std::sync::Mutex<Instant>,
+    min_bitrate_bps: u32,
+}
+
+impl LocalCut {
+    fn cut(&self, signals: &SessionSignals, reason: &str, backlog: usize) {
+        let mut last = self.last.lock().unwrap();
+        if last.elapsed() > Duration::from_millis(500) {
+            *last = Instant::now();
+            let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
+            let next = (current * 3 / 4).max(self.min_bitrate_bps);
+            signals.target_bitrate_bps.store(next, Ordering::Relaxed);
+            tracing::debug!(backlog, bitrate = next, reason, "cutting bitrate");
+        }
+    }
+}
+
+fn send_backlog(connection: &Connection) -> usize {
+    sunna_transport::DATAGRAM_SEND_BUFFER_SIZE.saturating_sub(connection.datagram_send_buffer_space())
+}
+
+/// Capture → encoder (this thread) and encoder output → wire (a send thread),
+/// so finished frames go out the moment the encoder hands them back.
 fn media_loop(
     connection: Connection,
-    mut source: Box<dyn FrameSource>,
-    mut encoder: Box<dyn Encoder>,
+    source: Box<dyn FrameSource>,
+    encoder: Box<dyn Encoder>,
     stop: Arc<AtomicBool>,
     signals: Arc<SessionSignals>,
     simulate_loss: f64,
     min_bitrate_bps: u32,
 ) {
-    /// Above this queued-bytes level the path is congested no matter how much
-    /// buffer space remains. That is ~160 ms of queue at 15 Mbps, far more
-    /// than we want; a time-based admission rule replaces it (research/07 step 5).
-    const MAX_SENDER_BACKLOG: usize = 300 * 1024;
+    let (sink, outputs) = std::sync::mpsc::channel();
+    let admission_drops = Arc::new(AtomicU32::new(0));
+    let cuts = Arc::new(LocalCut {
+        last: std::sync::Mutex::new(Instant::now() - Duration::from_secs(1)),
+        min_bitrate_bps,
+    });
+    let sender = {
+        let connection = connection.clone();
+        let stop = Arc::clone(&stop);
+        let signals = Arc::clone(&signals);
+        let admission_drops = Arc::clone(&admission_drops);
+        let cuts = Arc::clone(&cuts);
+        std::thread::Builder::new().name("sunna-send".into()).spawn(move || {
+            send_loop(connection, outputs, stop, signals, admission_drops, cuts, simulate_loss)
+        })
+    };
+    submit_loop(&connection, source, encoder, &stop, &signals, sink, &admission_drops, &cuts);
+    // The encoder (dropped above) flushed its pending frames, so every sink
+    // clone is gone and the send loop drains and exits.
+    match sender {
+        Ok(handle) => {
+            let _ = handle.join();
+        }
+        Err(error) => tracing::warn!(%error, "failed to start the send thread"),
+    }
+}
 
-    let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
-    let mut last_local_cut = Instant::now() - Duration::from_secs(1);
-    // Wire frame ids count frames that left the encoder — decoupled from
-    // capture ids so skipped captures and encoder drops (which the reference
-    // chain survives) don't look like loss to the client's gap detection. An
-    // encoded frame dropped at the sender still consumes its id: that gap is
-    // real, because later frames reference it.
-    let mut wire_frame_id: u64 = 0;
-    let mut consecutive_encode_failures: u32 = 0;
-    let mut sender_dropped: u64 = 0;
-    let mut window = HostWindow::new();
+#[allow(clippy::too_many_arguments)]
+fn submit_loop(
+    connection: &Connection,
+    mut source: Box<dyn FrameSource>,
+    mut encoder: Box<dyn Encoder>,
+    stop: &AtomicBool,
+    signals: &SessionSignals,
+    sink: sunna_codec::EncoderSink,
+    admission_drops: &AtomicU32,
+    cuts: &LocalCut,
+) {
     // The encoder factory configured the ceiling; align it with the actual
     // starting target before the first frame.
     let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
     encoder.set_target_bitrate(applied_bitrate);
-    // Deterministic xorshift for dev loss simulation; no RNG dependency.
-    let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
-    let mut roll = move || {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 7;
-        rng_state ^= rng_state << 17;
-        rng_state as f64 / u64::MAX as f64
-    };
-
-    // A sender-side drop is the fastest congestion signal we have: cut the
-    // bitrate immediately instead of waiting for receiver reports.
-    let mut local_cut = |reason: &str, sender_dropped: u64, backlog: usize| {
-        if last_local_cut.elapsed() > Duration::from_millis(500) {
-            last_local_cut = Instant::now();
-            let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
-            let next = (current * 3 / 4).max(min_bitrate_bps);
-            signals.target_bitrate_bps.store(next, Ordering::Relaxed);
-            tracing::debug!(
-                sender_dropped,
-                backlog,
-                bitrate = next,
-                reason,
-                "cutting bitrate"
-            );
-        }
-    };
+    let mut consecutive_failures: u32 = 0;
 
     while !stop.load(Ordering::Relaxed) {
         if signals.force_keyframe.swap(false, Ordering::Relaxed) {
@@ -283,95 +317,156 @@ fn media_loop(
             applied_bitrate = target_bitrate;
         }
 
+        // Wait for an encoder slot *before* taking a frame, so the frame we
+        // submit is the newest one.
+        let waiting_since = Instant::now();
+        while encoder.in_flight() >= MAX_IN_FLIGHT && !stop.load(Ordering::Relaxed) {
+            if waiting_since.elapsed() > Duration::from_secs(2) {
+                tracing::warn!(in_flight = encoder.in_flight(), "encoder stalled for 2 s");
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(250));
+        }
+
         let frame = match source.next_frame() {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "frame source failed, stopping media loop");
+                stop.store(true, Ordering::Relaxed);
                 break;
             }
         };
         // Admission before encode: if the path is already backed up, skip this
         // capture. The encoder never sees it, so the reference chain stays intact.
-        let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE
-            .saturating_sub(connection.datagram_send_buffer_space());
+        let backlog = send_backlog(connection);
         if backlog > MAX_SENDER_BACKLOG {
-            sender_dropped += 1;
-            window.sender_drops += 1;
-            local_cut("backlog before encode", sender_dropped, backlog);
-            window.maybe_report(applied_bitrate, backlog, &signals.input_events);
+            admission_drops.fetch_add(1, Ordering::Relaxed);
+            cuts.cut(signals, "backlog before encode", backlog);
             continue;
         }
-        let encode_started = Instant::now();
-        let encoded = match encoder.encode(&frame) {
-            Ok(Some(encoded)) => {
-                consecutive_encode_failures = 0;
-                window.encoded(encode_started.elapsed(), &encoded);
-                encoded
+        match encoder.submit(&frame, &sink) {
+            Ok(()) => consecutive_failures = 0,
+            Err(error) => {
+                consecutive_failures += 1;
+                if consecutive_failures >= 120 {
+                    tracing::warn!(%error, "encoder failing persistently, stopping media loop");
+                    stop.store(true, Ordering::Relaxed);
+                    break;
+                }
+                tracing::debug!(%error, "submit failed, skipping frame");
             }
-            Ok(None) => {
-                window.encoder_drops += 1;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_loop(
+    connection: Connection,
+    outputs: std::sync::mpsc::Receiver<sunna_codec::EncoderOutput>,
+    stop: Arc<AtomicBool>,
+    signals: Arc<SessionSignals>,
+    admission_drops: Arc<AtomicU32>,
+    cuts: Arc<LocalCut>,
+    simulate_loss: f64,
+) {
+    use sunna_codec::EncoderOutput;
+
+    let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
+    // Wire frame ids count frames that left the encoder — decoupled from
+    // capture ids so skipped captures and encoder drops (which the reference
+    // chain survives) don't look like loss to the client's gap detection. An
+    // encoded frame dropped at the sender still consumes its id: that gap is
+    // real, because later frames reference it.
+    let mut wire_frame_id: u64 = 0;
+    let mut consecutive_failures: u32 = 0;
+    let mut window = HostWindow::new();
+    // Deterministic xorshift for dev loss simulation; no RNG dependency.
+    let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut roll = move || {
+        rng_state ^= rng_state << 13;
+        rng_state ^= rng_state >> 7;
+        rng_state ^= rng_state << 17;
+        rng_state as f64 / u64::MAX as f64
+    };
+
+    loop {
+        let output = match outputs.recv_timeout(Duration::from_millis(250)) {
+            Ok(output) => Some(output),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        window.sender_drops += admission_drops.swap(0, Ordering::Relaxed) as u64;
+        if stop.load(Ordering::Relaxed) {
+            continue; // drain until the encoder side hangs up
+        }
+        match output {
+            None => {}
+            Some(EncoderOutput::Dropped { frame_id }) => {
                 // Normal under load/rate-control pressure; the next emitted
                 // frame still references the last emitted one.
-                tracing::debug!(frame_id = frame.frame_id, "encoder dropped frame");
-                continue;
+                tracing::debug!(frame_id, "encoder dropped frame");
+                window.encoder_drops += 1;
             }
-            Err(error) => {
-                consecutive_encode_failures += 1;
-                if consecutive_encode_failures >= 120 {
+            Some(EncoderOutput::Failed { frame_id, error }) => {
+                consecutive_failures += 1;
+                tracing::debug!(frame_id, %error, "encode failed, skipping frame");
+                if consecutive_failures >= 120 {
                     tracing::warn!(%error, "encoder failing persistently, stopping media loop");
-                    break;
+                    stop.store(true, Ordering::Relaxed);
                 }
-                tracing::debug!(%error, "encode failed, skipping frame");
-                continue;
             }
-        };
-        let datagrams = packetize(
-            wire_frame_id,
-            encoded.capture_ts_us,
-            encoded.keyframe,
-            &encoded.data,
-            max_datagram,
+            Some(EncoderOutput::Frame(encoded)) => {
+                consecutive_failures = 0;
+                window.encoded(&encoded);
+                let datagrams = packetize(
+                    wire_frame_id,
+                    encoded.capture_ts_us,
+                    encoded.keyframe,
+                    &encoded.data,
+                    max_datagram,
+                );
+                // Latest-frame-wins at the sender: a frame that doesn't fit the
+                // send buffer is dropped rather than queued as stale video. It
+                // was already encoded, so later frames reference it: burn its
+                // wire id (the client sees the gap and won't decode P-frames
+                // against a missing reference) and force a keyframe.
+                let frame_bytes: usize = datagrams.iter().map(|datagram| datagram.len()).sum();
+                let space = connection.datagram_send_buffer_space();
+                if space < frame_bytes {
+                    window.sender_drops += 1;
+                    wire_frame_id += 1;
+                    signals.force_keyframe.store(true, Ordering::Relaxed);
+                    cuts.cut(&signals, "frame larger than send buffer space", send_backlog(&connection));
+                } else {
+                    wire_frame_id += 1;
+                    for datagram in datagrams {
+                        if simulate_loss > 0.0 && roll() < simulate_loss {
+                            continue;
+                        }
+                        match connection.send_datagram(datagram) {
+                            Ok(()) => {}
+                            Err(SendDatagramError::ConnectionLost(_)) => {
+                                stop.store(true, Ordering::Relaxed);
+                                break;
+                            }
+                            Err(error) => {
+                                // Non-fatal (e.g. transient too-large after PMTU
+                                // change): drop the rest of this frame.
+                                tracing::debug!(%error, "datagram send failed, dropping frame remainder");
+                                break;
+                            }
+                        }
+                    }
+                    window.sent_frames += 1;
+                    window.sent_bytes += frame_bytes as u64;
+                }
+            }
+        }
+        window.maybe_report(
+            signals.target_bitrate_bps.load(Ordering::Relaxed),
+            send_backlog(&connection),
+            &signals.input_events,
         );
-        // Latest-frame-wins at the sender: a frame that doesn't fit the send
-        // buffer is dropped rather than queued as stale video. It was already
-        // encoded, so later frames reference it: burn its wire id (the client
-        // sees the gap and won't decode P-frames against a missing reference)
-        // and force a keyframe to restart the chain.
-        let frame_bytes: usize = datagrams.iter().map(|datagram| datagram.len()).sum();
-        let space = connection.datagram_send_buffer_space();
-        if space < frame_bytes {
-            sender_dropped += 1;
-            window.sender_drops += 1;
-            wire_frame_id += 1;
-            signals.force_keyframe.store(true, Ordering::Relaxed);
-            local_cut(
-                "frame larger than send buffer space",
-                sender_dropped,
-                sunna_transport::DATAGRAM_SEND_BUFFER_SIZE.saturating_sub(space),
-            );
-            continue;
-        }
-        wire_frame_id += 1;
-        for datagram in datagrams {
-            if simulate_loss > 0.0 && roll() < simulate_loss {
-                continue;
-            }
-            match connection.send_datagram(datagram) {
-                Ok(()) => {}
-                Err(SendDatagramError::ConnectionLost(_)) => return,
-                Err(error) => {
-                    // Non-fatal (e.g. transient too-large after PMTU change):
-                    // drop the rest of this frame, keep streaming.
-                    tracing::debug!(%error, "datagram send failed, dropping frame remainder");
-                    break;
-                }
-            }
-        }
-        window.sent_frames += 1;
-        window.sent_bytes += frame_bytes as u64;
-        let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE
-            .saturating_sub(connection.datagram_send_buffer_space());
-        window.maybe_report(applied_bitrate, backlog, &signals.input_events);
     }
 }
 
@@ -401,8 +496,8 @@ impl HostWindow {
         }
     }
 
-    fn encoded(&mut self, took: Duration, frame: &sunna_codec::EncodedFrame) {
-        self.encode_us.push(took.as_micros() as u64);
+    fn encoded(&mut self, frame: &sunna_codec::EncodedFrame) {
+        self.encode_us.push(frame.encode_us);
         self.capture_to_encoded_us
             .push(frame.encode_done_ts_us.saturating_sub(frame.capture_ts_us));
         if frame.keyframe {
