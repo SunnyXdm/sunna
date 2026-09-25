@@ -220,8 +220,10 @@ impl VtEncoder {
                    value: core_foundation_sys::base::CFTypeRef,
                    label: &str| {
             let status = unsafe { VTSessionSetProperty(session, key, value) };
-            if status != 0 {
-                tracing::debug!(status, label, "encoder property not applied");
+            if status == 0 {
+                tracing::debug!(label, "encoder property applied");
+            } else {
+                tracing::info!(status, label, "encoder property NOT applied");
             }
         };
         unsafe {
@@ -256,6 +258,21 @@ impl VtEncoder {
                 kVTCompressionPropertyKey_ExpectedFrameRate,
                 CFNumber::from(fps as i32).as_CFTypeRef(),
                 "ExpectedFrameRate",
+            );
+            // Emit each frame before the next is submitted: no internal
+            // pipelining delay (we complete every frame synchronously anyway).
+            set(
+                kVTCompressionPropertyKey_MaxFrameDelayCount,
+                CFNumber::from(0).as_CFTypeRef(),
+                "MaxFrameDelayCount",
+            );
+            // Encode time was ~10 ms/frame at 1080p on an M1 — the largest
+            // single slice of end-to-end latency. Trade a little compression
+            // efficiency for speed; bitrate headroom covers it on a LAN.
+            set(
+                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                CFBoolean::true_value().as_CFTypeRef(),
+                "PrioritizeEncodingSpeedOverQuality",
             );
             let status = VTCompressionSessionPrepareToEncodeFrames(session);
             if status != 0 {

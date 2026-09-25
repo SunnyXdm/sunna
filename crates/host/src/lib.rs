@@ -51,6 +51,8 @@ pub struct HostConfig {
 struct SessionSignals {
     force_keyframe: AtomicBool,
     target_bitrate_bps: AtomicU32,
+    /// Input events injected since the last host window (stats only).
+    input_events: AtomicU32,
 }
 
 /// Accept-and-serve loop. Returns when the endpoint is closed.
@@ -151,6 +153,7 @@ async fn serve(
         // Start well below the ceiling and ramp up — starting hot congests
         // constrained paths for seconds before adaptation can react.
         target_bitrate_bps: AtomicU32::new(config.max_bitrate_bps.min(15_000_000)),
+        input_events: AtomicU32::new(0),
     });
     let media_thread = {
         let connection = connection.clone();
@@ -295,7 +298,7 @@ fn media_loop(
             sender_dropped += 1;
             window.sender_drops += 1;
             local_cut("backlog before encode", sender_dropped, backlog);
-            window.maybe_report(applied_bitrate, backlog);
+            window.maybe_report(applied_bitrate, backlog, &signals.input_events);
             continue;
         }
         let encode_started = Instant::now();
@@ -368,7 +371,7 @@ fn media_loop(
         window.sent_bytes += frame_bytes as u64;
         let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE
             .saturating_sub(connection.datagram_send_buffer_space());
-        window.maybe_report(applied_bitrate, backlog);
+        window.maybe_report(applied_bitrate, backlog, &signals.input_events);
     }
 }
 
@@ -407,7 +410,7 @@ impl HostWindow {
         }
     }
 
-    fn maybe_report(&mut self, bitrate_bps: u32, backlog_bytes: usize) {
+    fn maybe_report(&mut self, bitrate_bps: u32, backlog_bytes: usize, input_events: &AtomicU32) {
         let elapsed = self.started.elapsed();
         if elapsed < Duration::from_secs(1) {
             return;
@@ -431,6 +434,7 @@ impl HostWindow {
             encode_ms_p95 = pct(&mut self.encode_us, 95),
             capture_to_encoded_ms_p50 = pct(&mut self.capture_to_encoded_us, 50),
             capture_to_encoded_ms_p95 = pct(&mut self.capture_to_encoded_us, 95),
+            input_events = input_events.swap(0, Ordering::Relaxed),
             "host window"
         );
         *self = Self::new();
@@ -452,7 +456,10 @@ async fn control_loop(
     let mut p95_baseline_us: Option<u64> = None;
     loop {
         match control.recv().await {
-            Ok(ControlMessage::Input(event)) => injector.inject(&event)?,
+            Ok(ControlMessage::Input(event)) => {
+                injector.inject(&event)?;
+                signals.input_events.fetch_add(1, Ordering::Relaxed);
+            }
             Ok(ControlMessage::Ping { seq, t_us }) => {
                 control
                     .send(&ControlMessage::Pong {

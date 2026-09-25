@@ -94,6 +94,7 @@ pub fn init(role: &str, remote: Option<Remote>) -> Guard {
 
     let Some(remote) = remote else {
         tracing_subscriber::registry().with(stderr).init();
+        warn_if_awdl_active();
         return Guard { thread: None };
     };
 
@@ -129,6 +130,7 @@ pub fn init(role: &str, remote: Option<Remote>) -> Guard {
         run = %shared.run_id,
         "remote telemetry enabled"
     );
+    warn_if_awdl_active();
     Guard { thread }
 }
 
@@ -315,9 +317,32 @@ fn environment(role: &str) -> Value {
         "hw_model": command_output("sysctl", &["-n", "hw.model"]),
         "cpu": command_output("sysctl", &["-n", "machdep.cpu.brand_string"]),
         "hostname": hostname(),
+        "awdl_active": awdl_active(),
         "pid": std::process::id(),
         "args": std::env::args().collect::<Vec<_>>(),
     })
+}
+
+/// Whether AWDL (Apple's peer-to-peer Wi-Fi for AirDrop/Continuity) is up.
+/// While active, the Wi-Fi radio periodically leaves the network's channel,
+/// which showed up in dogfooding as ~150-190 ms hitches every second.
+pub fn awdl_active() -> Option<bool> {
+    if std::env::consts::OS != "macos" {
+        return None;
+    }
+    let output = std::process::Command::new("ifconfig").arg("awdl0").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    Some(text.contains("status: active") || (text.contains("<UP") && !text.contains("inactive")))
+}
+
+fn warn_if_awdl_active() {
+    if awdl_active() == Some(true) {
+        tracing::warn!(
+            "AWDL (AirDrop/Continuity Wi-Fi) is active: expect ~150 ms hitches every second \
+             over Wi-Fi. For a smooth session run `sudo ifconfig awdl0 down` \
+             (AirDrop stays off until `sudo ifconfig awdl0 up` or a reboot)."
+        );
+    }
 }
 
 fn command_output(program: &str, args: &[&str]) -> Option<String> {
