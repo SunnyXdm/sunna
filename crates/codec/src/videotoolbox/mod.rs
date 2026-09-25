@@ -180,6 +180,16 @@ impl VtEncoder {
             CFBoolean::true_value().as_CFType(),
         )]);
 
+        // SUNNA_VT_LOW_LATENCY=0 uses the standard real-time session instead
+        // of low-latency rate control, for A/B: at 2846x1778 the low-latency
+        // session took ~23 ms per frame on an M1 (dogfood, build 5).
+        let low_latency = std::env::var("SUNNA_VT_LOW_LATENCY").map_or(true, |value| value != "0");
+        let spec: *const c_void = if low_latency {
+            low_latency_spec.as_concrete_TypeRef() as _
+        } else {
+            ptr::null()
+        };
+        tracing::info!(low_latency, width, height, "creating H.264 encoder");
         let mut session: VTCompressionSessionRef = ptr::null_mut();
         let mut status = unsafe {
             VTCompressionSessionCreate(
@@ -187,7 +197,7 @@ impl VtEncoder {
                 width as i32,
                 height as i32,
                 kCMVideoCodecType_H264,
-                low_latency_spec.as_concrete_TypeRef() as _,
+                spec as _,
                 ptr::null(),
                 ptr::null(),
                 compression_callback,
@@ -276,9 +286,22 @@ impl VtEncoder {
                 kCVImageBufferYCbCrMatrix_ITU_R_709_2 as _,
                 "YCbCrMatrix",
             );
-            // Note: MaxFrameDelayCount and PrioritizeEncodingSpeedOverQuality
-            // both return kVTPropertyNotSupportedErr (-12900) in the
-            // low-latency rate-control session on an M1 (dogfood, macOS 15.6).
+            // MaxFrameDelayCount and PrioritizeEncodingSpeedOverQuality both
+            // return kVTPropertyNotSupportedErr (-12900) in the low-latency
+            // session on an M1 (dogfood, macOS 15.6); try them only in the
+            // standard session.
+            if !low_latency {
+                set(
+                    kVTCompressionPropertyKey_MaxFrameDelayCount,
+                    CFNumber::from(0).as_CFTypeRef(),
+                    "MaxFrameDelayCount",
+                );
+                set(
+                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                    CFBoolean::true_value().as_CFTypeRef(),
+                    "PrioritizeEncodingSpeedOverQuality",
+                );
+            }
             let status = VTCompressionSessionPrepareToEncodeFrames(session);
             if status != 0 {
                 tracing::debug!(status, "PrepareToEncodeFrames failed (non-fatal)");

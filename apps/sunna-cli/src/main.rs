@@ -113,13 +113,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 /// Largest stream this machine can show 1:1 in a window: most of the main
 /// display, leaving room for the menu bar, Dock and title bar.
 fn viewer_max_size() -> Option<(u32, u32)> {
+    // SUNNA_VIEW_SCALE (0.25-1.0) asks for a smaller stream: less to encode
+    // and send per frame, at some cost in sharpness.
+    let scale = std::env::var("SUNNA_VIEW_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .map_or(1.0, |value| value.clamp(0.25, 1.0));
     #[cfg(target_os = "macos")]
     {
         let (width, height) = sunna_capture::macos::main_display_pixel_size();
-        Some((width * 9 / 10, height * 8 / 10))
+        Some((
+            (width as f64 * 0.9 * scale) as u32,
+            (height as f64 * 0.8 * scale) as u32,
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = scale;
         None
     }
 }
