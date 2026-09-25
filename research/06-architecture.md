@@ -64,6 +64,8 @@ Anti-decision: no Sunshine-style two-product install as the *default* consumer e
 
 ## 5. Milestones (revises research/00 §5 with dev-machine reality)
 
+> **Superseded 2026-09-25 by [07-v1-plan.md](07-v1-plan.md):** positioning is now quality-first with macOS and Linux hosts first-class; the Windows host is deprioritized and the step order below is replaced.
+
 - **M0a — synthetic end-to-end (this scaffold):** synthetic frame source → passthrough codec → QUIC datagrams → reassembly → per-stage latency stats. Runs on any OS today; `sunna-cli bench` is the day-one latency instrumentation.
 - **M0b — real pixels on macOS** (dev machine is a Mac): ~~VideoToolbox low-latency H.264 encode/decode~~ (done 2026-08-13: hand-rolled FFI, Annex B wire format, hardware-tested ~3 ms encode / ~3 ms decode) → ScreenCaptureKit capture → wgpu render window. Capture and window need an interactive session: Screen Recording permission must be granted to the terminal/app when we first run it. Then: first real measurement vs Parsec/Moonlight on the same LAN.
 - **M0c — Windows host:** DDA → NVENC ultra-low-latency (research/03 §2 settings). The primary product target.

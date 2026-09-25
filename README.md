@@ -1,6 +1,6 @@
 # Sunna
 
-A low-latency game-streaming / remote-desktop system. Goal: faster where it counts (p99 on real networks), lighter, and more modern than Parsec and Moonlight — see [research/00-overview.md](research/00-overview.md) for the full research series and [research/06-architecture.md](research/06-architecture.md) for the architecture decisions and milestone plan.
+A low-latency game-streaming / remote-desktop system. Goal: faster where it counts (p99 on real networks), lighter, and more modern than Parsec and Moonlight — see [research/00-overview.md](research/00-overview.md) for the full research series, [research/06-architecture.md](research/06-architecture.md) for the architecture decisions, and [research/08-architecture-plan.md](research/08-architecture-plan.md) for the full architecture plan (sources in [research/sources/](research/sources/)); [research/07-v1-plan.md](research/07-v1-plan.md) is the earlier near-term plan it amends.
 
 ## Status
 
