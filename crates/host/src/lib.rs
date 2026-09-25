@@ -217,11 +217,18 @@ fn tokens_match(presented: &str, expected: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Frames inside the encoder at once. Two lets the hardware encode frame N
-/// while frame N+1 is captured and submitted, without building a queue:
-/// encoding one frame at a time capped a 2846x1778 stream at ~40 fps and made
-/// every capture wait ~8 ms for the previous encode (dogfood build 6).
-const MAX_IN_FLIGHT: usize = 2;
+/// Frames allowed inside the encoder at once. The M1 has one encode engine
+/// that works strictly frame by frame: with 2 in flight the second frame just
+/// queued inside VideoToolbox (capture->encoded ~30 ms, no fps gain; dogfood
+/// build 7). With 1, the newest capture goes in the moment the engine is
+/// free. Chips with several engines may benefit from 2:
+/// SUNNA_ENCODE_IN_FLIGHT=2.
+fn max_in_flight() -> usize {
+    std::env::var("SUNNA_ENCODE_IN_FLIGHT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(1, |value| value.clamp(1, 4))
+}
 
 /// Above this queued-bytes level the path is congested no matter how much
 /// buffer space remains. That is ~160 ms of queue at 15 Mbps, far more than
@@ -306,6 +313,8 @@ fn submit_loop(
     let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
     encoder.set_target_bitrate(applied_bitrate);
     let mut consecutive_failures: u32 = 0;
+    let max_in_flight = max_in_flight();
+    tracing::info!(max_in_flight, "encode pipeline");
 
     while !stop.load(Ordering::Relaxed) {
         if signals.force_keyframe.swap(false, Ordering::Relaxed) {
@@ -320,7 +329,7 @@ fn submit_loop(
         // Wait for an encoder slot *before* taking a frame, so the frame we
         // submit is the newest one.
         let waiting_since = Instant::now();
-        while encoder.in_flight() >= MAX_IN_FLIGHT && !stop.load(Ordering::Relaxed) {
+        while encoder.in_flight() >= max_in_flight && !stop.load(Ordering::Relaxed) {
             if waiting_since.elapsed() > Duration::from_secs(2) {
                 tracing::warn!(in_flight = encoder.in_flight(), "encoder stalled for 2 s");
                 break;
