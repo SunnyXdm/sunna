@@ -14,6 +14,11 @@
 # First run of `host`: macOS asks for Screen Recording (and Accessibility for
 # remote input) for your terminal app. Grant both, quit and reopen the
 # terminal, run again.
+#
+# SUNNA_KEEP_AWDL_DOWN=1 (env or dogfood.env): hold AWDL (AirDrop/Continuity
+# Wi-Fi) down for the session. macOS re-enables awdl0 on its own; while it's
+# up, Wi-Fi stalls ~200 ms about once a second. Needs sudo; AWDL is restored
+# when the script exits.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -41,6 +46,25 @@ tailscale_cli() {
 export SUNNA_GIT_HASH="$(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty)"
 cargo build --release
 
+AWDL_LOOP=""
+cleanup() {
+  if [ -n "$AWDL_LOOP" ]; then
+    kill "$AWDL_LOOP" 2>/dev/null || true
+    sudo -n ifconfig awdl0 up 2>/dev/null && echo "AWDL restored."
+  fi
+}
+trap cleanup EXIT INT TERM
+if [ "${SUNNA_KEEP_AWDL_DOWN:-0}" = "1" ] && ifconfig awdl0 >/dev/null 2>&1; then
+  echo "Holding AWDL down for this session (sudo password may be asked once)."
+  sudo -v
+  # `sudo -n -v` keeps the sudo timestamp fresh past its 5-minute default.
+  ( while true; do sudo -n -v 2>/dev/null; sudo -n ifconfig awdl0 down 2>/dev/null; sleep 1; done ) &
+  AWDL_LOOP=$!
+elif ifconfig awdl0 2>/dev/null | grep -q "status: active"; then
+  echo "warning: AWDL is active; expect ~200 ms Wi-Fi stalls every second."
+  echo "         Rerun with SUNNA_KEEP_AWDL_DOWN=1 to hold it down for the session."
+fi
+
 PORT=48800
 case "${1:-}" in
   host)
@@ -48,7 +72,7 @@ case "${1:-}" in
     [ -n "$IP" ] || { echo "no Tailscale IPv4 address; is Tailscale connected?" >&2; exit 1; }
     NAME="$(scutil --get ComputerName 2>/dev/null || hostname)"
     echo "Hosting on $IP:$PORT (tailnet only). Ctrl-C to stop."
-    exec ./target/release/sunnad --source screen --listen "$IP:$PORT" --name "$NAME"
+    ./target/release/sunnad --source screen --listen "$IP:$PORT" --name "$NAME"
     ;;
   view)
     HOST="${2:?usage: $0 view <host Tailscale name or 100.x address>}"
@@ -58,7 +82,7 @@ case "${1:-}" in
       HOST="$RESOLVED"
     fi
     echo "Viewing $HOST:$PORT. Close the window to end the session."
-    exec ./target/release/sunna-cli view "$HOST:$PORT"
+    ./target/release/sunna-cli view "$HOST:$PORT"
     ;;
   *)
     sed -n '2,17p' "$0"
