@@ -70,6 +70,7 @@ extern "C" {
     fn CGPreflightScreenCaptureAccess() -> u8;
     fn CGRequestScreenCaptureAccess() -> u8;
     static kCGDisplayStreamQueueDepth: CFStringRef;
+    static kCGDisplayStreamMinimumFrameTime: CFStringRef;
 }
 
 #[link(name = "IOSurface", kind = "framework")]
@@ -450,10 +451,18 @@ impl ScreenSource {
             )
         };
 
-        let properties = CFDictionary::from_CFType_pairs(&[(
-            unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamQueueDepth) },
-            CFNumber::from(STREAM_QUEUE_DEPTH),
-        )]);
+        // Cap delivery at the stream's fps: a 120 Hz display (or bursts of
+        // updates) otherwise hands us more frames than we'd ever send.
+        let properties = CFDictionary::from_CFType_pairs(&[
+            (
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamQueueDepth) },
+                CFNumber::from(STREAM_QUEUE_DEPTH),
+            ),
+            (
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamMinimumFrameTime) },
+                CFNumber::from(1.0 / fps.max(1) as f64),
+            ),
+        ]);
         let stream = unsafe {
             let label = CString::new("app.sunna.capture").expect("static label");
             let queue = dispatch_queue_create(label.as_ptr(), std::ptr::null());

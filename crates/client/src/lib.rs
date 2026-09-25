@@ -125,7 +125,14 @@ const DECODE_QUEUE: usize = 120;
 enum DecodeEvent {
     /// Decoded; `age_us` is local-now minus the host capture stamp (the
     /// network task applies the clock offset).
-    Decoded { keyframe: bool, age_us: i64, decode_us: u64 },
+    Decoded {
+        frame_id: u64,
+        keyframe: bool,
+        age_us: i64,
+        decode_us: u64,
+        bytes: usize,
+        assembly_us: u64,
+    },
     /// A frame can't be decoded until the next keyframe (gap or decode error).
     NeedKeyframe,
 }
@@ -172,9 +179,12 @@ fn spawn_decoder(
                     counters.decoded.fetch_add(1, Ordering::Relaxed);
                     let age_us = sunna_proto::now_us() as i64 - decoded.capture_ts_us as i64;
                     let _ = events.send(DecodeEvent::Decoded {
+                        frame_id: frame.frame_id,
                         keyframe: frame.keyframe,
                         age_us,
                         decode_us: started.elapsed().as_micros() as u64,
+                        bytes: frame.data.len(),
+                        assembly_us: frame.assembly_us,
                     });
                     on_frame(decoded);
                 }
@@ -294,6 +304,13 @@ pub async fn run_client(
     let mut window_decode_us: Vec<u64> = Vec::new();
     let mut window_dropped_base: u64 = 0;
     let mut window_recovered_base: u64 = 0;
+    // Network stall diagnostics, independent of clock sync: the longest
+    // silence between datagrams, and frames that arrived very late.
+    let mut last_datagram_at: Option<Instant> = None;
+    let mut window_max_gap_us: u64 = 0;
+    let mut window_gaps_over_50ms: u32 = 0;
+    let mut window_slow_logged: u32 = 0;
+    let mut window_slow_frames: u32 = 0;
 
     let mut ping_interval = tokio::time::interval(Duration::from_millis(500));
     let mut report_interval = tokio::time::interval_at(
@@ -316,6 +333,14 @@ pub async fn run_client(
             }
             datagram = connection.read_datagram() => {
                 let Ok(datagram) = datagram else { break };
+                let now = Instant::now();
+                if let Some(previous) = last_datagram_at.replace(now) {
+                    let gap = now.duration_since(previous).as_micros() as u64;
+                    window_max_gap_us = window_max_gap_us.max(gap);
+                    if gap > 50_000 {
+                        window_gaps_over_50ms += 1;
+                    }
+                }
                 bytes_received += datagram.len() as u64;
                 window_bytes += datagram.len() as u64;
                 let completed = reassembler.push(&datagram);
@@ -353,7 +378,14 @@ pub async fn run_client(
             }
             event = decode_events.recv() => {
                 match event {
-                    Some(DecodeEvent::Decoded { keyframe, age_us, decode_us }) => {
+                    Some(DecodeEvent::Decoded {
+                        frame_id,
+                        keyframe,
+                        age_us,
+                        decode_us,
+                        bytes,
+                        assembly_us,
+                    }) => {
                         if keyframe {
                             if let Some(since) = awaiting_keyframe_since.take() {
                                 tracing::debug!(
@@ -363,6 +395,21 @@ pub async fn run_client(
                             }
                         }
                         let sample = (age_us + clock_offset_us.unwrap_or(0)).max(0) as u64;
+                        if sample > 100_000 {
+                            window_slow_frames += 1;
+                            if window_slow_logged < 10 {
+                                window_slow_logged += 1;
+                                tracing::debug!(
+                                    frame_id,
+                                    e2e_ms = sample / 1000,
+                                    assembly_ms = assembly_us / 1000,
+                                    decode_ms = decode_us / 1000,
+                                    bytes,
+                                    keyframe,
+                                    "slow frame"
+                                );
+                            }
+                        }
                         e2e_samples.push(sample);
                         window_samples.push(sample);
                         window_decode_us.push(decode_us);
@@ -435,10 +482,17 @@ pub async fn run_client(
                     clock_offset_ms = clock_offset_us.map(|offset| offset as f64 / 1000.0),
                     awaiting_keyframe = awaiting_keyframe_since.is_some(),
                     decoder_behind_drops = queue_full_drops,
+                    max_gap_ms = window_max_gap_us / 1000,
+                    gaps_over_50ms = window_gaps_over_50ms,
+                    slow_frames = window_slow_frames,
                     "window"
                 );
                 window_frames = 0;
                 window_bytes = 0;
+                window_max_gap_us = 0;
+                window_gaps_over_50ms = 0;
+                window_slow_logged = 0;
+                window_slow_frames = 0;
             }
             _ = &mut deadline_sleep, if options.duration.is_some() => {
                 let _ = control.send(&ControlMessage::Bye).await;

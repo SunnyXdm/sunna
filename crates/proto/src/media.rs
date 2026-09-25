@@ -150,9 +150,13 @@ pub struct CompleteFrame {
     pub capture_ts_us: u64,
     pub keyframe: bool,
     pub data: Bytes,
+    /// First datagram to completion, on the receiver's clock: how long the
+    /// network spread this frame out (serialization, bursts, stalls).
+    pub assembly_us: u64,
 }
 
 struct Partial {
+    first_arrival: std::time::Instant,
     frame_id: u64,
     capture_ts_us: u64,
     flags: u8,
@@ -252,6 +256,7 @@ impl Reassembler {
 
         let chunk_count = header.chunk_count as usize;
         let partial = self.current.get_or_insert_with(|| Partial {
+            first_arrival: std::time::Instant::now(),
             frame_id: header.frame_id,
             capture_ts_us: header.capture_ts_us,
             flags: header.flags & !FLAG_PARITY,
@@ -303,6 +308,7 @@ impl Reassembler {
             capture_ts_us: partial.capture_ts_us,
             keyframe: partial.flags & FLAG_KEYFRAME != 0,
             data: data.freeze(),
+            assembly_us: partial.first_arrival.elapsed().as_micros() as u64,
         })
     }
 }

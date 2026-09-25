@@ -237,7 +237,9 @@ impl VtEncoder {
             );
             set(
                 kVTCompressionPropertyKey_ProfileLevel,
-                kVTProfileLevel_H264_Main_AutoLevel as _,
+                // High: 8x8 transforms compress text and UI noticeably better
+                // than Main at the same bitrate; every Apple decoder has it.
+                kVTProfileLevel_H264_High_AutoLevel as _,
                 "ProfileLevel",
             );
             set(
