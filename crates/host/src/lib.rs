@@ -132,8 +132,15 @@ async fn serve(
         })
     };
 
-    let injector = new_injector();
-    let result = control_loop(&mut control, injector, &signals, config.max_bitrate_bps).await;
+    let mut injector = new_injector();
+    let result = control_loop(
+        &mut control,
+        injector.as_mut(),
+        &signals,
+        config.max_bitrate_bps,
+    )
+    .await;
+    injector.release_all();
 
     stop.store(true, Ordering::Relaxed);
     let _ = media_thread.join();
@@ -150,15 +157,18 @@ fn media_loop(
     min_bitrate_bps: u32,
 ) {
     /// Above this queued-bytes level the path is congested no matter how much
-    /// buffer space remains (~2 frame intervals at 15 Mbps).
+    /// buffer space remains. That is ~160 ms of queue at 15 Mbps, far more
+    /// than we want; a time-based admission rule replaces it (research/07 step 5).
     const MAX_SENDER_BACKLOG: usize = 300 * 1024;
 
     let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
     let mut sent_frames: u64 = 0;
     let mut last_local_cut = Instant::now() - Duration::from_secs(1);
-    // Wire frame ids are a contiguous series over frames actually *sent* —
-    // decoupled from capture ids so encoder drops don't look like network
-    // loss to the client's gap detection (which would request keyframes).
+    // Wire frame ids count frames that left the encoder — decoupled from
+    // capture ids so skipped captures and encoder drops (which the reference
+    // chain survives) don't look like loss to the client's gap detection. An
+    // encoded frame dropped at the sender still consumes its id: that gap is
+    // real, because later frames reference it.
     let mut wire_frame_id: u64 = 0;
     let mut consecutive_encode_failures: u32 = 0;
     let mut sender_dropped: u64 = 0;
@@ -173,6 +183,24 @@ fn media_loop(
         rng_state ^= rng_state >> 7;
         rng_state ^= rng_state << 17;
         rng_state as f64 / u64::MAX as f64
+    };
+
+    // A sender-side drop is the fastest congestion signal we have: cut the
+    // bitrate immediately instead of waiting for receiver reports.
+    let mut local_cut = |reason: &str, sender_dropped: u64, backlog: usize| {
+        if last_local_cut.elapsed() > Duration::from_millis(500) {
+            last_local_cut = Instant::now();
+            let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
+            let next = (current * 3 / 4).max(min_bitrate_bps);
+            signals.target_bitrate_bps.store(next, Ordering::Relaxed);
+            tracing::debug!(
+                sender_dropped,
+                backlog,
+                bitrate = next,
+                reason,
+                "cutting bitrate"
+            );
+        }
     };
 
     while !stop.load(Ordering::Relaxed) {
@@ -192,6 +220,15 @@ fn media_loop(
                 break;
             }
         };
+        // Admission before encode: if the path is already backed up, skip this
+        // capture. The encoder never sees it, so the reference chain stays intact.
+        let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE
+            .saturating_sub(connection.datagram_send_buffer_space());
+        if backlog > MAX_SENDER_BACKLOG {
+            sender_dropped += 1;
+            local_cut("backlog before encode", sender_dropped, backlog);
+            continue;
+        }
         let encoded = match encoder.encode(&frame) {
             Ok(Some(encoded)) => {
                 consecutive_encode_failures = 0;
@@ -220,33 +257,22 @@ fn media_loop(
             &encoded.data,
             max_datagram,
         );
-        // Latest-frame-wins at the sender: if the network is behind, drop the
-        // frame here rather than queue stale video — a frame delivered seconds
-        // late is worse than a skipped one. This applies to keyframes too
-        // (a keyframe stuck behind a stalled path is stale on arrival); when
-        // one is dropped, a fresh IDR is forced as soon as the path clears.
-        // A sender-side drop is also the fastest congestion signal we have:
-        // cut the bitrate immediately instead of waiting for receiver reports.
+        // Latest-frame-wins at the sender: a frame that doesn't fit the send
+        // buffer is dropped rather than queued as stale video. It was already
+        // encoded, so later frames reference it: burn its wire id (the client
+        // sees the gap and won't decode P-frames against a missing reference)
+        // and force a keyframe to restart the chain.
         let frame_bytes: usize = datagrams.iter().map(|datagram| datagram.len()).sum();
         let space = connection.datagram_send_buffer_space();
-        let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE.saturating_sub(space);
-        if space < frame_bytes || backlog > MAX_SENDER_BACKLOG {
+        if space < frame_bytes {
             sender_dropped += 1;
-            if encoded.keyframe {
-                signals.force_keyframe.store(true, Ordering::Relaxed);
-            }
-            if last_local_cut.elapsed() > Duration::from_millis(500) {
-                last_local_cut = Instant::now();
-                let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
-                let next = (current * 3 / 4).max(min_bitrate_bps);
-                signals.target_bitrate_bps.store(next, Ordering::Relaxed);
-                tracing::debug!(
-                    sender_dropped,
-                    backlog,
-                    bitrate = next,
-                    "network backlog: dropping at sender, cutting bitrate"
-                );
-            }
+            wire_frame_id += 1;
+            signals.force_keyframe.store(true, Ordering::Relaxed);
+            local_cut(
+                "frame larger than send buffer space",
+                sender_dropped,
+                sunna_transport::DATAGRAM_SEND_BUFFER_SIZE.saturating_sub(space),
+            );
             continue;
         }
         wire_frame_id += 1;
@@ -274,7 +300,7 @@ fn media_loop(
 
 async fn control_loop(
     control: &mut ControlChannel,
-    mut injector: Box<dyn InputInjector>,
+    injector: &mut dyn InputInjector,
     signals: &SessionSignals,
     max_bitrate_bps: u32,
 ) -> anyhow::Result<()> {

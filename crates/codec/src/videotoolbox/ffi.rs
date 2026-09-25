@@ -92,6 +92,7 @@ pub struct VTDecompressionOutputCallbackRecord {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
+    pub fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
     pub fn CFRelease(cf: CFTypeRef);
     pub fn CFArrayGetCount(theArray: CFArrayRef) -> CFIndex;
     pub fn CFArrayGetValueAtIndex(theArray: CFArrayRef, idx: CFIndex) -> *const c_void;

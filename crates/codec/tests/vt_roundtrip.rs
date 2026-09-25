@@ -4,11 +4,12 @@
 #![cfg(target_os = "macos")]
 
 use bytes::Bytes;
-use sunna_capture::{PixelFormat, VideoFrame};
+use sunna_capture::macos::SurfaceFrame;
+use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 use sunna_codec::videotoolbox::{VtDecoder, VtEncoder};
 use sunna_codec::{h264, Decoder, Encoder};
 
-fn test_frame(frame_id: u64, width: u32, height: u32) -> VideoFrame {
+fn test_pixels(frame_id: u64, width: u32, height: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let mut data = vec![0u8; w * h * 4];
     let bar = (frame_id as usize * 8) % w;
@@ -21,12 +22,30 @@ fn test_frame(frame_id: u64, width: u32, height: u32) -> VideoFrame {
             data[offset + 3] = 255;
         }
     }
+    data
+}
+
+fn test_frame(frame_id: u64, width: u32, height: u32) -> VideoFrame {
     VideoFrame {
         frame_id,
         width,
         height,
         format: PixelFormat::Bgra8,
-        data: Bytes::from(data),
+        data: FrameData::Cpu(Bytes::from(test_pixels(frame_id, width, height))),
+        capture_ts_us: sunna_proto::now_us(),
+    }
+}
+
+/// Same pixels, carried the way real capture delivers them: in an IOSurface.
+fn test_surface_frame(frame_id: u64, width: u32, height: u32) -> VideoFrame {
+    let surface = SurfaceFrame::from_bgra(width, height, &test_pixels(frame_id, width, height))
+        .expect("create IOSurface-backed frame");
+    VideoFrame {
+        frame_id,
+        width,
+        height,
+        format: PixelFormat::Bgra8,
+        data: FrameData::Surface(surface),
         capture_ts_us: sunna_proto::now_us(),
     }
 }
@@ -83,6 +102,25 @@ fn hardware_h264_roundtrip() {
         raw_total,
         compressed_total,
     );
+}
+
+#[test]
+fn hardware_h264_roundtrip_from_iosurface() {
+    let (width, height, fps) = (320u32, 240u32, 30u32);
+    let mut encoder =
+        VtEncoder::new(width, height, fps, 2_000_000).expect("create hardware encoder");
+    let mut decoder = VtDecoder::new();
+    for frame_id in 0..10 {
+        let frame = test_surface_frame(frame_id, width, height);
+        let encoded = encoder
+            .encode(&frame)
+            .expect("encode")
+            .expect("tiny test frames should never be dropped");
+        let decoded = decoder
+            .decode(encoded.frame_id, encoded.capture_ts_us, encoded.keyframe, &encoded.data)
+            .expect("decode");
+        assert_eq!((decoded.width, decoded.height), (width, height));
+    }
 }
 
 #[test]

@@ -5,8 +5,10 @@
 //! completion per frame (`VTCompressionSessionCompleteFrames`) and decode is
 //! synchronous by default, which keeps both trait impls blocking and simple.
 //!
-//! Milestone 0b carries CPU BGRA pixels in and out; the zero-copy
-//! IOSurface path arrives with capture + the render window.
+//! Encode input is zero-copy for captured frames (the capture's
+//! IOSurface-backed CVPixelBuffer goes straight in); CPU frames from the
+//! synthetic source are copied into a pixel buffer. Decode still copies BGRA
+//! out to the CPU until the Metal presenter lands (research/07 step 2).
 
 mod ffi;
 
@@ -21,7 +23,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
-use sunna_capture::{PixelFormat, VideoFrame};
+use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 
 use crate::h264;
 use crate::{Codec, DecodedFrame, EncodedFrame, Decoder, Encoder};
@@ -267,12 +269,25 @@ impl VtEncoder {
         })
     }
 
-    fn make_pixel_buffer(&self, frame: &VideoFrame) -> anyhow::Result<CVPixelBufferRef> {
+    /// A +1 retained pixel buffer for `frame`; the caller releases it.
+    fn pixel_buffer_for(&self, frame: &VideoFrame) -> anyhow::Result<CVPixelBufferRef> {
         anyhow::ensure!(
             frame.format == PixelFormat::Bgra8,
             "VtEncoder expects BGRA input"
         );
+        let bytes = match &frame.data {
+            FrameData::Surface(surface) => {
+                let pixel_buffer = surface.pixel_buffer();
+                unsafe { CFRetain(pixel_buffer as _) };
+                return Ok(pixel_buffer);
+            }
+            FrameData::Cpu(bytes) => bytes,
+        };
         let (width, height) = (frame.width as usize, frame.height as usize);
+        anyhow::ensure!(
+            bytes.len() >= width * height * 4,
+            "frame data smaller than {width}x{height} BGRA"
+        );
         let mut pixel_buffer: CVPixelBufferRef = ptr::null_mut();
         let status = unsafe {
             CVPixelBufferCreate(
@@ -294,7 +309,7 @@ impl VtEncoder {
             let src_stride = width * 4;
             for row in 0..height {
                 ptr::copy_nonoverlapping(
-                    frame.data.as_ptr().add(row * src_stride),
+                    bytes.as_ptr().add(row * src_stride),
                     base.add(row * stride),
                     src_stride,
                 );
@@ -307,7 +322,7 @@ impl VtEncoder {
 
 impl Encoder for VtEncoder {
     fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>> {
-        let pixel_buffer = self.make_pixel_buffer(frame)?;
+        let pixel_buffer = self.pixel_buffer_for(frame)?;
         self.shared.result.lock().unwrap().take();
 
         let keyframe_wanted = self.force_keyframe;

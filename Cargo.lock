@@ -2020,6 +2020,7 @@ dependencies = [
  "anyhow",
  "block2 0.6.2",
  "bytes",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "sunna-proto",
  "tracing",

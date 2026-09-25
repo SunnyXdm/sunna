@@ -96,7 +96,7 @@ impl Encoder for Passthrough {
             frame_id: frame.frame_id,
             codec: Codec::Raw,
             keyframe: true,
-            data: frame.data.clone(),
+            data: frame.data.to_cpu()?,
             capture_ts_us: frame.capture_ts_us,
             encode_done_ts_us: sunna_proto::now_us(),
             width: frame.width,

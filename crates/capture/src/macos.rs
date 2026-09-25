@@ -8,10 +8,9 @@
 //! straight into VideoToolbox, per-window capture, HDR) replaces this in a
 //! later milestone; the `FrameSource` seam is unchanged.
 //!
-//! Milestone 0 limitation: frames are copied out of the IOSurface into CPU
-//! memory here, and copied again into a CVPixelBuffer by the encoder. The
-//! zero-copy path (hand the IOSurface to VTCompressionSession directly) is the
-//! first optimization once the end-to-end picture works.
+//! Frames stay on the GPU: each captured IOSurface is held (see
+//! [`SurfaceFrame`]) and handed to VideoToolbox as a CVPixelBuffer, with no
+//! CPU pixel copy between capture and encode.
 
 use std::ffi::{c_char, c_void, CString};
 use std::sync::{Arc, Condvar, Mutex};
@@ -19,17 +18,27 @@ use std::time::Duration;
 
 use block2::RcBlock;
 use bytes::Bytes;
+use core_foundation::base::TCFType;
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::number::CFNumber;
+use core_foundation::string::CFString;
 use core_foundation_sys::dictionary::CFDictionaryRef;
+use core_foundation_sys::string::CFStringRef;
 
-use crate::{FrameSource, PixelFormat, VideoFrame};
+use crate::{FrameData, FrameSource, PixelFormat, VideoFrame};
 
 type CGDisplayStreamRef = *mut c_void;
 type IOSurfaceRef = *mut c_void;
+type CVPixelBufferRef = *mut c_void;
 type DispatchQueueT = *mut c_void;
 
 const PIXEL_FORMAT_BGRA: i32 = 0x42475241; // 'BGRA'
 const FRAME_STATUS_COMPLETE: i32 = 0; // kCGDisplayStreamFrameStatusFrameComplete
 const IOSURFACE_LOCK_READ_ONLY: u32 = 1;
+/// Surfaces in the stream's pool. We hold up to three at once (the last
+/// frame, a pending newer one, and the one being encoded), so the default of
+/// 3 would leave the compositor nothing to draw into.
+const STREAM_QUEUE_DEPTH: i32 = 4;
 
 type CGDisplayModeRef = *mut c_void;
 
@@ -54,6 +63,7 @@ extern "C" {
     fn CGDisplayStreamStop(stream: CGDisplayStreamRef) -> i32;
     fn CGPreflightScreenCaptureAccess() -> u8;
     fn CGRequestScreenCaptureAccess() -> u8;
+    static kCGDisplayStreamQueueDepth: CFStringRef;
 }
 
 #[link(name = "IOSurface", kind = "framework")]
@@ -64,10 +74,33 @@ extern "C" {
     fn IOSurfaceGetBytesPerRow(buffer: IOSurfaceRef) -> usize;
     fn IOSurfaceGetWidth(buffer: IOSurfaceRef) -> usize;
     fn IOSurfaceGetHeight(buffer: IOSurfaceRef) -> usize;
+    fn IOSurfaceIncrementUseCount(buffer: IOSurfaceRef);
+    fn IOSurfaceDecrementUseCount(buffer: IOSurfaceRef);
+}
+
+#[link(name = "CoreVideo", kind = "framework")]
+extern "C" {
+    static kCVPixelBufferIOSurfacePropertiesKey: CFStringRef;
+    fn CVPixelBufferCreate(
+        allocator: *const c_void,
+        width: usize,
+        height: usize,
+        pixel_format: u32,
+        attributes: CFDictionaryRef,
+        out: *mut CVPixelBufferRef,
+    ) -> i32;
+    fn CVPixelBufferCreateWithIOSurface(
+        allocator: *const c_void,
+        surface: IOSurfaceRef,
+        attributes: CFDictionaryRef,
+        out: *mut CVPixelBufferRef,
+    ) -> i32;
+    fn CVPixelBufferGetIOSurface(pixel_buffer: CVPixelBufferRef) -> IOSurfaceRef;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
+    fn CFRetain(cf: *const c_void) -> *const c_void;
     fn CFRelease(cf: *const c_void);
 }
 
@@ -120,6 +153,181 @@ pub fn ensure_screen_capture_access() -> bool {
     }
 }
 
+/// A captured frame that stays on the GPU: a retained BGRA IOSurface plus a
+/// CVPixelBuffer wrapping it, ready to hand straight to VideoToolbox.
+///
+/// CGDisplayStream recycles a surface as soon as the frame handler returns
+/// unless its use count is raised, so a frame from the stream also holds the
+/// use count until dropped. Clones share one surface.
+#[derive(Clone)]
+pub struct SurfaceFrame {
+    inner: Arc<SurfaceHold>,
+}
+
+struct SurfaceHold {
+    surface: IOSurfaceRef,
+    pixel_buffer: CVPixelBufferRef,
+    holds_use_count: bool,
+}
+
+// IOSurface and CVPixelBuffer are reference-counted CF objects that may be
+// retained, read, and released from any thread.
+unsafe impl Send for SurfaceHold {}
+unsafe impl Sync for SurfaceHold {}
+
+impl Drop for SurfaceHold {
+    fn drop(&mut self) {
+        unsafe {
+            CFRelease(self.pixel_buffer as _);
+            if self.holds_use_count {
+                IOSurfaceDecrementUseCount(self.surface);
+            }
+            CFRelease(self.surface as _);
+        }
+    }
+}
+
+impl SurfaceFrame {
+    /// Hold a surface delivered to a CGDisplayStream frame handler.
+    ///
+    /// Safety: `surface` must be a valid IOSurfaceRef for the duration of the call.
+    unsafe fn from_display_stream(surface: IOSurfaceRef) -> Option<Self> {
+        CFRetain(surface as _);
+        IOSurfaceIncrementUseCount(surface);
+        let mut pixel_buffer: CVPixelBufferRef = std::ptr::null_mut();
+        let status = CVPixelBufferCreateWithIOSurface(
+            std::ptr::null(),
+            surface,
+            std::ptr::null(),
+            &mut pixel_buffer,
+        );
+        let hold = SurfaceHold {
+            surface,
+            pixel_buffer,
+            holds_use_count: true,
+        };
+        if status != 0 || pixel_buffer.is_null() {
+            // Drop would release the null pixel buffer; undo the rest by hand.
+            std::mem::forget(hold);
+            IOSurfaceDecrementUseCount(surface);
+            CFRelease(surface as _);
+            return None;
+        }
+        Some(Self {
+            inner: Arc::new(hold),
+        })
+    }
+
+    /// An IOSurface-backed BGRA frame filled from tightly packed CPU bytes.
+    /// For tests and synthetic sources; real capture never copies.
+    pub fn from_bgra(width: u32, height: u32, bgra: &[u8]) -> anyhow::Result<Self> {
+        let (w, h) = (width as usize, height as usize);
+        anyhow::ensure!(bgra.len() >= w * h * 4, "BGRA buffer smaller than {w}x{h}");
+        let attributes = CFDictionary::from_CFType_pairs(&[(
+            unsafe { CFString::wrap_under_get_rule(kCVPixelBufferIOSurfacePropertiesKey) }
+                .as_CFType(),
+            CFDictionary::<CFString, CFNumber>::from_CFType_pairs(&[]).as_CFType(),
+        )]);
+        unsafe {
+            let mut pixel_buffer: CVPixelBufferRef = std::ptr::null_mut();
+            let status = CVPixelBufferCreate(
+                std::ptr::null(),
+                w,
+                h,
+                PIXEL_FORMAT_BGRA as u32,
+                attributes.as_concrete_TypeRef(),
+                &mut pixel_buffer,
+            );
+            anyhow::ensure!(
+                status == 0 && !pixel_buffer.is_null(),
+                "CVPixelBufferCreate failed: {status}"
+            );
+            let surface = CVPixelBufferGetIOSurface(pixel_buffer);
+            if surface.is_null() {
+                CFRelease(pixel_buffer as _);
+                anyhow::bail!("pixel buffer has no IOSurface backing");
+            }
+            CFRetain(surface as _);
+            let frame = Self {
+                inner: Arc::new(SurfaceHold {
+                    surface,
+                    pixel_buffer,
+                    holds_use_count: false,
+                }),
+            };
+            anyhow::ensure!(
+                IOSurfaceLock(surface, 0, std::ptr::null_mut()) == 0,
+                "IOSurfaceLock failed"
+            );
+            let stride = IOSurfaceGetBytesPerRow(surface);
+            let base = IOSurfaceGetBaseAddress(surface) as *mut u8;
+            for row in 0..h {
+                std::ptr::copy_nonoverlapping(
+                    bgra.as_ptr().add(row * w * 4),
+                    base.add(row * stride),
+                    w * 4,
+                );
+            }
+            IOSurfaceUnlock(surface, 0, std::ptr::null_mut());
+            Ok(frame)
+        }
+    }
+
+    /// The CVPixelBuffer to hand to VideoToolbox. Borrowed: valid while this
+    /// frame lives; CFRetain it to keep it longer.
+    pub fn pixel_buffer(&self) -> *mut c_void {
+        self.inner.pixel_buffer
+    }
+
+    pub fn width(&self) -> u32 {
+        unsafe { IOSurfaceGetWidth(self.inner.surface) as u32 }
+    }
+
+    pub fn height(&self) -> u32 {
+        unsafe { IOSurfaceGetHeight(self.inner.surface) as u32 }
+    }
+
+    /// Copy the pixels out as tightly packed BGRA. Off the hot path only.
+    pub fn to_bytes(&self) -> anyhow::Result<Bytes> {
+        let surface = self.inner.surface;
+        unsafe {
+            anyhow::ensure!(
+                IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) == 0,
+                "IOSurfaceLock failed"
+            );
+            let width = IOSurfaceGetWidth(surface);
+            let height = IOSurfaceGetHeight(surface);
+            let stride = IOSurfaceGetBytesPerRow(surface);
+            let base = IOSurfaceGetBaseAddress(surface) as *const u8;
+            let result = if base.is_null() {
+                Err(anyhow::anyhow!("IOSurface has no base address"))
+            } else {
+                let row_bytes = width * 4;
+                let mut data = vec![0u8; row_bytes * height];
+                for row in 0..height {
+                    std::ptr::copy_nonoverlapping(
+                        base.add(row * stride),
+                        data.as_mut_ptr().add(row * row_bytes),
+                        row_bytes,
+                    );
+                }
+                Ok(Bytes::from(data))
+            };
+            IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
+            result
+        }
+    }
+}
+
+impl std::fmt::Debug for SurfaceFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SurfaceFrame")
+            .field("width", &self.width())
+            .field("height", &self.height())
+            .finish()
+    }
+}
+
 #[derive(Default)]
 struct Latest {
     frame: Mutex<Option<VideoFrame>>,
@@ -168,7 +376,7 @@ impl ScreenSource {
                     if status != FRAME_STATUS_COMPLETE || surface.is_null() {
                         return;
                     }
-                    if let Some(frame) = copy_surface(surface) {
+                    if let Some(frame) = hold_surface(surface) {
                         *latest.frame.lock().unwrap() = Some(frame);
                         latest.ready.notify_one();
                     }
@@ -176,6 +384,10 @@ impl ScreenSource {
             )
         };
 
+        let properties = CFDictionary::from_CFType_pairs(&[(
+            unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamQueueDepth) },
+            CFNumber::from(STREAM_QUEUE_DEPTH),
+        )]);
         let stream = unsafe {
             let label = CString::new("app.sunna.capture").expect("static label");
             let queue = dispatch_queue_create(label.as_ptr(), std::ptr::null());
@@ -184,7 +396,7 @@ impl ScreenSource {
                 width as usize,
                 height as usize,
                 PIXEL_FORMAT_BGRA,
-                std::ptr::null(),
+                properties.as_concrete_TypeRef(),
                 queue,
                 &*handler as *const block2::Block<_> as *const c_void,
             )
@@ -213,39 +425,20 @@ impl ScreenSource {
     }
 }
 
-fn copy_surface(surface: IOSurfaceRef) -> Option<VideoFrame> {
-    unsafe {
-        if IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
-            return None;
-        }
-        let width = IOSurfaceGetWidth(surface);
-        let height = IOSurfaceGetHeight(surface);
-        let stride = IOSurfaceGetBytesPerRow(surface);
-        let base = IOSurfaceGetBaseAddress(surface) as *const u8;
-        let frame = if base.is_null() {
-            None
-        } else {
-            let row_bytes = width * 4;
-            let mut data = vec![0u8; row_bytes * height];
-            for row in 0..height {
-                std::ptr::copy_nonoverlapping(
-                    base.add(row * stride),
-                    data.as_mut_ptr().add(row * row_bytes),
-                    row_bytes,
-                );
-            }
-            Some(VideoFrame {
-                frame_id: 0, // assigned by `next_frame`
-                width: width as u32,
-                height: height as u32,
-                format: PixelFormat::Bgra8,
-                data: Bytes::from(data),
-                capture_ts_us: sunna_proto::now_us(),
-            })
-        };
-        IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
-        frame
-    }
+/// Wrap a stream surface as a frame without touching its pixels.
+fn hold_surface(surface: IOSurfaceRef) -> Option<VideoFrame> {
+    // Stamp before anything else so the timestamp is as close to the
+    // compositor's delivery as this API allows.
+    let capture_ts_us = sunna_proto::now_us();
+    let surface = unsafe { SurfaceFrame::from_display_stream(surface)? };
+    Some(VideoFrame {
+        frame_id: 0, // assigned by `next_frame`
+        width: surface.width(),
+        height: surface.height(),
+        format: PixelFormat::Bgra8,
+        data: FrameData::Surface(surface),
+        capture_ts_us,
+    })
 }
 
 impl FrameSource for ScreenSource {
@@ -297,5 +490,22 @@ impl Drop for ScreenSource {
             CGDisplayStreamStop(self.stream);
             CFRelease(self.stream as _);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_frame_roundtrips_pixels() {
+        let (width, height) = (37u32, 11u32); // odd width: rows are padded
+        let bgra: Vec<u8> = (0..width * height * 4).map(|i| (i % 251) as u8).collect();
+        let frame = SurfaceFrame::from_bgra(width, height, &bgra).unwrap();
+        assert_eq!((frame.width(), frame.height()), (width, height));
+        assert!(!frame.pixel_buffer().is_null());
+        let copy = frame.clone();
+        drop(frame);
+        assert_eq!(&copy.to_bytes().unwrap()[..], &bgra[..]);
     }
 }

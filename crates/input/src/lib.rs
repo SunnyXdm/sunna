@@ -15,6 +15,10 @@ pub mod macos;
 /// Host side: apply a remote input event to the local OS.
 pub trait InputInjector: Send {
     fn inject(&mut self, event: &InputEvent) -> anyhow::Result<()>;
+    /// Release every key and button this injector is holding down. Called
+    /// when a session ends so a dropped connection can't leave, say, Cmd
+    /// stuck on the host.
+    fn release_all(&mut self) {}
 }
 
 /// The best injector this platform offers (log-only where none exists yet).

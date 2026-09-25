@@ -151,6 +151,18 @@ pub async fn run_client(
     );
     let mut decoder = make_decoder(&info.codec, info.width, info.height)?;
 
+    // The receive half gets its own task: `recv` isn't cancellation-safe, so
+    // racing it in the select! below could desync the stream's framing.
+    let (mut control, mut control_rx) = control.into_split();
+    let (message_tx, mut messages) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        while let Ok(message) = control_rx.recv().await {
+            if message_tx.send(message).is_err() {
+                break;
+            }
+        }
+    });
+
     let mut reassembler = Reassembler::new();
     let started = std::time::Instant::now();
     let mut bytes_received: u64 = 0;
@@ -267,9 +279,9 @@ pub async fn run_client(
                     }
                 }
             }
-            message = control.recv() => {
+            message = messages.recv() => {
                 match message {
-                    Ok(ControlMessage::Pong { t_us, peer_t_us, .. }) => {
+                    Some(ControlMessage::Pong { t_us, peer_t_us, .. }) => {
                         let received = sunna_proto::now_us();
                         let rtt = received.saturating_sub(peer_t_us);
                         rtt_samples.push(rtt);
@@ -280,8 +292,8 @@ pub async fn run_client(
                                 Some(t_us as i64 - ((peer_t_us + received) / 2) as i64);
                         }
                     }
-                    Ok(other) => tracing::debug!(?other, "unexpected control message"),
-                    Err(_) => break,
+                    Some(other) => tracing::debug!(?other, "unexpected control message"),
+                    None => break,
                 }
             }
             _ = ping_interval.tick() => {
@@ -327,6 +339,7 @@ pub async fn run_client(
         }
     }
 
+    reader.abort();
     Ok(BenchReport {
         info,
         elapsed: started.elapsed(),

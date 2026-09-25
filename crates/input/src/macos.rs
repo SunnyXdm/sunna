@@ -60,12 +60,16 @@ extern "C" {
     ) -> CGEventRef;
     fn CGEventCreateKeyboardEvent(source: *const c_void, keycode: u16, keydown: bool)
         -> CGEventRef;
-    fn CGEventCreateScrollWheelEvent(
+    // Not CGEventCreateScrollWheelEvent: that one is variadic after
+    // `wheel1`, and Apple arm64 passes variadic arguments on the stack, so a
+    // fixed-arity Rust declaration garbles `wheel2` (horizontal scroll).
+    fn CGEventCreateScrollWheelEvent2(
         source: *const c_void,
         units: u32,
         wheel_count: u32,
         wheel1: i32,
         wheel2: i32,
+        wheel3: i32,
     ) -> CGEventRef;
     fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
     fn CGEventPost(tap: u32, event: CGEventRef);
@@ -89,6 +93,10 @@ pub struct MacInjector {
     other_down: bool,
     last_click: Option<(Instant, CGPoint)>,
     click_state: i64,
+    /// Sub-pixel scroll carried to the next event (trackpads send fractions).
+    scroll_remainder: (f32, f32),
+    /// Keys currently held down on the host, released if the session ends.
+    keys_down: Vec<u16>,
 }
 
 // Only raw CG calls, no shared state.
@@ -128,6 +136,42 @@ impl MacInjector {
             other_down: false,
             last_click: None,
             click_state: 1,
+            scroll_remainder: (0.0, 0.0),
+            keys_down: Vec::new(),
+        }
+    }
+
+    fn post_key(&self, keycode: u16, pressed: bool) {
+        unsafe {
+            let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode, pressed);
+            if !event.is_null() {
+                CGEventPost(TAP_HID, event);
+                CFRelease(event as _);
+            }
+        }
+    }
+
+    fn scroll(&mut self, dx: f32, dy: f32) {
+        let x = dx + self.scroll_remainder.0;
+        let y = dy + self.scroll_remainder.1;
+        let (whole_x, whole_y) = (x.trunc(), y.trunc());
+        self.scroll_remainder = (x - whole_x, y - whole_y);
+        if whole_x == 0.0 && whole_y == 0.0 {
+            return;
+        }
+        unsafe {
+            let event = CGEventCreateScrollWheelEvent2(
+                std::ptr::null(),
+                SCROLL_UNIT_PIXEL,
+                2,
+                whole_y as i32,
+                whole_x as i32,
+                0,
+            );
+            if !event.is_null() {
+                CGEventPost(TAP_HID, event);
+                CFRelease(event as _);
+            }
         }
     }
 
@@ -225,26 +269,17 @@ impl InputInjector for MacInjector {
                 self.move_to(self.cursor.x + dx as f64, self.cursor.y + dy as f64);
             }
             InputEvent::MouseButton { button, pressed } => self.button(button, pressed),
-            InputEvent::Scroll { dx, dy, .. } => unsafe {
-                let event = CGEventCreateScrollWheelEvent(
-                    std::ptr::null(),
-                    SCROLL_UNIT_PIXEL,
-                    2,
-                    dy as i32,
-                    dx as i32,
-                );
-                if !event.is_null() {
-                    CGEventPost(TAP_HID, event);
-                    CFRelease(event as _);
+            InputEvent::Scroll { dx, dy, .. } => self.scroll(dx, dy),
+            InputEvent::Key { scancode, pressed } => {
+                if pressed {
+                    if !self.keys_down.contains(&scancode) {
+                        self.keys_down.push(scancode);
+                    }
+                } else {
+                    self.keys_down.retain(|&key| key != scancode);
                 }
-            },
-            InputEvent::Key { scancode, pressed } => unsafe {
-                let event = CGEventCreateKeyboardEvent(std::ptr::null(), scancode, pressed);
-                if !event.is_null() {
-                    CGEventPost(TAP_HID, event);
-                    CFRelease(event as _);
-                }
-            },
+                self.post_key(scancode, pressed);
+            }
             InputEvent::Gesture { kind, phase, .. } => {
                 // Semantic gesture replay (research/05 §4) is a later milestone.
                 if phase == GesturePhase::Begin {
@@ -253,5 +288,21 @@ impl InputInjector for MacInjector {
             }
         }
         Ok(())
+    }
+
+    fn release_all(&mut self) {
+        for keycode in std::mem::take(&mut self.keys_down) {
+            self.post_key(keycode, false);
+        }
+        if self.left_down {
+            self.button(MouseButton::Left, false);
+        }
+        if self.right_down {
+            self.button(MouseButton::Right, false);
+        }
+        if self.other_down {
+            self.button(MouseButton::Middle, false);
+        }
+        self.scroll_remainder = (0.0, 0.0);
     }
 }

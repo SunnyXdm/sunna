@@ -78,9 +78,7 @@ impl Server {
     pub fn bind(addr: SocketAddr) -> Result<Self> {
         let certified = rcgen::generate_simple_self_signed(vec!["sunna".to_string()])?;
         let cert: CertificateDer<'static> = certified.cert.der().clone();
-        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
-            certified.key_pair.serialize_der(),
-        ));
+        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
 
         let mut tls = rustls::ServerConfig::builder_with_provider(crypto_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])?
@@ -146,8 +144,8 @@ async fn finish_connect(
     server_name: &str,
 ) -> Result<ClientConnection> {
     tls.alpn_protocols = vec![sunna_proto::ALPN.to_vec()];
-    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
-        .map_err(TransportError::Crypto)?;
+    let crypto =
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls).map_err(TransportError::Crypto)?;
     let mut client_config = ClientConfig::new(Arc::new(crypto));
     client_config.transport_config(Arc::new(transport_config()));
 
@@ -215,8 +213,8 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 
 /// Length-prefixed postcard control messages over one bidirectional stream.
 pub struct ControlChannel {
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
+    sender: ControlSender,
+    receiver: ControlReceiver,
 }
 
 impl ControlChannel {
@@ -224,25 +222,64 @@ impl ControlChannel {
     /// promptly — QUIC streams are lazy and the server cannot accept an unopened stream.
     pub async fn open(connection: &Connection) -> Result<Self> {
         let (send, recv) = connection.open_bi().await?;
-        Ok(Self { send, recv })
+        Ok(Self::from_streams(send, recv))
     }
 
     /// Host side: accept the client's control stream.
     pub async fn accept(connection: &Connection) -> Result<Self> {
         let (send, recv) = connection.accept_bi().await?;
-        Ok(Self { send, recv })
+        Ok(Self::from_streams(send, recv))
     }
 
+    fn from_streams(send: quinn::SendStream, recv: quinn::RecvStream) -> Self {
+        Self {
+            sender: ControlSender { send },
+            receiver: ControlReceiver { recv },
+        }
+    }
+
+    pub async fn send(&mut self, msg: &ControlMessage) -> Result<()> {
+        self.sender.send(msg).await
+    }
+
+    /// Not cancellation-safe: see [`ControlReceiver::recv`].
+    pub async fn recv(&mut self) -> Result<ControlMessage> {
+        self.receiver.recv().await
+    }
+
+    /// Split into halves so a dedicated task can own the receiver.
+    pub fn into_split(self) -> (ControlSender, ControlReceiver) {
+        (self.sender, self.receiver)
+    }
+}
+
+pub struct ControlSender {
+    send: quinn::SendStream,
+}
+
+impl ControlSender {
     pub async fn send(&mut self, msg: &ControlMessage) -> Result<()> {
         let bytes = messages::encode(msg)?;
         if bytes.len() > MAX_CONTROL_MESSAGE {
             return Err(TransportError::MessageTooLarge(bytes.len()));
         }
-        self.send.write_all(&(bytes.len() as u32).to_be_bytes()).await?;
-        self.send.write_all(&bytes).await?;
+        let mut framed = Vec::with_capacity(4 + bytes.len());
+        framed.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&bytes);
+        self.send.write_all(&framed).await?;
         Ok(())
     }
+}
 
+pub struct ControlReceiver {
+    recv: quinn::RecvStream,
+}
+
+impl ControlReceiver {
+    /// **Not cancellation-safe.** A message is read in two steps (length,
+    /// then body); dropping this future between them loses the bytes already
+    /// read and desyncs the framing. Never race it in `tokio::select!` —
+    /// give the receiver its own task and forward messages over a channel.
     pub async fn recv(&mut self) -> Result<ControlMessage> {
         let mut len_bytes = [0u8; 4];
         self.recv.read_exact(&mut len_bytes).await?;

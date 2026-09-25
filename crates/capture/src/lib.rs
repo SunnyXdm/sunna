@@ -36,15 +36,40 @@ impl PixelFormat {
     }
 }
 
-/// A captured frame. Milestone 0 carries CPU pixels; the real pipeline will
-/// carry GPU surface handles end-to-end (zero-copy rule, research/03 §1-2).
+/// Pixel storage for a captured frame. The synthetic source and tests carry
+/// CPU bytes; real capture backends carry GPU surfaces so pixels flow from
+/// compositor to encoder without touching system memory (zero-copy rule,
+/// research/03 §1-2).
+#[derive(Debug, Clone)]
+pub enum FrameData {
+    Cpu(Bytes),
+    /// An IOSurface wrapped in a CVPixelBuffer, ready for VideoToolbox.
+    #[cfg(target_os = "macos")]
+    Surface(macos::SurfaceFrame),
+}
+
+impl FrameData {
+    /// Materialize as tightly-packed CPU bytes. Cheap for `Cpu` (refcount
+    /// bump); a full copy for `Surface` — only the passthrough codec and
+    /// tests should need this.
+    pub fn to_cpu(&self) -> anyhow::Result<Bytes> {
+        match self {
+            FrameData::Cpu(bytes) => Ok(bytes.clone()),
+            #[cfg(target_os = "macos")]
+            FrameData::Surface(surface) => surface.to_bytes(),
+        }
+    }
+}
+
+/// A captured frame. Real backends carry a GPU surface in `data`; use
+/// `FrameData::to_cpu` only off the hot path.
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub frame_id: u64,
     pub width: u32,
     pub height: u32,
     pub format: PixelFormat,
-    pub data: Bytes,
+    pub data: FrameData,
     /// Wall-clock capture timestamp (`sunna_proto::now_us`).
     pub capture_ts_us: u64,
 }
@@ -122,7 +147,7 @@ impl FrameSource for SyntheticSource {
             width: self.width,
             height: self.height,
             format: PixelFormat::Bgra8,
-            data: Bytes::from(data),
+            data: FrameData::Cpu(Bytes::from(data)),
             capture_ts_us,
         };
         self.frame_id += 1;
@@ -153,7 +178,7 @@ mod tests {
         let second = source.next_frame().unwrap();
         assert_eq!(first.frame_id, 0);
         assert_eq!(second.frame_id, 1);
-        assert_eq!(first.data.len(), 64 * 32 * 4);
+        assert_eq!(first.data.to_cpu().unwrap().len(), 64 * 32 * 4);
         assert!(second.capture_ts_us >= first.capture_ts_us);
     }
 }
