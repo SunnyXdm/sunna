@@ -20,15 +20,21 @@ use sunna_proto::messages::ControlMessage;
 use sunna_transport::quinn::{Connection, SendDatagramError};
 use sunna_transport::{ControlChannel, Server};
 
-pub type SourceFactory = Box<dyn Fn() -> Box<dyn FrameSource> + Send + Sync>;
-pub type EncoderFactory = Box<dyn Fn() -> Box<dyn Encoder> + Send + Sync>;
+/// Builds a frame source producing frames of the given size.
+pub type SourceFactory = Box<dyn Fn(u32, u32) -> anyhow::Result<Box<dyn FrameSource>> + Send + Sync>;
+/// Builds an encoder for frames of the given size.
+pub type EncoderFactory = Box<dyn Fn(u32, u32) -> anyhow::Result<Box<dyn Encoder>> + Send + Sync>;
 pub type InjectorFactory = Box<dyn Fn() -> Box<dyn InputInjector> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub name: String,
+    /// Largest stream size (the capture's native size by default). Each
+    /// session gets this, scaled down to fit the viewer's `max_size`.
     pub width: u32,
     pub height: u32,
+    /// Shared session token clients must present; empty disables the check.
+    pub token: String,
     pub fps: u32,
     /// Codec name announced in HelloAck; must match what the encoder factory builds.
     pub codec: String,
@@ -82,23 +88,57 @@ async fn serve(
     new_injector: &InjectorFactory,
 ) -> anyhow::Result<()> {
     let mut control = ControlChannel::accept(connection).await?;
-    match control.recv().await? {
-        ControlMessage::Hello { version, name } => {
-            anyhow::ensure!(
-                version == sunna_proto::PROTOCOL_VERSION,
-                "protocol version mismatch: client {version}, host {}",
-                sunna_proto::PROTOCOL_VERSION
+    let (width, height) = match control.recv().await? {
+        ControlMessage::Hello {
+            version,
+            name,
+            token,
+            max_size,
+        } => {
+            if version != sunna_proto::PROTOCOL_VERSION {
+                let reason = format!(
+                    "protocol version mismatch: client {version}, host {} (rebuild both sides)",
+                    sunna_proto::PROTOCOL_VERSION
+                );
+                let _ = control.send(&ControlMessage::Refused { reason: reason.clone() }).await;
+                anyhow::bail!(reason);
+            }
+            if !config.token.is_empty() && !tokens_match(&token, &config.token) {
+                let _ = control
+                    .send(&ControlMessage::Refused { reason: "wrong session token".into() })
+                    .await;
+                anyhow::bail!("client {name:?} presented a wrong session token");
+            }
+            let size = fit_within((config.width, config.height), max_size);
+            tracing::info!(
+                client = %name,
+                ?max_size,
+                width = size.0,
+                height = size.1,
+                "hello received"
             );
-            tracing::info!(client = %name, "hello received");
+            size
         }
         other => anyhow::bail!("expected Hello, got {other:?}"),
-    }
+    };
+    // Build the pipeline before acknowledging so a failure reaches the
+    // client as a refusal instead of a silent stream.
+    let pipeline = new_source(width, height).and_then(|source| Ok((source, new_encoder(width, height)?)));
+    let (source, encoder) = match pipeline {
+        Ok(pipeline) => pipeline,
+        Err(error) => {
+            let _ = control
+                .send(&ControlMessage::Refused { reason: format!("host pipeline failed: {error}") })
+                .await;
+            return Err(error);
+        }
+    };
     control
         .send(&ControlMessage::HelloAck {
             version: sunna_proto::PROTOCOL_VERSION,
             name: config.name.clone(),
-            width: config.width,
-            height: config.height,
+            width,
+            height,
             fps: config.fps,
             codec: config.codec.clone(),
         })
@@ -116,8 +156,6 @@ async fn serve(
         let connection = connection.clone();
         let stop = Arc::clone(&stop);
         let signals = Arc::clone(&signals);
-        let source = new_source();
-        let encoder = new_encoder();
         let simulate_loss = config.simulate_loss;
         std::thread::spawn(move || {
             media_loop(
@@ -147,6 +185,29 @@ async fn serve(
     result
 }
 
+/// Scale `native` down (never up) to fit `max`, keeping the aspect ratio;
+/// even dimensions for the encoder.
+fn fit_within(native: (u32, u32), max: Option<(u32, u32)>) -> (u32, u32) {
+    let (width, height) = native;
+    let scale = match max {
+        Some((max_w, max_h)) if max_w > 0 && max_h > 0 => (max_w as f64 / width as f64)
+            .min(max_h as f64 / height as f64)
+            .min(1.0),
+        _ => 1.0,
+    };
+    let even = |value: f64| ((value.round() as u32).max(2)) & !1;
+    (even(width as f64 * scale), even(height as f64 * scale))
+}
+
+/// Constant-time comparison so response timing doesn't leak the token.
+fn tokens_match(presented: &str, expected: &str) -> bool {
+    let (a, b) = (presented.as_bytes(), expected.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 fn media_loop(
     connection: Connection,
     mut source: Box<dyn FrameSource>,
@@ -162,7 +223,6 @@ fn media_loop(
     const MAX_SENDER_BACKLOG: usize = 300 * 1024;
 
     let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
-    let mut sent_frames: u64 = 0;
     let mut last_local_cut = Instant::now() - Duration::from_secs(1);
     // Wire frame ids count frames that left the encoder — decoupled from
     // capture ids so skipped captures and encoder drops (which the reference
@@ -172,6 +232,7 @@ fn media_loop(
     let mut wire_frame_id: u64 = 0;
     let mut consecutive_encode_failures: u32 = 0;
     let mut sender_dropped: u64 = 0;
+    let mut window = HostWindow::new();
     // The encoder factory configured the ceiling; align it with the actual
     // starting target before the first frame.
     let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
@@ -226,15 +287,20 @@ fn media_loop(
             .saturating_sub(connection.datagram_send_buffer_space());
         if backlog > MAX_SENDER_BACKLOG {
             sender_dropped += 1;
+            window.sender_drops += 1;
             local_cut("backlog before encode", sender_dropped, backlog);
+            window.maybe_report(applied_bitrate, backlog);
             continue;
         }
+        let encode_started = Instant::now();
         let encoded = match encoder.encode(&frame) {
             Ok(Some(encoded)) => {
                 consecutive_encode_failures = 0;
+                window.encoded(encode_started.elapsed(), &encoded);
                 encoded
             }
             Ok(None) => {
+                window.encoder_drops += 1;
                 // Normal under load/rate-control pressure; the next emitted
                 // frame still references the last emitted one.
                 tracing::debug!(frame_id = frame.frame_id, "encoder dropped frame");
@@ -266,6 +332,7 @@ fn media_loop(
         let space = connection.datagram_send_buffer_space();
         if space < frame_bytes {
             sender_dropped += 1;
+            window.sender_drops += 1;
             wire_frame_id += 1;
             signals.force_keyframe.store(true, Ordering::Relaxed);
             local_cut(
@@ -291,10 +358,76 @@ fn media_loop(
                 }
             }
         }
-        sent_frames += 1;
-        if sent_frames % 300 == 0 {
-            tracing::debug!(sent_frames, "media loop alive");
+        window.sent_frames += 1;
+        window.sent_bytes += frame_bytes as u64;
+        let backlog = sunna_transport::DATAGRAM_SEND_BUFFER_SIZE
+            .saturating_sub(connection.datagram_send_buffer_space());
+        window.maybe_report(applied_bitrate, backlog);
+    }
+}
+
+/// Per-second host-side stats, logged as one `host window` event.
+struct HostWindow {
+    started: Instant,
+    sent_frames: u64,
+    sent_bytes: u64,
+    keyframes: u64,
+    encoder_drops: u64,
+    sender_drops: u64,
+    encode_us: Vec<u64>,
+    capture_to_encoded_us: Vec<u64>,
+}
+
+impl HostWindow {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            sent_frames: 0,
+            sent_bytes: 0,
+            keyframes: 0,
+            encoder_drops: 0,
+            sender_drops: 0,
+            encode_us: Vec::with_capacity(128),
+            capture_to_encoded_us: Vec::with_capacity(128),
         }
+    }
+
+    fn encoded(&mut self, took: Duration, frame: &sunna_codec::EncodedFrame) {
+        self.encode_us.push(took.as_micros() as u64);
+        self.capture_to_encoded_us
+            .push(frame.encode_done_ts_us.saturating_sub(frame.capture_ts_us));
+        if frame.keyframe {
+            self.keyframes += 1;
+        }
+    }
+
+    fn maybe_report(&mut self, bitrate_bps: u32, backlog_bytes: usize) {
+        let elapsed = self.started.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            return;
+        }
+        let pct = |samples: &mut Vec<u64>, p: usize| -> f64 {
+            if samples.is_empty() {
+                return 0.0;
+            }
+            samples.sort_unstable();
+            samples[(samples.len() - 1) * p / 100] as f64 / 1000.0
+        };
+        tracing::info!(
+            fps = self.sent_frames,
+            mbps = format!("{:.1}", self.sent_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6),
+            target_mbps = format!("{:.1}", bitrate_bps as f64 / 1e6),
+            keyframes = self.keyframes,
+            encoder_drops = self.encoder_drops,
+            sender_drops = self.sender_drops,
+            backlog_kb = backlog_bytes / 1024,
+            encode_ms_p50 = pct(&mut self.encode_us, 50),
+            encode_ms_p95 = pct(&mut self.encode_us, 95),
+            capture_to_encoded_ms_p50 = pct(&mut self.capture_to_encoded_us, 50),
+            capture_to_encoded_ms_p95 = pct(&mut self.capture_to_encoded_us, 95),
+            "host window"
+        );
+        *self = Self::new();
     }
 }
 

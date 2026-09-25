@@ -6,13 +6,14 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["env"] }
 sunna-capture.workspace = true
 sunna-client.workspace = true
 sunna-codec.workspace = true
 sunna-host.workspace = true
 sunna-input.workspace = true
 sunna-proto.workspace = true
+sunna-telemetry.workspace = true
 sunna-transport.workspace = true
 softbuffer.workspace = true
 tokio.workspace = true

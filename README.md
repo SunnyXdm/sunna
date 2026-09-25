@@ -12,6 +12,28 @@ Loopback bench: 60 fps 0 drops clean; at 20% simulated loss still 0 drops (all F
 
 **Testable end-to-end on macOS**: `sunnad --source screen` captures the real display (CGDisplayStream; SCK backend later), `sunna-cli view` opens a viewer window (winit + softbuffer CPU blit; wgpu presenter later) and forwards mouse/scroll/keyboard, injected host-side via CGEventPost. Both directions of permission apply: Screen Recording for the host's capture, Accessibility for the host's input injection.
 
+## Dogfooding between two Macs (Tailscale)
+
+`scripts/dogfood.sh` builds and runs everything; logs from both Macs ship to a collector on the tailnet (`tools/logd/`), so a session can be analysed afterwards.
+
+One-time, on each Mac, create `~/.sunna/dogfood.env`:
+
+```sh
+SUNNA_TOKEN=<same random string on both Macs>
+SUNNA_LOG_URL=http://<collector tailnet IP>:48900
+SUNNA_LOG_TOKEN=<collector token>
+```
+
+Then:
+
+```sh
+git pull
+scripts/dogfood.sh host                     # on the Mac to control
+scripts/dogfood.sh view <host-tailscale-name>   # on the Mac you sit at
+```
+
+The host listens only on its Tailscale address and refuses viewers without the session token. The viewer asks the host to scale its capture to fit your screen, so the stream is shown 1:1. On the first `host` run, grant your terminal Screen Recording and Accessibility in System Settings → Privacy & Security, reopen the terminal, and run again. Builds are unsigned: running from Terminal keeps those permissions across rebuilds.
+
 ## Try it (macOS)
 
 **Stream your screen and control it from a window:**

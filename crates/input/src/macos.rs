@@ -44,6 +44,29 @@ const BUTTON_CENTER: u32 = 2;
 
 const SCROLL_UNIT_PIXEL: u32 = 0;
 const FIELD_CLICK_STATE: u32 = 1; // kCGMouseEventClickState
+const FIELD_KEYBOARD_AUTOREPEAT: u32 = 8; // kCGKeyboardEventAutorepeat
+const FIELD_SCROLL_IS_CONTINUOUS: u32 = 88; // kCGScrollWheelEventIsContinuous
+
+// CGEventFlags modifier masks.
+const FLAG_CAPS_LOCK: u64 = 0x0001_0000;
+const FLAG_SHIFT: u64 = 0x0002_0000;
+const FLAG_CONTROL: u64 = 0x0004_0000;
+const FLAG_OPTION: u64 = 0x0008_0000;
+const FLAG_COMMAND: u64 = 0x0010_0000;
+const FLAG_FN: u64 = 0x0080_0000;
+
+/// Modifier flag for a mac virtual keycode, if it is a modifier key.
+fn modifier_flag(keycode: u16) -> Option<u64> {
+    match keycode {
+        0x37 | 0x36 => Some(FLAG_COMMAND),
+        0x38 | 0x3C => Some(FLAG_SHIFT),
+        0x3A | 0x3D => Some(FLAG_OPTION),
+        0x3B | 0x3E => Some(FLAG_CONTROL),
+        0x39 => Some(FLAG_CAPS_LOCK),
+        0x3F => Some(FLAG_FN),
+        _ => None,
+    }
+}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -72,6 +95,7 @@ extern "C" {
         wheel3: i32,
     ) -> CGEventRef;
     fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
+    fn CGEventSetFlags(event: CGEventRef, flags: u64);
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CFRelease(cf: *const c_void);
 }
@@ -141,17 +165,31 @@ impl MacInjector {
         }
     }
 
-    fn post_key(&self, keycode: u16, pressed: bool) {
+    /// Modifier flags for the keys currently held. Posted events don't pick
+    /// these up from the system reliably, so every event carries them —
+    /// otherwise Cmd+C, Shift-click and friends arrive as plain C and clicks.
+    fn flags(&self) -> u64 {
+        self.keys_down
+            .iter()
+            .filter_map(|&key| modifier_flag(key))
+            .fold(0, |flags, flag| flags | flag)
+    }
+
+    fn post_key(&self, keycode: u16, pressed: bool, repeat: bool) {
         unsafe {
             let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode, pressed);
             if !event.is_null() {
+                CGEventSetFlags(event, self.flags());
+                if repeat {
+                    CGEventSetIntegerValueField(event, FIELD_KEYBOARD_AUTOREPEAT, 1);
+                }
                 CGEventPost(TAP_HID, event);
                 CFRelease(event as _);
             }
         }
     }
 
-    fn scroll(&mut self, dx: f32, dy: f32) {
+    fn scroll(&mut self, dx: f32, dy: f32, continuous: bool) {
         let x = dx + self.scroll_remainder.0;
         let y = dy + self.scroll_remainder.1;
         let (whole_x, whole_y) = (x.trunc(), y.trunc());
@@ -169,6 +207,12 @@ impl MacInjector {
                 0,
             );
             if !event.is_null() {
+                CGEventSetFlags(event, self.flags());
+                if continuous {
+                    // Trackpad-style scrolling: apps scroll smoothly by pixel
+                    // instead of treating each event as a wheel notch.
+                    CGEventSetIntegerValueField(event, FIELD_SCROLL_IS_CONTINUOUS, 1);
+                }
                 CGEventPost(TAP_HID, event);
                 CFRelease(event as _);
             }
@@ -207,6 +251,7 @@ impl MacInjector {
             if let Some(clicks) = click_state {
                 CGEventSetIntegerValueField(event, FIELD_CLICK_STATE, clicks);
             }
+            CGEventSetFlags(event, self.flags());
             CGEventPost(TAP_HID, event);
             CFRelease(event as _);
         }
@@ -269,8 +314,12 @@ impl InputInjector for MacInjector {
                 self.move_to(self.cursor.x + dx as f64, self.cursor.y + dy as f64);
             }
             InputEvent::MouseButton { button, pressed } => self.button(button, pressed),
-            InputEvent::Scroll { dx, dy, .. } => self.scroll(dx, dy),
-            InputEvent::Key { scancode, pressed } => {
+            InputEvent::Scroll { dx, dy, phase, .. } => self.scroll(dx, dy, phase.is_some()),
+            InputEvent::Key {
+                scancode,
+                pressed,
+                repeat,
+            } => {
                 if pressed {
                     if !self.keys_down.contains(&scancode) {
                         self.keys_down.push(scancode);
@@ -278,7 +327,7 @@ impl InputInjector for MacInjector {
                 } else {
                     self.keys_down.retain(|&key| key != scancode);
                 }
-                self.post_key(scancode, pressed);
+                self.post_key(scancode, pressed, repeat);
             }
             InputEvent::Gesture { kind, phase, .. } => {
                 // Semantic gesture replay (research/05 §4) is a later milestone.
@@ -291,8 +340,12 @@ impl InputInjector for MacInjector {
     }
 
     fn release_all(&mut self) {
-        for keycode in std::mem::take(&mut self.keys_down) {
-            self.post_key(keycode, false);
+        // Release non-modifiers first, while their modifiers still apply.
+        let mut keys = self.keys_down.clone();
+        keys.sort_by_key(|&key| modifier_flag(key).is_some());
+        for keycode in keys {
+            self.keys_down.retain(|&key| key != keycode);
+            self.post_key(keycode, false, false);
         }
         if self.left_down {
             self.button(MouseButton::Left, false);

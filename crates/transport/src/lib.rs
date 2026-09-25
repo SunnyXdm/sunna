@@ -334,6 +334,8 @@ mod tests {
             .send(&ControlMessage::Hello {
                 version: sunna_proto::PROTOCOL_VERSION,
                 name: "test-client".into(),
+                token: String::new(),
+                max_size: None,
             })
             .await
             .unwrap();

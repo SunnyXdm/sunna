@@ -1517,6 +1517,8 @@ All ten edits in [Fable’s final review](sources/review-fable.md) and their blo
 
 ## Decisions requiring the owner's input
 
+> **Owner decision, 2026-09-25:** no Apple Developer Program enrollment for now (cost). Dogfooding uses unsigned builds run from Terminal, which holds the Screen Recording/Accessibility grants across rebuilds. A free self-signed code-signing identity can give a stable TCC identity for an app bundle before any paid enrollment; enrollment is only required for notarized distribution to others. Log shipping for dogfooding: `tools/logd` on the tailnet.
+
 These are the remaining product/business decisions. Technical contracts have been adjudicated; the owner need not choose packet formats, controller algorithms or OS APIs. Technical defaults above remain actionable while these are considered.
 
 1. **License and paid scope (D-34).** Confirm the engine/service license and whether to adopt Fable’s open-core/team model or Claude’s unqualified free promise. Recommended: preserve account-optional local access and self-hostability; make no unapproved pricing/license promise.

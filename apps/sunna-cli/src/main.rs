@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use sunna_capture::{FrameSource, SyntheticSource};
-use sunna_client::run_client;
+use sunna_client::{run_client, ClientOptions};
 use sunna_codec::{default_codec_name, make_encoder};
 use sunna_host::{HostConfig, run_host};
 use sunna_input::{InputInjector, LogInjector};
@@ -34,6 +34,9 @@ enum Command {
         /// SNI name expected by the host's self-signed certificate.
         #[arg(long, default_value = "sunna")]
         server_name: String,
+        /// Session token printed by (or given to) sunnad.
+        #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
+        token: String,
     },
     /// Connect headless: stats only (dev TLS: certificate NOT verified).
     Connect {
@@ -44,6 +47,9 @@ enum Command {
         /// Disconnect after this many seconds (runs until closed if omitted).
         #[arg(long)]
         seconds: Option<u64>,
+        /// Session token printed by (or given to) sunnad.
+        #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
+        token: String,
     },
     /// In-process loopback benchmark: host + client, one report.
     Bench {
@@ -69,15 +75,27 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let cli = Cli::parse();
+    let role = match cli.command {
+        Command::View { .. } => "viewer",
+        Command::Connect { .. } => "connect",
+        Command::Bench { .. } => "bench",
+    };
+    let _telemetry = sunna_telemetry::init(role, sunna_telemetry::Remote::from_env());
+    let result = run(cli);
+    if let Err(error) = &result {
+        tracing::error!("{error:#}");
+    }
+    result
+}
 
-    match Cli::parse().command {
-        Command::View { addr, server_name } => view(addr, server_name),
+fn run(cli: Cli) -> anyhow::Result<()> {
+    match cli.command {
+        Command::View {
+            addr,
+            server_name,
+            token,
+        } => view(addr, server_name, token),
         command => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -90,7 +108,21 @@ fn main() -> anyhow::Result<()> {
 /// The viewer owns the main thread (winit requirement on macOS); the network
 /// session runs on its own tokio runtime in a background thread and wakes the
 /// event loop per frame.
-fn view(addr: SocketAddr, server_name: String) -> anyhow::Result<()> {
+/// Largest stream this machine can show 1:1 in a window: most of the main
+/// display, leaving room for the menu bar, Dock and title bar.
+fn viewer_max_size() -> Option<(u32, u32)> {
+    #[cfg(target_os = "macos")]
+    {
+        let (width, height) = sunna_capture::macos::main_display_pixel_size();
+        Some((width * 9 / 10, height * 8 / 10))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+fn view(addr: SocketAddr, server_name: String, token: String) -> anyhow::Result<()> {
     tracing::warn!("dev TLS: server certificate is NOT verified");
     let event_loop = viewer::create_event_loop()?;
     let proxy = event_loop.create_proxy();
@@ -109,10 +141,15 @@ fn view(addr: SocketAddr, server_name: String) -> anyhow::Result<()> {
     std::thread::spawn(move || {
         let _endpoint_guard = client.endpoint;
         let mut announced = false;
+        let options = ClientOptions {
+            name: "sunna-viewer".into(),
+            token,
+            max_size: viewer_max_size(),
+            duration: None,
+        };
         let result = runtime.block_on(run_client(
             connection,
-            "sunna-viewer",
-            None,
+            options,
             move |frame| {
                 if !announced {
                     announced = true;
@@ -124,10 +161,15 @@ fn view(addr: SocketAddr, server_name: String) -> anyhow::Result<()> {
             input_rx,
         ));
         match result {
-            Ok(report) => println!("{report}"),
-            Err(error) => eprintln!("session error: {error}"),
+            Ok(report) => {
+                tracing::info!(report = %report, "session ended");
+                println!("{report}");
+            }
+            Err(error) => tracing::error!("session error: {error:#}"),
         }
-        // The event loop has no reason to outlive the session.
+        // The event loop has no reason to outlive the session; exit skips
+        // destructors, so ship remaining telemetry first.
+        sunna_telemetry::flush();
         std::process::exit(0);
     });
 
@@ -152,18 +194,18 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             addr,
             server_name,
             seconds,
+            token,
         } => {
             tracing::warn!("dev TLS: server certificate is NOT verified");
             let client = connect_insecure(addr, &server_name).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
-            let report = run_client(
-                client.connection,
-                "sunna-cli",
-                seconds.map(Duration::from_secs),
-                |_| {},
-                input_rx,
-            )
-            .await?;
+            let options = ClientOptions {
+                name: "sunna-cli".into(),
+                token,
+                max_size: None,
+                duration: seconds.map(Duration::from_secs),
+            };
+            let report = run_client(client.connection, options, |_| {}, input_rx).await?;
             println!("{report}");
         }
         Command::Bench {
@@ -187,31 +229,28 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 codec: codec.clone(),
                 max_bitrate_bps: bitrate_bps,
                 simulate_loss,
+                token: String::new(),
             };
             make_encoder(&codec, width, height, fps, bitrate_bps)?;
             let host_task = tokio::spawn(run_host(
                 server,
                 config,
-                Box::new(move || {
-                    Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>
+                Box::new(move |width, height| {
+                    Ok(Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>)
                 }),
-                Box::new(move || {
-                    make_encoder(&codec, width, height, fps, bitrate_bps)
-                        .expect("encoder was validated at startup")
-                }),
+                Box::new(move |width, height| make_encoder(&codec, width, height, fps, bitrate_bps)),
                 Box::new(|| Box::new(LogInjector) as Box<dyn InputInjector>),
             ));
 
             let client = connect_trusted(addr, "sunna", &cert).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
-            let report = run_client(
-                client.connection,
-                "bench-client",
-                Some(Duration::from_secs(seconds)),
-                |_| {},
-                input_rx,
-            )
-            .await?;
+            let options = ClientOptions {
+                name: "bench-client".into(),
+                token: String::new(),
+                max_size: None,
+                duration: Some(Duration::from_secs(seconds)),
+            };
+            let report = run_client(client.connection, options, |_| {}, input_rx).await?;
             host_task.abort();
             println!("{report}");
         }

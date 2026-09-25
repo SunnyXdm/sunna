@@ -5,7 +5,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMessage {
     /// First message from the client after the control stream opens.
-    Hello { version: u16, name: String },
+    Hello {
+        version: u16,
+        name: String,
+        /// Shared session token; the host refuses clients that don't match.
+        token: String,
+        /// Largest stream the viewer can show 1:1, in physical pixels. The
+        /// host scales capture on its GPU to fit, instead of the viewer
+        /// scaling (and blurring) a larger stream.
+        max_size: Option<(u32, u32)>,
+    },
+    /// Host refusal (bad token, busy...), sent instead of `HelloAck`.
+    Refused { reason: String },
     /// Host reply describing the stream it is about to send.
     HelloAck {
         version: u16,
@@ -64,7 +75,12 @@ pub enum GesturePhase {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputEvent {
     /// Keyboard by HID/OS scancode — never translated characters (see research/03 §6).
-    Key { scancode: u16, pressed: bool },
+    Key {
+        scancode: u16,
+        pressed: bool,
+        /// OS key auto-repeat (the host OS won't repeat injected keys itself).
+        repeat: bool,
+    },
     /// Relative mouse motion (FPS games, pointer-lock mode).
     MouseMoveRel { dx: f32, dy: f32 },
     /// Absolute mouse position, normalized to 0..1 of the host stream area.
@@ -113,6 +129,8 @@ mod tests {
             ControlMessage::Hello {
                 version: 0,
                 name: "test".into(),
+                token: "secret".into(),
+                max_size: Some((2304, 1440)),
             },
             ControlMessage::Input(InputEvent::Gesture {
                 kind: GestureKind::Swipe,

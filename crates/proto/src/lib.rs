@@ -11,7 +11,7 @@ pub mod stats;
 pub const ALPN: &[u8] = b"sunna/0";
 
 /// Bumped on every incompatible wire change while the protocol is unstable.
-pub const PROTOCOL_VERSION: u16 = 0;
+pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Current wall-clock time in microseconds since the unix epoch.
 ///

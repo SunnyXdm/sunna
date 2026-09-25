@@ -2,9 +2,13 @@
 //!
 //! `--source screen` streams the real display (macOS only for now; requires
 //! the Screen Recording permission for the process that launches sunnad).
-//! `--source synthetic` streams a test pattern. Input is logged, not injected,
-//! until the injection backend lands. No authentication yet: binds localhost
-//! by default; do not expose beyond a trusted LAN.
+//! `--source synthetic` streams a test pattern. Input is injected on macOS
+//! (Accessibility permission), logged elsewhere.
+//!
+//! Access control is a shared session token (`--token` / `SUNNA_TOKEN`; one
+//! is generated and printed if missing when listening beyond loopback). TLS is
+//! still dev-grade (self-signed, unverified by the client): bind to a private
+//! network such as your tailnet, never the open internet.
 
 use std::net::SocketAddr;
 
@@ -52,6 +56,10 @@ struct Args {
     /// Host name announced to clients.
     #[arg(long, default_value = "sunnad")]
     name: String,
+    /// Session token clients must present. Generated and printed when
+    /// listening beyond loopback without one.
+    #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
+    token: String,
 }
 
 fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
@@ -81,24 +89,21 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
     }
 }
 
-fn make_source_factory(
-    source: Source,
-    width: u32,
-    height: u32,
-    fps: u32,
-) -> Box<dyn Fn() -> Box<dyn FrameSource> + Send + Sync> {
+fn make_source_factory(source: Source, fps: u32) -> sunna_host::SourceFactory {
     match source {
-        Source::Synthetic => Box::new(move || {
-            Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>
+        Source::Synthetic => Box::new(move |width, height| {
+            Ok(Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>)
         }),
         Source::Screen => {
             #[cfg(target_os = "macos")]
             {
-                Box::new(move || {
-                    Box::new(
-                        sunna_capture::macos::ScreenSource::new(Some(width), Some(height), fps)
-                            .expect("screen capture was validated at startup"),
-                    ) as Box<dyn FrameSource>
+                // CGDisplayStream scales on the GPU to the session's size.
+                Box::new(move |width, height| {
+                    Ok(Box::new(sunna_capture::macos::ScreenSource::new(
+                        Some(width),
+                        Some(height),
+                        fps,
+                    )?) as Box<dyn FrameSource>)
                 })
             }
             #[cfg(not(target_os = "macos"))]
@@ -109,15 +114,30 @@ fn make_source_factory(
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+/// 128 random bits as hex, from the OS RNG.
+fn generate_token() -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let _telemetry = sunna_telemetry::init("host", sunna_telemetry::Remote::from_env());
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let result = runtime.block_on(run(args));
+    if let Err(error) = &result {
+        tracing::error!("{error:#}");
+    }
+    result
+}
+
+async fn run(mut args: Args) -> anyhow::Result<()> {
+    if args.token.is_empty() && !args.listen.ip().is_loopback() {
+        args.token = generate_token()?;
+        println!("\nsession token (pass to the viewer with --token): {}\n", args.token);
+    }
 
     let (width, height) = resolve_dimensions(&args)?;
     let server = Server::bind(args.listen)?;
@@ -129,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
         "sunnad listening"
     );
     if !args.listen.ip().is_loopback() {
-        tracing::warn!("listening beyond loopback with NO authentication (dev TLS only)");
+        tracing::warn!("listening beyond loopback: session token required, TLS is dev-grade");
     }
 
     let bitrate_kbps = args.bitrate_kbps.unwrap_or(match args.source {
@@ -145,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
         codec: args.codec.clone(),
         max_bitrate_bps: bitrate_bps,
         simulate_loss: args.simulate_loss,
+        token: args.token.clone(),
     };
     let fps = args.fps;
     let codec = args.codec.clone();
@@ -155,11 +176,8 @@ async fn main() -> anyhow::Result<()> {
         result = run_host(
             server,
             config,
-            make_source_factory(args.source, width, height, fps),
-            Box::new(move || {
-                make_encoder(&codec, width, height, fps, bitrate_bps)
-                    .expect("encoder was validated at startup")
-            }),
+            make_source_factory(args.source, fps),
+            Box::new(move |width, height| make_encoder(&codec, width, height, fps, bitrate_bps)),
             Box::new(make_injector),
         ) => result,
         _ = tokio::signal::ctrl_c() => {

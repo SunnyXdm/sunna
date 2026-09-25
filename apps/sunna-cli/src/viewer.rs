@@ -14,7 +14,7 @@ use sunna_proto::messages::InputEvent;
 use tokio::sync::mpsc::UnboundedSender;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
@@ -52,6 +52,7 @@ pub fn run_viewer(
         surface: None,
         x_lut: Vec::new(),
         lut_key: (0, 0),
+        keys_down: Vec::new(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -68,6 +69,9 @@ struct ViewerApp {
     /// neighbor); rebuilt only when source/window widths change.
     x_lut: Vec<usize>,
     lut_key: (usize, usize),
+    /// Keys we've sent as pressed, released on focus loss: the key-up for,
+    /// say, Cmd during Cmd-Tab goes to another app and would leave it stuck.
+    keys_down: Vec<u16>,
 }
 
 impl ViewerApp {
@@ -228,26 +232,54 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     pressed: state == ElementState::Pressed,
                 });
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (x * 32.0, y * 32.0),
-                    MouseScrollDelta::PixelDelta(position) => {
-                        (position.x as f32, position.y as f32)
-                    }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                use sunna_proto::messages::GesturePhase;
+                // Pixel deltas come from trackpads/Magic Mouse and carry a
+                // phase; the host replays them as continuous scrolling.
+                let (dx, dy, phase) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 32.0, y * 32.0, None),
+                    MouseScrollDelta::PixelDelta(position) => (
+                        position.x as f32,
+                        position.y as f32,
+                        Some(match phase {
+                            TouchPhase::Started => GesturePhase::Begin,
+                            TouchPhase::Moved => GesturePhase::Update,
+                            TouchPhase::Ended => GesturePhase::End,
+                            TouchPhase::Cancelled => GesturePhase::Cancel,
+                        }),
+                    ),
                 };
                 let _ = self.input.send(InputEvent::Scroll {
                     dx,
                     dy,
-                    phase: None,
+                    phase,
                     momentum: false,
                 });
+            }
+            WindowEvent::Focused(false) => {
+                for scancode in std::mem::take(&mut self.keys_down) {
+                    let _ = self.input.send(InputEvent::Key {
+                        scancode,
+                        pressed: false,
+                        repeat: false,
+                    });
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if let Some(scancode) = keymap::mac_keycode(code) {
+                        let pressed = event.state == ElementState::Pressed;
+                        if pressed {
+                            if !self.keys_down.contains(&scancode) {
+                                self.keys_down.push(scancode);
+                            }
+                        } else {
+                            self.keys_down.retain(|&key| key != scancode);
+                        }
                         let _ = self.input.send(InputEvent::Key {
                             scancode,
-                            pressed: event.state == ElementState::Pressed,
+                            pressed,
+                            repeat: event.repeat,
                         });
                     }
                 }

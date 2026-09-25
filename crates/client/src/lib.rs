@@ -1,21 +1,25 @@
 //! Client pipeline: datagrams → reassemble (latest-frame-wins, XOR-FEC
-//! recovery) → keyframe-gated decode → stats. Headless for Milestone 0 — the
-//! render surface (winit + wgpu, present-on-arrival, VRR-aware) arrives with
-//! real capture.
+//! recovery) → decode thread (keyframe-gated) → `on_frame`.
+//!
+//! The network task only reassembles and forwards; decoding runs on its own
+//! thread so a slow decode never delays input, pings or keyframe requests.
 //!
 //! Recovery model: FEC repairs single losses per parity group with no feedback
-//! delay; when a frame is lost anyway, the client requests a keyframe and skips
-//! non-keyframes until it arrives (P-frames referencing a missing frame would
-//! decode to corruption). LTR/reference invalidation replaces this in M1+.
+//! delay; when a frame is lost anyway (a gap in frame ids), the decode thread
+//! skips non-keyframes until an IDR arrives (P-frames referencing a missing
+//! frame would decode to corruption) and the network task requests one.
+//! LTR/reference invalidation replaces this later (research/08 §5.6).
 //!
 //! Latency samples use an NTP-style clock offset estimated from Ping/Pong at
 //! the lowest observed RTT, so cross-machine numbers are meaningful to within
 //! path asymmetry. Same-machine, the offset converges near zero.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sunna_codec::make_decoder;
-use sunna_proto::media::Reassembler;
+use sunna_proto::media::{CompleteFrame, Reassembler};
 use sunna_proto::messages::{ControlMessage, InputEvent};
 use sunna_proto::stats::Percentiles;
 use sunna_transport::quinn::Connection;
@@ -95,26 +99,115 @@ impl std::fmt::Display for BenchReport {
     }
 }
 
-/// Run a receive session until the connection closes or `duration` elapses.
+/// Connection options for [`run_client`].
+#[derive(Debug, Clone, Default)]
+pub struct ClientOptions {
+    /// Name the host logs for this client.
+    pub name: String,
+    /// Session token the host expects (empty if the host has none).
+    pub token: String,
+    /// Largest stream this client can show 1:1, in physical pixels.
+    pub max_size: Option<(u32, u32)>,
+    /// Disconnect after this long; runs until the connection closes if `None`.
+    pub duration: Option<Duration>,
+}
+
+/// Frames in flight between the network task and the decode thread. Small on
+/// purpose: if decode can't keep up, dropping (and asking for a keyframe)
+/// beats queueing stale video.
+const DECODE_QUEUE: usize = 4;
+
+/// Decode thread → network task.
+enum DecodeEvent {
+    /// Decoded; `age_us` is local-now minus the host capture stamp (the
+    /// network task applies the clock offset).
+    Decoded { keyframe: bool, age_us: i64, decode_us: u64 },
+    /// A frame can't be decoded until the next keyframe (gap or decode error).
+    NeedKeyframe,
+}
+
+#[derive(Default)]
+struct DecodeCounters {
+    decoded: AtomicU64,
+    skipped_awaiting_keyframe: AtomicU64,
+    gap_lost: AtomicU64,
+    decode_errors: AtomicU64,
+}
+
+fn spawn_decoder(
+    mut decoder: Box<dyn sunna_codec::Decoder>,
+    frames: std::sync::mpsc::Receiver<CompleteFrame>,
+    events: tokio::sync::mpsc::UnboundedSender<DecodeEvent>,
+    counters: Arc<DecodeCounters>,
+    mut on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("sunna-decode".into()).spawn(move || {
+        let mut awaiting_keyframe = true; // nothing decodable before the first IDR
+        let mut last_frame: Option<u64> = None;
+        for frame in frames {
+            // A gap in frame ids is a frame lost in the network (or dropped
+            // here); later P-frames reference it.
+            if let Some(last) = last_frame {
+                if frame.frame_id > last + 1 {
+                    counters.gap_lost.fetch_add(frame.frame_id - last - 1, Ordering::Relaxed);
+                    if !frame.keyframe && !awaiting_keyframe {
+                        awaiting_keyframe = true;
+                        let _ = events.send(DecodeEvent::NeedKeyframe);
+                    }
+                }
+            }
+            last_frame = Some(last_frame.map_or(frame.frame_id, |last| last.max(frame.frame_id)));
+            if awaiting_keyframe && !frame.keyframe {
+                counters.skipped_awaiting_keyframe.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            let started = Instant::now();
+            match decoder.decode(frame.frame_id, frame.capture_ts_us, frame.keyframe, &frame.data) {
+                Ok(decoded) => {
+                    awaiting_keyframe = false;
+                    counters.decoded.fetch_add(1, Ordering::Relaxed);
+                    let age_us = sunna_proto::now_us() as i64 - decoded.capture_ts_us as i64;
+                    let _ = events.send(DecodeEvent::Decoded {
+                        keyframe: frame.keyframe,
+                        age_us,
+                        decode_us: started.elapsed().as_micros() as u64,
+                    });
+                    on_frame(decoded);
+                }
+                Err(error) => {
+                    counters.decode_errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
+                    if !awaiting_keyframe {
+                        awaiting_keyframe = true;
+                        let _ = events.send(DecodeEvent::NeedKeyframe);
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Run a receive session until the connection closes or `options.duration`
+/// elapses.
 ///
 /// `on_frame` is the render-on-arrival hook: called with every decoded frame,
-/// in arrival order, from the network task. Keep it cheap (store + wake a
-/// renderer); heavy work here delays the receive loop.
+/// in order, from the decode thread. Keep it cheap (store + wake a renderer).
 ///
 /// `input` carries local input events to forward to the host; drop the sender
 /// (or pass a channel that never sends) for view-only sessions.
 pub async fn run_client(
     connection: Connection,
-    client_name: &str,
-    duration: Option<Duration>,
-    mut on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send,
+    options: ClientOptions,
+    on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send + 'static,
     mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
     control
         .send(&ControlMessage::Hello {
             version: sunna_proto::PROTOCOL_VERSION,
-            name: client_name.to_string(),
+            name: options.name.clone(),
+            token: options.token.clone(),
+            max_size: options.max_size,
         })
         .await?;
     let info = match control.recv().await? {
@@ -139,6 +232,7 @@ pub async fn run_client(
                 codec,
             }
         }
+        ControlMessage::Refused { reason } => anyhow::bail!("host refused the session: {reason}"),
         other => anyhow::bail!("expected HelloAck, got {other:?}"),
     };
     tracing::info!(
@@ -147,9 +241,10 @@ pub async fn run_client(
         height = info.height,
         fps = info.fps,
         codec = %info.codec,
+        requested_max = ?options.max_size,
         "session established"
     );
-    let mut decoder = make_decoder(&info.codec, info.width, info.height)?;
+    let decoder = make_decoder(&info.codec, info.width, info.height)?;
 
     // The receive half gets its own task: `recv` isn't cancellation-safe, so
     // racing it in the select! below could desync the stream's framing.
@@ -163,25 +258,26 @@ pub async fn run_client(
         }
     });
 
+    let counters = Arc::new(DecodeCounters::default());
+    let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<CompleteFrame>(DECODE_QUEUE);
+    let (event_tx, mut decode_events) = tokio::sync::mpsc::unbounded_channel();
+    let decode_thread = spawn_decoder(decoder, frame_rx, event_tx, Arc::clone(&counters), on_frame)?;
+    let mut frame_tx = Some(frame_tx);
+
     let mut reassembler = Reassembler::new();
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let mut bytes_received: u64 = 0;
     let mut e2e_samples: Vec<u64> = Vec::new();
     let mut rtt_samples: Vec<u64> = Vec::new();
     let mut ping_seq: u32 = 0;
 
-    // Keyframe-gated recovery state. Requests are re-sent while waiting: the
-    // host may legitimately drop an IDR under backlog and force a fresh one
-    // only when the path clears.
-    let mut awaiting_keyframe = false;
+    // Keyframe requests are re-sent while waiting: the host may legitimately
+    // drop an IDR under backlog and force a fresh one only when the path clears.
+    let mut awaiting_keyframe_since: Option<Instant> = None;
+    let mut last_keyframe_request = Instant::now() - Duration::from_secs(1);
     let mut keyframes_requested: u64 = 0;
-    let mut frames_skipped: u64 = 0;
     let mut seen_dropped: u64 = 0;
-    let mut last_keyframe_request = std::time::Instant::now();
-    // Continuity tracking: a frame whose every datagram was lost never appears
-    // in the reassembler at all — only a gap in decoded frame ids reveals it.
-    let mut last_decoded: Option<u64> = None;
-    let mut gap_lost: u64 = 0;
+    let mut queue_full_drops: u64 = 0;
 
     // NTP-style offset (host clock minus client clock) at the lowest RTT seen.
     let mut min_rtt_us: Option<u64> = None;
@@ -191,6 +287,7 @@ pub async fn run_client(
     let mut window_frames: u64 = 0;
     let mut window_bytes: u64 = 0;
     let mut window_samples: Vec<u64> = Vec::new();
+    let mut window_decode_us: Vec<u64> = Vec::new();
     let mut window_dropped_base: u64 = 0;
     let mut window_recovered_base: u64 = 0;
 
@@ -199,8 +296,9 @@ pub async fn run_client(
         tokio::time::Instant::now() + Duration::from_secs(1),
         Duration::from_secs(1),
     );
-    let deadline_sleep =
-        tokio::time::sleep(duration.unwrap_or(Duration::from_secs(60 * 60 * 24 * 365)));
+    let deadline_sleep = tokio::time::sleep(
+        options.duration.unwrap_or(Duration::from_secs(60 * 60 * 24 * 365)),
+    );
     tokio::pin!(deadline_sleep);
     let mut input_open = true;
 
@@ -218,65 +316,63 @@ pub async fn run_client(
                 window_bytes += datagram.len() as u64;
                 let completed = reassembler.push(&datagram);
 
-                // Frame loss (a newer frame superseded a partial): the next
-                // decodable frame must be an IDR.
+                // Frame loss (a newer frame superseded a partial): ask for a
+                // keyframe now rather than when the gap reaches the decoder.
+                let mut need_keyframe = false;
                 if reassembler.dropped_frames > seen_dropped {
                     seen_dropped = reassembler.dropped_frames;
-                    if !awaiting_keyframe {
-                        awaiting_keyframe = true;
+                    need_keyframe = true;
+                }
+                if let (Some(frame), Some(tx)) = (completed, frame_tx.as_ref()) {
+                    match tx.try_send(frame) {
+                        Ok(()) => {}
+                        // Decoder behind: drop; the id gap makes the decode
+                        // thread wait for a keyframe, which we request.
+                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                            queue_full_drops += 1;
+                            need_keyframe = true;
+                        }
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                            frame_tx = None;
+                            tracing::warn!("decode thread exited");
+                        }
+                    }
+                }
+                if need_keyframe {
+                    awaiting_keyframe_since.get_or_insert_with(Instant::now);
+                    if last_keyframe_request.elapsed() > Duration::from_millis(100) {
                         keyframes_requested += 1;
-                        last_keyframe_request = std::time::Instant::now();
+                        last_keyframe_request = Instant::now();
                         control.send(&ControlMessage::RequestKeyframe).await?;
                     }
                 }
-
-                if let Some(frame) = completed {
-                    if !awaiting_keyframe {
-                        if let Some(last) = last_decoded {
-                            if frame.frame_id > last + 1 {
-                                gap_lost += frame.frame_id - last - 1;
-                                // A keyframe resets references, so a gap before
-                                // one is harmless; before a P-frame it is not.
-                                if !frame.keyframe {
-                                    awaiting_keyframe = true;
-                                    keyframes_requested += 1;
-                                    control.send(&ControlMessage::RequestKeyframe).await?;
-                                }
+            }
+            event = decode_events.recv() => {
+                match event {
+                    Some(DecodeEvent::Decoded { keyframe, age_us, decode_us }) => {
+                        if keyframe {
+                            if let Some(since) = awaiting_keyframe_since.take() {
+                                tracing::debug!(
+                                    stalled_ms = since.elapsed().as_millis() as u64,
+                                    "recovered on keyframe"
+                                );
                             }
                         }
+                        let sample = (age_us + clock_offset_us.unwrap_or(0)).max(0) as u64;
+                        e2e_samples.push(sample);
+                        window_samples.push(sample);
+                        window_decode_us.push(decode_us);
+                        window_frames += 1;
                     }
-                    if awaiting_keyframe && !frame.keyframe {
-                        frames_skipped += 1;
-                        continue;
-                    }
-                    match decoder.decode(
-                        frame.frame_id,
-                        frame.capture_ts_us,
-                        frame.keyframe,
-                        &frame.data,
-                    ) {
-                        Ok(decoded) => {
-                            awaiting_keyframe = false;
-                            last_decoded = Some(decoded.frame_id);
-                            let now = sunna_proto::now_us() as i64;
-                            let capture = decoded.capture_ts_us as i64;
-                            let sample =
-                                (now - capture + clock_offset_us.unwrap_or(0)).max(0) as u64;
-                            e2e_samples.push(sample);
-                            window_samples.push(sample);
-                            window_frames += 1;
-                            on_frame(decoded);
-                        }
-                        Err(error) => {
-                            tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
-                            if !awaiting_keyframe {
-                                awaiting_keyframe = true;
-                                keyframes_requested += 1;
-                                last_keyframe_request = std::time::Instant::now();
-                                control.send(&ControlMessage::RequestKeyframe).await?;
-                            }
+                    Some(DecodeEvent::NeedKeyframe) => {
+                        awaiting_keyframe_since.get_or_insert_with(Instant::now);
+                        if last_keyframe_request.elapsed() > Duration::from_millis(100) {
+                            keyframes_requested += 1;
+                            last_keyframe_request = Instant::now();
+                            control.send(&ControlMessage::RequestKeyframe).await?;
                         }
                     }
+                    None => {}
                 }
             }
             message = messages.recv() => {
@@ -301,19 +397,23 @@ pub async fn run_client(
                 control.send(&ControlMessage::Ping { seq: ping_seq, t_us: sunna_proto::now_us() }).await?;
             }
             _ = report_interval.tick() => {
-                if awaiting_keyframe
+                if awaiting_keyframe_since.is_some()
                     && last_keyframe_request.elapsed() > Duration::from_millis(500)
                 {
                     keyframes_requested += 1;
-                    last_keyframe_request = std::time::Instant::now();
+                    last_keyframe_request = Instant::now();
                     control.send(&ControlMessage::RequestKeyframe).await?;
                 }
-                let total_dropped = reassembler.dropped_frames + gap_lost;
-                let dropped = total_dropped - window_dropped_base;
+                // Every frame that never reached the decoder shows up as a gap
+                // in frame ids there, whether lost in the network, abandoned
+                // by the reassembler, or dropped because decode fell behind.
+                let total_dropped = counters.gap_lost.load(Ordering::Relaxed);
+                let dropped = total_dropped.saturating_sub(window_dropped_base);
                 window_dropped_base = total_dropped;
                 let recovered = reassembler.recovered_chunks - window_recovered_base;
                 window_recovered_base = reassembler.recovered_chunks;
                 let window = Percentiles::from_samples(std::mem::take(&mut window_samples));
+                let decode = Percentiles::from_samples(std::mem::take(&mut window_decode_us));
                 control.send(&ControlMessage::ReceiverReport {
                     frames_complete: window_frames.min(u32::MAX as u64) as u32,
                     frames_dropped: dropped.min(u32::MAX as u64) as u32,
@@ -326,13 +426,17 @@ pub async fn run_client(
                     recovered,
                     mbps = format!("{:.1}", window_bytes as f64 * 8.0 / 1_000_000.0),
                     latency = %window.map(|w| w.to_string()).unwrap_or_else(|| "-".into()),
+                    decode = %decode.map(|d| d.to_string()).unwrap_or_else(|| "-".into()),
                     rtt_ms = rtt_samples.last().map(|&rtt| rtt as f64 / 1000.0),
+                    clock_offset_ms = clock_offset_us.map(|offset| offset as f64 / 1000.0),
+                    awaiting_keyframe = awaiting_keyframe_since.is_some(),
+                    decoder_behind_drops = queue_full_drops,
                     "window"
                 );
                 window_frames = 0;
                 window_bytes = 0;
             }
-            _ = &mut deadline_sleep, if duration.is_some() => {
+            _ = &mut deadline_sleep, if options.duration.is_some() => {
                 let _ = control.send(&ControlMessage::Bye).await;
                 break;
             }
@@ -340,12 +444,14 @@ pub async fn run_client(
     }
 
     reader.abort();
+    drop(frame_tx);
+    let _ = decode_thread.join();
     Ok(BenchReport {
         info,
         elapsed: started.elapsed(),
         frames_completed: reassembler.completed_frames,
-        frames_dropped: reassembler.dropped_frames + gap_lost,
-        frames_skipped_awaiting_keyframe: frames_skipped,
+        frames_dropped: counters.gap_lost.load(Ordering::Relaxed),
+        frames_skipped_awaiting_keyframe: counters.skipped_awaiting_keyframe.load(Ordering::Relaxed),
         keyframes_requested,
         chunks_recovered: reassembler.recovered_chunks,
         stale_datagrams: reassembler.stale_datagrams,
