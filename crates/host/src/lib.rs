@@ -145,7 +145,7 @@ async fn serve(
         .await?;
 
     let stop = Arc::new(AtomicBool::new(false));
-    let min_bitrate_bps = (config.max_bitrate_bps / 20).max(100_000);
+    let min_bitrate_bps = min_bitrate(config.max_bitrate_bps);
     let signals = Arc::new(SessionSignals {
         force_keyframe: AtomicBool::new(false),
         // Start well below the ceiling and ramp up — starting hot congests
@@ -183,6 +183,12 @@ async fn serve(
     stop.store(true, Ordering::Relaxed);
     let _ = media_thread.join();
     result
+}
+
+/// Bitrate floor: below ~1/8 of the ceiling (and 3 Mbps) a desktop stream
+/// turns to mush, which is worse than an occasional dropped frame.
+fn min_bitrate(max_bitrate_bps: u32) -> u32 {
+    (max_bitrate_bps / 8).max(3_000_000).min(max_bitrate_bps)
 }
 
 /// Scale `native` down (never up) to fit `max`, keeping the aspect ratio;
@@ -437,11 +443,12 @@ async fn control_loop(
     signals: &SessionSignals,
     max_bitrate_bps: u32,
 ) -> anyhow::Result<()> {
-    // AIMD v0.1: multiplicative decrease on dropped frames OR on latency
-    // inflation (delayed frames never show up as drops — congestion queues
-    // them instead), slow additive recovery on clean windows. Placeholder
-    // until real delay-based CC (M1), but it stops multi-second spirals.
-    let min_bitrate_bps = (max_bitrate_bps / 20).max(100_000);
+    // AIMD v0.2: multiplicative decrease on real loss (>= 5% of frames in
+    // the window) or on latency inflation; hold on minor loss (Wi-Fi drops
+    // the odd frame, and cutting for it parks desktop streams at an ugly
+    // floor); slow additive recovery on clean windows. Placeholder until
+    // delay-based CC (research/08 §5.7).
+    let min_bitrate_bps = min_bitrate(max_bitrate_bps);
     let mut p95_baseline_us: Option<u64> = None;
     loop {
         match control.recv().await {
@@ -485,12 +492,13 @@ async fn control_loop(
                 } else {
                     false
                 };
-                let next = if frames_dropped > 0 || inflated {
-                    if frames_dropped > 0 {
-                        signals.force_keyframe.store(true, Ordering::Relaxed);
-                    }
+                // The client requests keyframes itself when it actually needs
+                // one; forcing another here only adds IDR bursts.
+                let total = frames_complete + frames_dropped;
+                let heavy_loss = frames_dropped > 0 && frames_dropped * 20 >= total.max(1);
+                let next = if heavy_loss || inflated {
                     (current * 3 / 4).max(min_bitrate_bps)
-                } else if holding {
+                } else if holding || frames_dropped > 0 {
                     current
                 } else {
                     current

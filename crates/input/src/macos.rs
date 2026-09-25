@@ -103,10 +103,33 @@ extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> u8;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
+    static kAXTrustedCheckOptionPrompt: *const c_void;
 }
 
 pub fn accessibility_trusted() -> bool {
     unsafe { AXIsProcessTrusted() != 0 }
+}
+
+/// Check Accessibility (needed to inject input) and, if missing, have macOS
+/// show its prompt pointing at System Settings. Returns whether it's granted
+/// now; a grant usually needs the terminal restarted to take effect.
+pub fn request_accessibility() -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+    unsafe {
+        if AXIsProcessTrusted() != 0 {
+            return true;
+        }
+        let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt as _);
+        let options = CFDictionary::from_CFType_pairs(&[(
+            key.as_CFType(),
+            CFBoolean::true_value().as_CFType(),
+        )]);
+        AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef() as *const c_void) != 0
+    }
 }
 
 pub struct MacInjector {

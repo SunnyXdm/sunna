@@ -74,6 +74,17 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
                      Privacy & Security → Screen Recording for the app that launched sunnad \
                      (e.g. your terminal), then run again."
                 );
+                for line in sunna_capture::macos::describe_displays() {
+                    tracing::info!("{line}");
+                }
+                if !sunna_input::macos::request_accessibility() {
+                    tracing::error!(
+                        "Accessibility is NOT granted: the viewer's mouse and keyboard will be \
+                         ignored. macOS should have opened a prompt; enable your terminal in \
+                         System Settings → Privacy & Security → Accessibility, then quit and \
+                         reopen the terminal and run again."
+                    );
+                }
                 let (native_w, native_h) = sunna_capture::macos::main_display_pixel_size();
                 // Even dimensions for the encoder; must match what ScreenSource uses.
                 Ok((

@@ -1,13 +1,14 @@
-//! Stream viewer window: winit + softbuffer CPU blit.
+//! Stream viewer window.
 //!
-//! Milestone 0 renderer — deliberately the simplest thing that can show pixels:
-//! the network thread stores the latest decoded BGRA frame (latest-wins, no
-//! queue) and wakes the event loop; redraw nearest-neighbor scales it into the
-//! window's buffer. The zero-copy wgpu presenter with VRR-aware pacing
-//! replaces this later (research/03 §8); the plumbing shape is already right.
+//! The decode thread stores the latest decoded frame (latest-wins, no queue)
+//! and wakes the event loop. On macOS, hardware-decoded IOSurfaces go straight
+//! to a CALayer (see layer_presenter.rs): no copies, GPU scaling, shown as
+//! soon as they arrive. Elsewhere (and as a fallback) a softbuffer CPU blit
+//! nearest-neighbour scales BGRA into the window.
 
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use sunna_codec::DecodedFrame;
 use sunna_proto::messages::InputEvent;
@@ -20,6 +21,8 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
 use crate::keymap;
+#[cfg(target_os = "macos")]
+use crate::layer_presenter::LayerPresenter;
 
 /// Shared between the network thread (writer) and the viewer (reader).
 #[derive(Default)]
@@ -53,6 +56,10 @@ pub fn run_viewer(
         x_lut: Vec::new(),
         lut_key: (0, 0),
         keys_down: Vec::new(),
+        #[cfg(target_os = "macos")]
+        layer: None,
+        presented: 0,
+        present_window: Instant::now(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -72,9 +79,52 @@ struct ViewerApp {
     /// Keys we've sent as pressed, released on focus loss: the key-up for,
     /// say, Cmd during Cmd-Tab goes to another app and would leave it stuck.
     keys_down: Vec<u16>,
+    /// Zero-copy presenter; when set, softbuffer isn't used.
+    #[cfg(target_os = "macos")]
+    layer: Option<LayerPresenter>,
+    presented: u64,
+    present_window: Instant,
 }
 
 impl ViewerApp {
+    fn uses_layer(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.layer.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// Where the stream appears in the window, in physical pixels: the
+    /// layer presenter letterboxes (aspect-fit); the CPU blit stretches.
+    fn content_rect(&self, window: (f64, f64)) -> (f64, f64, f64, f64) {
+        let (win_w, win_h) = window;
+        if !self.uses_layer() {
+            return (0.0, 0.0, win_w, win_h);
+        }
+        let (stream_w, stream_h) = (self.stream_size.0 as f64, self.stream_size.1 as f64);
+        let scale = (win_w / stream_w).min(win_h / stream_h);
+        let (w, h) = (stream_w * scale, stream_h * scale);
+        ((win_w - w) / 2.0, (win_h - h) / 2.0, w, h)
+    }
+
+    fn note_presented(&mut self) {
+        self.presented += 1;
+        let elapsed = self.present_window.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            tracing::info!(
+                fps = self.presented,
+                layer = self.uses_layer(),
+                "viewer present"
+            );
+            self.presented = 0;
+            self.present_window = Instant::now();
+        }
+    }
+
     fn render(&mut self) {
         let (Some(window), Some(surface)) = (self.window.as_ref(), self.surface.as_mut()) else {
             return;
@@ -101,7 +151,8 @@ impl ViewerApp {
 
         let (dst_w, dst_h) = (size.width as usize, size.height as usize);
         let (src_w, src_h) = (frame.width as usize, frame.height as usize);
-        let src = &frame.data[..];
+        let Ok(bytes) = frame.data.to_cpu() else { return };
+        let src = &bytes[..];
         if src.len() < src_w * src_h * 4 || buffer.len() < dst_w * dst_h {
             return; // malformed frame; never index out of bounds
         }
@@ -131,6 +182,7 @@ impl ViewerApp {
         if let Err(error) = buffer.present() {
             tracing::warn!(%error, "present failed");
         }
+        self.note_presented();
     }
 }
 
@@ -144,14 +196,23 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
         if self.window.is_some() {
             return;
         }
-        // Open at the stream's size in physical pixels (1:1 → the fast copy
-        // path, and retina streams render sharp), capped below the monitor.
+        // macOS (GPU-scaled layer): fit the stream's aspect into most of the
+        // screen, scaling up or down. Elsewhere: the stream's size in
+        // physical pixels (1:1 → the CPU blit's fast path), capped below the
+        // monitor.
         let (mut width, mut height) = self.stream_size;
         if let Some(monitor) = event_loop.primary_monitor() {
             let monitor_size = monitor.size();
             if monitor_size.width > 0 && monitor_size.height > 0 {
-                width = width.min(monitor_size.width * 9 / 10);
-                height = height.min(monitor_size.height * 9 / 10);
+                let (max_w, max_h) = (monitor_size.width * 9 / 10, monitor_size.height * 8 / 10);
+                if cfg!(target_os = "macos") {
+                    let scale = (max_w as f64 / width as f64).min(max_h as f64 / height as f64);
+                    width = (width as f64 * scale) as u32;
+                    height = (height as f64 * scale) as u32;
+                } else {
+                    width = width.min(max_w);
+                    height = height.min(max_h);
+                }
             }
         }
         let attributes = Window::default_attributes()
@@ -165,6 +226,22 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 return;
             }
         };
+        tracing::info!(
+            stream = format!("{}x{}", self.stream_size.0, self.stream_size.1),
+            window = format!("{}x{}", window.inner_size().width, window.inner_size().height),
+            scale_factor = window.scale_factor(),
+            "viewer window"
+        );
+        #[cfg(target_os = "macos")]
+        match LayerPresenter::new(&window) {
+            Ok(layer) => {
+                tracing::info!("presenting via CALayer (zero-copy IOSurface)");
+                self.layer = Some(layer);
+                self.window = Some(window);
+                return;
+            }
+            Err(error) => tracing::warn!(%error, "layer presenter unavailable, using CPU blit"),
+        }
         let context = match softbuffer::Context::new(window.clone()) {
             Ok(context) => context,
             Err(error) => {
@@ -185,6 +262,25 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: FrameReady) {
+        #[cfg(target_os = "macos")]
+        if self.layer.is_some() {
+            // Show immediately rather than waiting for the next redraw.
+            let frame = self.shared.latest.lock().unwrap().take();
+            if let Some(frame) = frame {
+                match frame.data {
+                    sunna_capture::FrameData::Surface(surface) => {
+                        if let Some(layer) = self.layer.as_mut() {
+                            layer.show(surface);
+                        }
+                        self.note_presented();
+                    }
+                    sunna_capture::FrameData::Cpu(_) => {
+                        tracing::warn!("CPU frame with the layer presenter; dropped");
+                    }
+                }
+            }
+            return;
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -198,7 +294,11 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::RedrawRequested => {
+                if !self.uses_layer() {
+                    self.render();
+                }
+            }
             WindowEvent::Resized(_) => {
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -210,9 +310,11 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 if let Some(window) = &self.window {
                     let size = window.inner_size();
                     if size.width > 0 && size.height > 0 {
+                        let (x0, y0, w, h) =
+                            self.content_rect((size.width as f64, size.height as f64));
                         let _ = self.input.send(InputEvent::MouseMoveAbs {
-                            x: (position.x / size.width as f64).clamp(0.0, 1.0) as f32,
-                            y: (position.y / size.height as f64).clamp(0.0, 1.0) as f32,
+                            x: ((position.x - x0) / w).clamp(0.0, 1.0) as f32,
+                            y: ((position.y - y0) / h).clamp(0.0, 1.0) as f32,
                         });
                     }
                 }

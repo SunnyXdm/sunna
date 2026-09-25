@@ -11,7 +11,7 @@ pub mod h264;
 pub mod videotoolbox;
 
 use bytes::Bytes;
-use sunna_capture::{PixelFormat, VideoFrame};
+use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
@@ -53,7 +53,9 @@ pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
     pub format: PixelFormat,
-    pub data: Bytes,
+    /// GPU surface from hardware decoders (display it directly); CPU bytes
+    /// from the passthrough codec.
+    pub data: FrameData,
     pub capture_ts_us: u64,
 }
 
@@ -123,7 +125,7 @@ impl Decoder for Passthrough {
             width: self.width,
             height: self.height,
             format: self.format,
-            data: Bytes::copy_from_slice(data),
+            data: FrameData::Cpu(Bytes::copy_from_slice(data)),
             capture_ts_us,
         })
     }

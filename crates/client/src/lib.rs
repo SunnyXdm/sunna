@@ -112,10 +112,14 @@ pub struct ClientOptions {
     pub duration: Option<Duration>,
 }
 
-/// Frames in flight between the network task and the decode thread. Small on
-/// purpose: if decode can't keep up, dropping (and asking for a keyframe)
-/// beats queueing stale video.
-const DECODE_QUEUE: usize = 4;
+/// Compressed frames in flight between the network task and the decode
+/// thread. Deliberately roomy: every P-frame references the one before, so
+/// dropping a compressed frame costs a keyframe round trip and a visible
+/// stall. Frames arrive in bursts (Wi-Fi, Tailscale batching) and decode takes
+/// ~2-3 ms, so the queue drains quickly; staleness is handled after decode,
+/// where the viewer shows only the newest decoded frame. Overflowing this
+/// means decode has stalled outright.
+const DECODE_QUEUE: usize = 120;
 
 /// Decode thread → network task.
 enum DecodeEvent {
@@ -326,8 +330,8 @@ pub async fn run_client(
                 if let (Some(frame), Some(tx)) = (completed, frame_tx.as_ref()) {
                     match tx.try_send(frame) {
                         Ok(()) => {}
-                        // Decoder behind: drop; the id gap makes the decode
-                        // thread wait for a keyframe, which we request.
+                        // Decode has stalled for ~2 s: drop; the id gap makes
+                        // the decode thread wait for a keyframe, which we request.
                         Err(std::sync::mpsc::TrySendError::Full(_)) => {
                             queue_full_drops += 1;
                             need_keyframe = true;

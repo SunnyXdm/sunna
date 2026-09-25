@@ -39,12 +39,18 @@ const IOSURFACE_LOCK_READ_ONLY: u32 = 1;
 /// frame, a pending newer one, and the one being encoded), so the default of
 /// 3 would leave the compositor nothing to draw into.
 const STREAM_QUEUE_DEPTH: i32 = 4;
+/// On a static screen, re-send the last frame this often. Each re-encode of
+/// unchanged pixels lets the encoder refine quality, but more than a few per
+/// second only burns power and bandwidth.
+const IDLE_REDELIVERY: Duration = Duration::from_millis(100);
 
 type CGDisplayModeRef = *mut c_void;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGMainDisplayID() -> u32;
+    fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+    fn CGDisplayIsBuiltin(display: u32) -> u32;
     fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGDisplayPixelsHigh(display: u32) -> usize;
     fn CGDisplayCopyDisplayMode(display: u32) -> CGDisplayModeRef;
@@ -141,6 +147,39 @@ pub fn main_display_pixel_size() -> (u32, u32) {
     }
 }
 
+/// One line per active display (main first): id, built-in or external,
+/// size in points and in backing pixels. Logged at startup so a session's
+/// stream size can be explained from the logs.
+pub fn describe_displays() -> Vec<String> {
+    unsafe {
+        let mut ids = [0u32; 16];
+        let mut count = 0u32;
+        if CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) != 0 {
+            return Vec::new();
+        }
+        let main = CGMainDisplayID();
+        let mut lines: Vec<(bool, String)> = ids[..count as usize]
+            .iter()
+            .map(|&id| {
+                let (pw, ph) = (CGDisplayPixelsWide(id), CGDisplayPixelsHigh(id));
+                let mode = CGDisplayCopyDisplayMode(id);
+                let (bw, bh) = if mode.is_null() {
+                    (0, 0)
+                } else {
+                    let size = (CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetPixelHeight(mode));
+                    CFRelease(mode as _);
+                    size
+                };
+                let kind = if CGDisplayIsBuiltin(id) != 0 { "built-in" } else { "external" };
+                let main_tag = if id == main { " (main)" } else { "" };
+                (id == main, format!("display {id}{main_tag}: {kind}, {pw}x{ph} pt, {bw}x{bh} px"))
+            })
+            .collect();
+        lines.sort_by_key(|(is_main, _)| !is_main);
+        lines.into_iter().map(|(_, line)| line).collect()
+    }
+}
+
 /// Check (and if needed, request) the Screen Recording permission. Returns
 /// false when not granted; the request makes macOS show its one-time prompt /
 /// System Settings deep link for the *hosting* process (e.g. your terminal).
@@ -216,6 +255,33 @@ impl SurfaceFrame {
         Some(Self {
             inner: Arc::new(hold),
         })
+    }
+
+    /// Hold an IOSurface-backed CVPixelBuffer (e.g. a VideoToolbox decoder
+    /// output). Retains it and raises the surface's use count so the
+    /// decoder's buffer pool won't recycle it while it's still on screen.
+    ///
+    /// Safety: `pixel_buffer` must be a valid CVPixelBufferRef.
+    pub unsafe fn from_pixel_buffer(pixel_buffer: *mut c_void) -> Option<Self> {
+        let surface = CVPixelBufferGetIOSurface(pixel_buffer);
+        if surface.is_null() {
+            return None;
+        }
+        CFRetain(pixel_buffer as _);
+        CFRetain(surface as _);
+        IOSurfaceIncrementUseCount(surface);
+        Some(Self {
+            inner: Arc::new(SurfaceHold {
+                surface,
+                pixel_buffer,
+                holds_use_count: true,
+            }),
+        })
+    }
+
+    /// The IOSurface itself (borrowed), e.g. for use as CALayer contents.
+    pub fn iosurface(&self) -> *mut c_void {
+        self.inner.surface
     }
 
     /// An IOSurface-backed BGRA frame filled from tightly packed CPU bytes.
@@ -443,7 +509,7 @@ fn hold_surface(surface: IOSurfaceRef) -> Option<VideoFrame> {
 
 impl FrameSource for ScreenSource {
     fn next_frame(&mut self) -> anyhow::Result<VideoFrame> {
-        let interval = Duration::from_secs_f64(1.0 / self.fps as f64);
+        let interval = IDLE_REDELIVERY.max(Duration::from_secs_f64(1.0 / self.fps as f64));
         let mut guard = self.latest.frame.lock().unwrap();
         loop {
             if let Some(mut frame) = guard.take() {

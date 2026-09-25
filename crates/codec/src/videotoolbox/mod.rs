@@ -7,8 +7,9 @@
 //!
 //! Encode input is zero-copy for captured frames (the capture's
 //! IOSurface-backed CVPixelBuffer goes straight in); CPU frames from the
-//! synthetic source are copied into a pixel buffer. Decode still copies BGRA
-//! out to the CPU until the Metal presenter lands (research/07 step 2).
+//! synthetic source are copied into a pixel buffer. Decode output is also
+//! zero-copy: IOSurface-backed BGRA pixel buffers the viewer displays
+//! directly.
 
 mod ffi;
 
@@ -23,6 +24,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
+use sunna_capture::macos::SurfaceFrame;
 use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 
 use crate::h264;
@@ -431,15 +433,9 @@ impl Drop for VtEncoder {
     }
 }
 
-struct DecodedPixels {
-    width: u32,
-    height: u32,
-    bgra: Vec<u8>,
-}
-
 #[derive(Default)]
 struct DecoderShared {
-    result: Mutex<Option<Result<DecodedPixels, OSStatusCode>>>,
+    result: Mutex<Option<Result<SurfaceFrame, OSStatusCode>>>,
 }
 
 extern "C" fn decompression_callback(
@@ -457,28 +453,8 @@ extern "C" fn decompression_callback(
     } else if image_buffer.is_null() {
         Err(-1)
     } else {
-        unsafe {
-            CVPixelBufferLockBaseAddress(image_buffer, 1); // read-only
-            let width = CVPixelBufferGetWidth(image_buffer);
-            let height = CVPixelBufferGetHeight(image_buffer);
-            let stride = CVPixelBufferGetBytesPerRow(image_buffer);
-            let base = CVPixelBufferGetBaseAddress(image_buffer) as *const u8;
-            let row_bytes = width * 4;
-            let mut bgra = vec![0u8; row_bytes * height];
-            for row in 0..height {
-                ptr::copy_nonoverlapping(
-                    base.add(row * stride),
-                    bgra.as_mut_ptr().add(row * row_bytes),
-                    row_bytes,
-                );
-            }
-            CVPixelBufferUnlockBaseAddress(image_buffer, 1);
-            Ok(DecodedPixels {
-                width: width as u32,
-                height: height as u32,
-                bgra,
-            })
-        }
+        // Keep the decoder's IOSurface-backed buffer; no pixel copy.
+        unsafe { SurfaceFrame::from_pixel_buffer(image_buffer) }.ok_or(-4)
     };
     *shared.result.lock().unwrap() = Some(outcome);
 }
@@ -528,10 +504,19 @@ impl VtDecoder {
             bail!("CMVideoFormatDescriptionCreateFromH264ParameterSets failed: {status}");
         }
 
-        let dest_attrs = CFDictionary::from_CFType_pairs(&[(
-            cf_key(unsafe { kCVPixelBufferPixelFormatTypeKey }).as_CFType(),
-            CFNumber::from(kCVPixelFormatType_32BGRA as i64).as_CFType(),
-        )]);
+        // BGRA in IOSurfaces: Core Animation can show these directly, and
+        // the YUV→RGB conversion happens on the GPU inside VideoToolbox.
+        let empty = CFDictionary::<CFString, CFNumber>::from_CFType_pairs(&[]);
+        let dest_attrs = CFDictionary::from_CFType_pairs(&[
+            (
+                cf_key(unsafe { kCVPixelBufferPixelFormatTypeKey }).as_CFType(),
+                CFNumber::from(kCVPixelFormatType_32BGRA as i64).as_CFType(),
+            ),
+            (
+                cf_key(unsafe { kCVPixelBufferIOSurfacePropertiesKey }).as_CFType(),
+                empty.as_CFType(),
+            ),
+        ]);
         let record = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: decompression_callback,
             decompressionOutputRefCon: &*self.shared as *const DecoderShared as *mut c_void,
@@ -639,7 +624,7 @@ impl Decoder for VtDecoder {
             }
         }
 
-        let pixels = self
+        let surface = self
             .shared
             .result
             .lock()
@@ -650,10 +635,10 @@ impl Decoder for VtDecoder {
 
         Ok(DecodedFrame {
             frame_id,
-            width: pixels.width,
-            height: pixels.height,
+            width: surface.width(),
+            height: surface.height(),
             format: PixelFormat::Bgra8,
-            data: Bytes::from(pixels.bgra),
+            data: FrameData::Surface(surface),
             capture_ts_us,
         })
     }

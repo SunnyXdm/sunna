@@ -2190,6 +2190,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "objc2 0.6.4",
  "softbuffer",
  "sunna-capture",
  "sunna-client",
@@ -2252,6 +2253,7 @@ name = "sunna-input"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "core-foundation 0.10.1",
  "sunna-proto",
  "tracing",
 ]

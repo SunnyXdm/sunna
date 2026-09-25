@@ -90,7 +90,8 @@ fn hardware_h264_roundtrip() {
 
         assert_eq!(decoded.width, width);
         assert_eq!(decoded.height, height);
-        assert_eq!(decoded.data.len(), (width * height * 4) as usize);
+        assert!(matches!(decoded.data, FrameData::Surface(_)), "decode should stay on the GPU");
+        assert_eq!(decoded.data.to_cpu().unwrap().len(), (width * height * 4) as usize);
     }
 
     let raw_total = frames as usize * (width * height * 4) as usize;

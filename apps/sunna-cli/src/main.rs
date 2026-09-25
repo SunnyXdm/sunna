@@ -5,6 +5,8 @@
 //! process over loopback QUIC and prints the end-to-end latency report.
 
 mod keymap;
+#[cfg(target_os = "macos")]
+mod layer_presenter;
 mod viewer;
 
 use std::net::SocketAddr;

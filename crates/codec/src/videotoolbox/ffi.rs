@@ -103,6 +103,7 @@ extern "C" {
 #[link(name = "CoreVideo", kind = "framework")]
 extern "C" {
     pub static kCVPixelBufferPixelFormatTypeKey: CFStringRef;
+    pub static kCVPixelBufferIOSurfacePropertiesKey: CFStringRef;
 
     pub fn CVPixelBufferCreate(
         allocator: CFAllocatorRef,
