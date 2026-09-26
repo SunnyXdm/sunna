@@ -28,6 +28,8 @@ pub type InjectorFactory = Box<dyn Fn() -> Box<dyn InputInjector> + Send + Sync>
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
+    /// Share text and images with the authenticated viewer.
+    pub clipboard: bool,
     pub name: String,
     /// Largest stream size (the capture's native size by default). Each
     /// session gets this, scaled down to fit the viewer's `max_size`.
@@ -189,10 +191,12 @@ async fn serve(
 
     let mut injector = new_injector();
     let result = control_loop(
+        connection,
         control,
         injector.as_mut(),
         &signals,
         config.max_bitrate_bps,
+        config.clipboard,
     )
     .await;
     injector.release_all();
@@ -644,35 +648,93 @@ impl HostWindow {
 }
 
 async fn control_loop(
+    connection: &Connection,
     control: ControlChannel,
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
     max_bitrate_bps: u32,
+    clipboard: bool,
 ) -> anyhow::Result<()> {
     // `recv` isn't cancellation-safe, so it gets its own task (as in the
     // client) and the loop below can also wake up to send stats.
     let (mut control, mut control_rx) = control.into_split();
-    let (message_tx, mut messages) = tokio::sync::mpsc::unbounded_channel();
+    let (message_tx, mut messages) = tokio::sync::mpsc::channel(4);
     let reader = tokio::spawn(async move {
         loop {
             let message = control_rx.recv().await;
             let closed = message.is_err();
-            if message_tx.send(message).is_err() || closed {
+            if message_tx.send(message).await.is_err() || closed {
                 break;
             }
         }
     });
-    let result = handle_control(&mut control, &mut messages, injector, signals, max_bitrate_bps).await;
+    let mut clipboard = sunna_clipboard::ClipboardSession::start(clipboard);
+    let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(2);
+    let acceptor = tokio::spawn(accept_clipboard_streams(connection.clone(), incoming_tx));
+    let result = handle_control(
+        connection,
+        &mut control,
+        &mut messages,
+        injector,
+        signals,
+        max_bitrate_bps,
+        &mut clipboard,
+        &mut incoming,
+    )
+    .await;
     reader.abort();
+    acceptor.abort();
     result
 }
 
+/// The viewer sends each clipboard copy on a unidirectional stream of its
+/// own, so a large image never delays input on the control stream.
+async fn accept_clipboard_streams(
+    connection: Connection,
+    incoming: tokio::sync::mpsc::Sender<sunna_proto::messages::ClipboardData>,
+) {
+    while let Ok(mut stream) = connection.accept_uni().await {
+        let incoming = incoming.clone();
+        tokio::spawn(async move {
+            let mut magic = [0u8; 4];
+            if stream.read_exact(&mut magic).await.is_err()
+                || magic != sunna_transport::CLIPBOARD_STREAM_MAGIC
+            {
+                tracing::debug!("ignoring an unknown unidirectional stream");
+                return;
+            }
+            match sunna_transport::read_clipboard(stream).await {
+                Ok(data) => {
+                    let _ = incoming.send(data).await;
+                }
+                Err(error) => tracing::debug!(%error, "clipboard stream failed"),
+            }
+        });
+    }
+}
+
+/// Send a clipboard copy on its own stream, off the control loop.
+fn spawn_clipboard_send(connection: &Connection, data: sunna_proto::messages::ClipboardData) {
+    let connection = connection.clone();
+    tokio::spawn(async move {
+        let (kind, size) = (data.kind, data.data.len());
+        match sunna_transport::send_clipboard(&connection, &data).await {
+            Ok(()) => tracing::info!(?kind, size, "clipboard sent"),
+            Err(error) => tracing::warn!(%error, "clipboard send failed"),
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn handle_control(
+    connection: &Connection,
     control: &mut sunna_transport::ControlSender,
-    messages: &mut tokio::sync::mpsc::UnboundedReceiver<sunna_transport::Result<ControlMessage>>,
+    messages: &mut tokio::sync::mpsc::Receiver<sunna_transport::Result<ControlMessage>>,
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
     max_bitrate_bps: u32,
+    clipboard: &mut sunna_clipboard::ClipboardSession,
+    incoming_clipboard: &mut tokio::sync::mpsc::Receiver<sunna_proto::messages::ClipboardData>,
 ) -> anyhow::Result<()> {
     // AIMD v0.2: multiplicative decrease on real loss (>= 5% of frames in
     // the window) or on latency inflation; hold on minor loss (Wi-Fi drops
@@ -684,6 +746,14 @@ async fn handle_control(
     let mut stats_interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         let message = tokio::select! {
+            data = clipboard.next() => {
+                spawn_clipboard_send(connection, data);
+                continue;
+            }
+            Some(data) = incoming_clipboard.recv() => {
+                clipboard.receive(data);
+                continue;
+            }
             message = messages.recv() => match message {
                 Some(message) => message,
                 None => return Ok(()),

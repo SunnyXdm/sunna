@@ -4,9 +4,12 @@
 //! `connect` joins headless (stats only). `bench` runs host + client in one
 //! process over loopback QUIC and prints the end-to-end latency report.
 
+mod keyboard;
 mod keymap;
 #[cfg(target_os = "macos")]
 mod layer_presenter;
+#[cfg(target_os = "macos")]
+mod mac_keyboard;
 mod viewer;
 
 use std::net::SocketAddr;
@@ -52,6 +55,9 @@ enum Command {
         /// Session token printed by (or given to) sunnad.
         #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
         token: String,
+        /// Share this machine's clipboard with the host.
+        #[arg(long)]
+        clipboard: bool,
     },
     /// In-process loopback benchmark: host + client, one report.
     Bench {
@@ -163,6 +169,7 @@ fn view(addr: SocketAddr, server_name: String, token: String) -> anyhow::Result<
         let _endpoint_guard = client.endpoint;
         let mut announced = false;
         let options = ClientOptions {
+            clipboard: true,
             name: "sunna-viewer".into(),
             token,
             max_size: viewer_max_size(),
@@ -221,12 +228,14 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             server_name,
             seconds,
             token,
+            clipboard,
         } => {
             tracing::warn!("dev TLS: server certificate is NOT verified");
             let client = connect_insecure(addr, &server_name).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let options = ClientOptions {
                 name: "sunna-cli".into(),
+                clipboard,
                 token,
                 max_size: None,
                 duration: seconds.map(Duration::from_secs),
@@ -257,6 +266,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 max_bitrate_bps: bitrate_bps,
                 simulate_loss,
                 token: String::new(),
+                clipboard: false,
             };
             make_encoder(&codec, width, height, fps, bitrate_bps)?;
             let host_task = tokio::spawn(run_host(
@@ -273,6 +283,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let options = ClientOptions {
                 name: "bench-client".into(),
+                clipboard: false,
                 token: String::new(),
                 max_size: None,
                 duration: Some(Duration::from_secs(seconds)),

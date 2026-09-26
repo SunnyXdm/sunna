@@ -6,6 +6,7 @@ members = [
     "crates/capture",
     "crates/codec",
     "crates/input",
+    "crates/clipboard",
     "crates/host",
     "crates/client",
     "crates/telemetry",
@@ -24,12 +25,14 @@ sunna-transport = { path = "crates/transport" }
 sunna-capture = { path = "crates/capture" }
 sunna-codec = { path = "crates/codec" }
 sunna-input = { path = "crates/input" }
+sunna-clipboard = { path = "crates/clipboard" }
 sunna-host = { path = "crates/host" }
 sunna-client = { path = "crates/client" }
 sunna-telemetry = { path = "crates/telemetry" }
 
 anyhow = "1"
 block2 = "0.6"
+objc2 = "0.6"
 bytes = "1"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"

@@ -102,6 +102,8 @@ impl std::fmt::Display for BenchReport {
 /// Connection options for [`run_client`].
 #[derive(Debug, Clone, Default)]
 pub struct ClientOptions {
+    /// Share text and images with the host during this session.
+    pub clipboard: bool,
     /// Name the host logs for this client.
     pub name: String,
     /// Session token the host expects (empty if the host has none).
@@ -289,10 +291,10 @@ pub async fn run_client(
     // The receive half gets its own task: `recv` isn't cancellation-safe, so
     // racing it in the select! below could desync the stream's framing.
     let (mut control, mut control_rx) = control.into_split();
-    let (message_tx, mut messages) = tokio::sync::mpsc::unbounded_channel();
+    let (message_tx, mut messages) = tokio::sync::mpsc::channel(4);
     let reader = tokio::spawn(async move {
         while let Ok(message) = control_rx.recv().await {
-            if message_tx.send(message).is_err() {
+            if message_tx.send(message).await.is_err() {
                 break;
             }
         }
@@ -301,7 +303,13 @@ pub async fn run_client(
     // Fast-lane tiles arrive on a unidirectional stream the host opens only
     // when enabled; (age, bytes) per batch feed the window stats.
     let (tile_stat_tx, mut tile_stats) = tokio::sync::mpsc::unbounded_channel::<(i64, usize)>();
-    let tile_reader = tokio::spawn(read_tiles(connection.clone(), on_tiles, tile_stat_tx));
+    let (clipboard_tx, mut clipboard_rx) = tokio::sync::mpsc::channel(2);
+    let tile_reader = tokio::spawn(accept_streams(
+        connection.clone(),
+        on_tiles,
+        tile_stat_tx,
+        clipboard_tx,
+    ));
 
     let counters = Arc::new(DecodeCounters::default());
     let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<CompleteFrame>(DECODE_QUEUE);
@@ -356,9 +364,22 @@ pub async fn run_client(
     );
     tokio::pin!(deadline_sleep);
     let mut input_open = true;
+    let mut clipboard = sunna_clipboard::ClipboardSession::start(options.clipboard);
 
     loop {
         tokio::select! {
+            data = clipboard.next() => {
+                // Its own stream, so a large image never delays input.
+                let connection = connection.clone();
+                tokio::spawn(async move {
+                    let (kind, size) = (data.kind, data.data.len());
+                    match sunna_transport::send_clipboard(&connection, &data).await {
+                        Ok(()) => tracing::info!(?kind, size, "clipboard sent"),
+                        Err(error) => tracing::warn!(%error, "clipboard send failed"),
+                    }
+                });
+            }
+            Some(data) = clipboard_rx.recv() => clipboard.receive(data),
             event = input.recv(), if input_open => {
                 match event {
                     Some(event) => control.send(&ControlMessage::Input(event)).await?,
@@ -589,20 +610,46 @@ pub async fn run_client(
 }
 
 /// Read fast-lane tile batches until the stream or connection ends.
-async fn read_tiles(
+/// Unidirectional streams from the host: the fast-lane tile stream (one
+/// per session, opened only when enabled) and one stream per clipboard copy.
+async fn accept_streams(
     connection: Connection,
+    on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
+    stats: tokio::sync::mpsc::UnboundedSender<(i64, usize)>,
+    clipboard: tokio::sync::mpsc::Sender<sunna_proto::messages::ClipboardData>,
+) {
+    let mut on_tiles = Some(on_tiles);
+    while let Ok(mut stream) = connection.accept_uni().await {
+        let mut magic = [0u8; 4];
+        if stream.read_exact(&mut magic).await.is_err() {
+            continue;
+        }
+        if magic == sunna_proto::tiles::TILE_STREAM_MAGIC {
+            if let Some(on_tiles) = on_tiles.take() {
+                tokio::spawn(read_tiles(stream, on_tiles, stats.clone()));
+            }
+        } else if magic == sunna_transport::CLIPBOARD_STREAM_MAGIC {
+            let clipboard = clipboard.clone();
+            tokio::spawn(async move {
+                match sunna_transport::read_clipboard(stream).await {
+                    Ok(data) => {
+                        let _ = clipboard.send(data).await;
+                    }
+                    Err(error) => tracing::debug!(%error, "clipboard stream failed"),
+                }
+            });
+        } else {
+            tracing::debug!("ignoring an unknown unidirectional stream");
+        }
+    }
+}
+
+async fn read_tiles(
+    mut stream: sunna_transport::quinn::RecvStream,
     mut on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
     stats: tokio::sync::mpsc::UnboundedSender<(i64, usize)>,
 ) {
     use sunna_proto::tiles;
-    let Ok(mut stream) = connection.accept_uni().await else {
-        return;
-    };
-    let mut magic = [0u8; 4];
-    if stream.read_exact(&mut magic).await.is_err() || magic != tiles::TILE_STREAM_MAGIC {
-        tracing::debug!("ignoring an unknown unidirectional stream");
-        return;
-    }
     tracing::info!("fast lane: receiving tiles");
     loop {
         let mut len = [0u8; 4];

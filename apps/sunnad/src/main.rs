@@ -60,6 +60,9 @@ struct Args {
     /// listening beyond loopback without one.
     #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
     token: String,
+    /// Disable clipboard sharing with the viewer.
+    #[arg(long)]
+    no_clipboard: bool,
 }
 
 fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
@@ -187,6 +190,7 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
     });
     let bitrate_bps = bitrate_kbps.saturating_mul(1000);
     let config = HostConfig {
+        clipboard: !args.no_clipboard,
         name: args.name.clone(),
         width,
         height,

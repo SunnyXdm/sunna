@@ -2275,11 +2275,24 @@ dependencies = [
  "anyhow",
  "bytes",
  "sunna-capture",
+ "sunna-clipboard",
  "sunna-codec",
  "sunna-proto",
  "sunna-transport",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "sunna-clipboard"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "objc2 0.6.4",
+ "sunna-proto",
+ "tokio",
+ "tracing",
+ "x11rb",
 ]
 
 [[package]]
@@ -2304,6 +2317,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "sunna-capture",
+ "sunna-clipboard",
  "sunna-codec",
  "sunna-input",
  "sunna-proto",

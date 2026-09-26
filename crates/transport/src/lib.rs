@@ -51,6 +51,40 @@ pub enum TransportError {
     Codec(#[from] postcard::Error),
     #[error("control message too large ({0} bytes)")]
     MessageTooLarge(usize),
+    #[error("stream read: {0}")]
+    ReadToEnd(#[from] quinn::ReadToEndError),
+    #[error("stream closed: {0}")]
+    Closed(#[from] quinn::ClosedStream),
+}
+
+/// First bytes of a clipboard transfer stream. Each transfer gets its own
+/// unidirectional stream, below the control stream's priority, so a large
+/// image never queues ahead of input and pings.
+pub const CLIPBOARD_STREAM_MAGIC: [u8; 4] = *b"SCB1";
+/// 16 MiB of content plus the postcard envelope.
+const MAX_CLIPBOARD_STREAM: usize = 16 * 1024 * 1024 + 64;
+
+/// Send one clipboard transfer on a stream of its own.
+pub async fn send_clipboard(
+    connection: &quinn::Connection,
+    data: &messages::ClipboardData,
+) -> Result<()> {
+    let body = postcard::to_stdvec(data)?;
+    if body.len() > MAX_CLIPBOARD_STREAM {
+        return Err(TransportError::MessageTooLarge(body.len()));
+    }
+    let mut stream = connection.open_uni().await?;
+    stream.set_priority(-1)?;
+    stream.write_all(&CLIPBOARD_STREAM_MAGIC).await?;
+    stream.write_all(&body).await?;
+    stream.finish()?;
+    Ok(())
+}
+
+/// Read a clipboard transfer from a stream whose magic was already read.
+pub async fn read_clipboard(mut stream: quinn::RecvStream) -> Result<messages::ClipboardData> {
+    let body = stream.read_to_end(MAX_CLIPBOARD_STREAM).await?;
+    Ok(postcard::from_bytes(&body)?)
 }
 
 pub type Result<T> = std::result::Result<T, TransportError>;

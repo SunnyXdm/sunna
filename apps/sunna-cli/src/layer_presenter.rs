@@ -116,8 +116,10 @@ pub struct LayerPresenter {
     debug_tiles: bool,
     /// Tiles placed so far (the first few are logged with their geometry).
     placed: u64,
-    /// The stats bar, while shown.
+    /// The stats bar (top), while shown.
     stats: Option<StatsBar>,
+    /// A short notice (bottom), while shown.
+    notice: Option<StatsBar>,
 }
 
 /// A rounded translucent bar with one line of text, over the video.
@@ -187,6 +189,7 @@ impl LayerPresenter {
             debug_tiles: std::env::var("SUNNA_TILE_DEBUG").is_ok_and(|value| value == "1"),
             placed: 0,
             stats: None,
+            notice: None,
         };
         let size = window.inner_size();
         presenter.fit(window, (size.width, size.height));
@@ -226,27 +229,42 @@ impl LayerPresenter {
 
     /// Show `text` in the stats bar at the top centre, or hide the bar.
     pub fn show_stats(&mut self, text: Option<&str>) {
+        Self::show_bar(&self.layer, self.backing_scale, &mut self.stats, text, true);
+    }
+
+    /// Show `text` as a notice at the bottom centre, or hide it.
+    pub fn show_notice(&mut self, text: Option<&str>) {
+        Self::show_bar(&self.layer, self.backing_scale, &mut self.notice, text, false);
+    }
+
+    fn show_bar(
+        root: &AnyObject,
+        backing_scale: f64,
+        slot: &mut Option<StatsBar>,
+        text: Option<&str>,
+        top: bool,
+    ) {
         unsafe {
             let _: () = msg_send![class!(CATransaction), begin];
             let _: () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
             match text {
                 None => {
-                    if let Some(bar) = self.stats.take() {
+                    if let Some(bar) = slot.take() {
                         let _: () = msg_send![&*bar.background, removeFromSuperlayer];
                     }
                 }
                 Some(text) => {
-                    let bar = self
-                        .stats
-                        .get_or_insert_with(|| StatsBar::new(&self.layer, self.backing_scale));
+                    let bar = slot.get_or_insert_with(|| StatsBar::new(root, backing_scale));
                     let string = ns_string(text);
                     let _: () = msg_send![&*bar.text, setString: &*string];
                     let size: CGSize = msg_send![&*bar.text, preferredFrameSize];
-                    let bounds: CGRect = msg_send![&*self.layer, bounds];
-                    let flipped: bool = msg_send![&*self.layer, isGeometryFlipped];
+                    let bounds: CGRect = msg_send![root, bounds];
+                    let flipped: bool = msg_send![root, isGeometryFlipped];
                     let (pad_x, pad_y, margin) = (12.0, 6.0, 8.0);
                     let (width, height) = (size.width + 2.0 * pad_x, size.height + 2.0 * pad_y);
-                    let y = if flipped { margin } else { bounds.size.height - height - margin };
+                    // Flipped geometry puts y = 0 at the top.
+                    let at_low_y = top == flipped;
+                    let y = if at_low_y { margin } else { bounds.size.height - height - margin };
                     let frame = CGRect {
                         origin: CGPoint { x: ((bounds.size.width - width) / 2.0).max(0.0), y },
                         size: CGSize { width, height },

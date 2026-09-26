@@ -47,6 +47,30 @@ pub enum ControlMessage {
     Bye,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipboardKind {
+    Text,
+    Png,
+}
+
+/// One clipboard transfer. Sent on its own unidirectional stream (see
+/// `sunna_transport::send_clipboard`), not the control stream.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipboardData {
+    pub kind: ClipboardKind,
+    pub data: Vec<u8>,
+}
+
+// Logged in error paths; clipboard contents stay private.
+impl std::fmt::Debug for ClipboardData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardData")
+            .field("kind", &self.kind)
+            .field("size", &self.data.len())
+            .finish()
+    }
+}
+
 /// What the host did in the last second.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostStats {
@@ -137,6 +161,19 @@ pub fn decode(bytes: &[u8]) -> Result<ControlMessage, postcard::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_debug_redacts_contents() {
+        let data = ClipboardData {
+            kind: ClipboardKind::Text,
+            data: b"private clipboard".to_vec(),
+        };
+        let debug = format!("{data:?}");
+        assert!(debug.contains("Text"));
+        assert!(debug.contains("size: 17"));
+        assert!(!debug.contains("private"));
+        assert!(!debug.contains("112, 114"));
+    }
 
     #[test]
     fn roundtrip() {

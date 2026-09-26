@@ -49,6 +49,7 @@ const FIELD_SCROLL_IS_CONTINUOUS: u32 = 88; // kCGScrollWheelEventIsContinuous
 
 // CGEventFlags modifier masks.
 const FLAG_CAPS_LOCK: u64 = 0x0001_0000;
+const CAPS_LOCK: u16 = 0x39;
 const FLAG_SHIFT: u64 = 0x0002_0000;
 const FLAG_CONTROL: u64 = 0x0004_0000;
 const FLAG_OPTION: u64 = 0x0008_0000;
@@ -144,6 +145,9 @@ pub struct MacInjector {
     scroll_remainder: (f32, f32),
     /// Keys currently held down on the host, released if the session ends.
     keys_down: Vec<u16>,
+    /// Caps Lock is a latch, not a held key: viewers send it as a tap per
+    /// toggle, so its state is kept here and carried on every event.
+    caps_lock: bool,
 }
 
 // Only raw CG calls, no shared state.
@@ -185,6 +189,7 @@ impl MacInjector {
             click_state: 1,
             scroll_remainder: (0.0, 0.0),
             keys_down: Vec::new(),
+            caps_lock: false,
         }
     }
 
@@ -192,10 +197,12 @@ impl MacInjector {
     /// these up from the system reliably, so every event carries them —
     /// otherwise Cmd+C, Shift-click and friends arrive as plain C and clicks.
     fn flags(&self) -> u64 {
+        let caps = if self.caps_lock { FLAG_CAPS_LOCK } else { 0 };
         self.keys_down
             .iter()
+            .filter(|&&key| key != CAPS_LOCK)
             .filter_map(|&key| modifier_flag(key))
-            .fold(0, |flags, flag| flags | flag)
+            .fold(caps, |flags, flag| flags | flag)
     }
 
     fn post_key(&self, keycode: u16, pressed: bool, repeat: bool) {
@@ -343,7 +350,11 @@ impl InputInjector for MacInjector {
                 pressed,
                 repeat,
             } => {
-                if pressed {
+                if scancode == CAPS_LOCK {
+                    if pressed && !repeat {
+                        self.caps_lock = !self.caps_lock;
+                    }
+                } else if pressed {
                     if !self.keys_down.contains(&scancode) {
                         self.keys_down.push(scancode);
                     }

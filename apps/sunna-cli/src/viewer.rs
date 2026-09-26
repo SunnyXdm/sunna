@@ -17,13 +17,16 @@ use tokio::sync::mpsc::UnboundedSender;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
+use crate::keyboard::{self, Hotkey};
 use crate::keymap;
 #[cfg(target_os = "macos")]
 use crate::layer_presenter::LayerPresenter;
+#[cfg(target_os = "macos")]
+use crate::mac_keyboard::KeyboardCapture;
 
 /// How much to scale the stream to show it in `area` (both in pixels).
 /// 1:1 when the stream was sized for this screen (a Mac host matches the
@@ -54,7 +57,18 @@ pub struct SharedFrame {
     pub tiles: Mutex<Vec<sunna_proto::tiles::TileBatch>>,
     /// Session numbers for the stats bar.
     pub live: Arc<Mutex<LiveStats>>,
+    /// Viewer hotkeys caught by the keyboard tap, for the event loop.
+    pub hotkeys: Mutex<Vec<Hotkey>>,
 }
+
+/// How long a notice stays up.
+#[cfg(target_os = "macos")]
+const NOTICE_TIME: Duration = Duration::from_secs(6);
+#[cfg(target_os = "macos")]
+const HOTKEY_HELP: &str = "⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥S stats  ·  ⌃⌥Q disconnect";
+
+#[cfg(target_os = "macos")]
+const ACCESSIBILITY_HELP: &str = "To send ⌘Tab, ⌘Space and other shortcuts to the remote, allow your terminal in System Settings → Privacy & Security → Accessibility, then reconnect  ·  ⌃⌥Q disconnect";
 
 /// One line for the stats bar (⌃⌥S), Parsec-style.
 pub fn stats_text(live: &LiveStats) -> String {
@@ -111,7 +125,12 @@ pub fn run_viewer(
     width: u32,
     height: u32,
 ) -> anyhow::Result<()> {
+    let proxy = event_loop.create_proxy();
     let mut app = ViewerApp {
+        proxy,
+        notice: None,
+        #[cfg(target_os = "macos")]
+        capture: None,
         shared,
         input,
         title,
@@ -124,7 +143,7 @@ pub fn run_viewer(
         modifiers: ModifiersState::empty(),
         stats_visible: std::env::var("SUNNA_STATS").map_or(true, |value| value != "0"),
         stats_updated: Instant::now() - Duration::from_secs(1),
-        hotkey_down: false,
+        hotkey_down: None,
         #[cfg(target_os = "macos")]
         layer: None,
         presented: 0,
@@ -135,6 +154,14 @@ pub fn run_viewer(
 }
 
 struct ViewerApp {
+    /// Wakes the event loop (the keyboard tap uses it for hotkeys).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    proxy: EventLoopProxy<FrameReady>,
+    /// Bottom notice and when it goes away.
+    notice: Option<(String, Instant)>,
+    /// Sends ⌘Tab and other system shortcuts to the host while focused.
+    #[cfg(target_os = "macos")]
+    capture: Option<KeyboardCapture>,
     shared: Arc<SharedFrame>,
     input: UnboundedSender<InputEvent>,
     title: String,
@@ -152,8 +179,9 @@ struct ViewerApp {
     /// Stats bar shown (toggled with ⌃⌥S; `SUNNA_STATS=0` starts hidden).
     stats_visible: bool,
     stats_updated: Instant,
-    /// The S of ⌃⌥S is held: its key-up is ours too, not the host's.
-    hotkey_down: bool,
+    /// A viewer hotkey's key is held (window key path): its key-up is ours
+    /// too, not the host's.
+    hotkey_down: Option<KeyCode>,
     /// Zero-copy presenter; when set, softbuffer isn't used.
     #[cfg(target_os = "macos")]
     layer: Option<LayerPresenter>,
@@ -179,6 +207,108 @@ impl ViewerApp {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = text;
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn show_notice(&mut self, text: impl Into<String>, time: Duration) {
+        let text = text.into();
+        #[cfg(target_os = "macos")]
+        if let Some(layer) = self.layer.as_mut() {
+            layer.show_notice(Some(&text));
+        }
+        tracing::info!(notice = %text, "viewer notice");
+        self.notice = Some((text, Instant::now() + time));
+    }
+
+    fn expire_notice(&mut self) {
+        if self.notice.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+            self.notice = None;
+            #[cfg(target_os = "macos")]
+            if let Some(layer) = self.layer.as_mut() {
+                layer.show_notice(None);
+            }
+        }
+    }
+
+    fn apply_hotkey(&mut self, event_loop: &ActiveEventLoop, hotkey: Hotkey) {
+        match hotkey {
+            Hotkey::ToggleStats => {
+                self.stats_visible = !self.stats_visible;
+                self.refresh_stats(true);
+            }
+            Hotkey::ToggleFullscreen => {
+                if let Some(window) = &self.window {
+                    let full = window.fullscreen().is_some();
+                    window.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
+                }
+            }
+            Hotkey::ToggleCapture => self.toggle_capture(),
+            Hotkey::Disconnect => {
+                tracing::info!("disconnect requested (⌃⌥Q)");
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// ⌃⌥G from the window's key events, which only arrive while capture
+    /// is off: turn it on.
+    fn toggle_capture(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(capture) = &self.capture else {
+                self.show_notice(ACCESSIBILITY_HELP, NOTICE_TIME * 2);
+                return;
+            };
+            capture.set_enabled(!capture.enabled());
+            self.capture_changed();
+        }
+    }
+
+    /// Announce the capture state. Turning it on also releases keys held
+    /// through the window's key events: their key-ups now go to the tap.
+    fn capture_changed(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let enabled = self.capture.as_ref().is_some_and(|capture| capture.enabled());
+            if enabled {
+                self.release_window_keys();
+                self.show_notice(
+                    "Keyboard captured: ⌘Tab, ⌘Space and other shortcuts go to the remote  ·  ⌃⌥G gives them back to this Mac",
+                    NOTICE_TIME,
+                );
+            } else {
+                self.show_notice(
+                    "Keyboard released: shortcuts stay on this Mac  ·  ⌃⌥G to capture again",
+                    NOTICE_TIME,
+                );
+            }
+        }
+    }
+
+    /// Take ⌘Tab and the other system shortcuts for the host (macOS; needs
+    /// the Accessibility permission).
+    fn install_capture(&mut self) {
+        #[cfg(target_os = "macos")]
+        match KeyboardCapture::new(self.input.clone(), Arc::clone(&self.shared), self.proxy.clone()) {
+            Ok(capture) => {
+                self.capture = Some(capture);
+                self.show_notice(HOTKEY_HELP, NOTICE_TIME);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "keyboard capture unavailable; macOS keeps its shortcuts");
+                self.show_notice(ACCESSIBILITY_HELP, NOTICE_TIME * 2);
+            }
+        }
+    }
+
+    fn release_window_keys(&mut self) {
+        for scancode in std::mem::take(&mut self.keys_down) {
+            let _ = self.input.send(InputEvent::Key {
+                scancode,
+                pressed: false,
+                repeat: false,
+            });
+        }
     }
 
     fn uses_layer(&self) -> bool {
@@ -336,10 +466,12 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 tracing::info!("presenting via CALayer (zero-copy IOSurface)");
                 self.layer = Some(layer);
                 self.window = Some(window);
+                self.install_capture();
                 return;
             }
             Err(error) => tracing::warn!(%error, "layer presenter unavailable, using CPU blit"),
         }
+
         let context = match softbuffer::Context::new(window.clone()) {
             Ok(context) => context,
             Err(error) => {
@@ -357,9 +489,20 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             }
         }
         self.window = Some(window);
+        self.install_capture();
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: FrameReady) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: FrameReady) {
+        let hotkeys = std::mem::take(&mut *self.shared.hotkeys.lock().unwrap());
+        for hotkey in hotkeys {
+            match hotkey {
+                // The tap has already released capture by the time it gets
+                // here (so the rest of the chord went to macOS); just say so.
+                Hotkey::ToggleCapture => self.capture_changed(),
+                other => self.apply_hotkey(event_loop, other),
+            }
+        }
+        self.expire_notice();
         #[cfg(target_os = "macos")]
         if self.layer.is_some() {
             // Show immediately rather than waiting for the next redraw. Video
@@ -471,32 +614,46 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     momentum: false,
                 });
             }
-            WindowEvent::Focused(false) => {
-                for scancode in std::mem::take(&mut self.keys_down) {
-                    let _ = self.input.send(InputEvent::Key {
-                        scancode,
-                        pressed: false,
-                        repeat: false,
-                    });
+            WindowEvent::Focused(focused) => {
+                #[cfg(target_os = "macos")]
+                if let Some(capture) = &self.capture {
+                    capture.set_focused(focused);
+                }
+                if !focused {
+                    self.release_window_keys();
+                    self.hotkey_down = None;
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
-                // ⌃⌥S toggles the stats bar and never reaches the host.
-                if event.physical_key == PhysicalKey::Code(KeyCode::KeyS) {
+                // Viewer hotkeys (⌃⌥ + S/F/G/Q) never reach the host. This
+                // path only sees keys the tap didn't take: capture off, or
+                // no Accessibility permission.
+                if let PhysicalKey::Code(code) = event.physical_key {
                     let pressed = event.state == ElementState::Pressed;
-                    let chord = self.modifiers.control_key()
-                        && self.modifiers.alt_key()
-                        && !self.modifiers.super_key();
-                    if pressed && chord {
-                        if !event.repeat {
-                            self.stats_visible = !self.stats_visible;
-                            self.refresh_stats(true);
+                    // A hotkey's key is ours from press to release, repeats too.
+                    if self.hotkey_down == Some(code) {
+                        if !pressed {
+                            self.hotkey_down = None;
                         }
-                        self.hotkey_down = true;
                         return;
                     }
-                    if !pressed && std::mem::take(&mut self.hotkey_down) {
+                    let flags = [
+                        (self.modifiers.control_key(), keyboard::flags::CONTROL),
+                        (self.modifiers.alt_key(), keyboard::flags::OPTION),
+                        (self.modifiers.super_key(), keyboard::flags::COMMAND),
+                    ]
+                    .into_iter()
+                    .filter(|(held, _)| *held)
+                    .fold(0, |flags, (_, bit)| flags | bit);
+                    // Only a fresh press can be a hotkey: a key already held
+                    // (and sent) when ⌃⌥ joins it stays the host's.
+                    let hotkey = keymap::mac_keycode(code)
+                        .filter(|vk| pressed && !event.repeat && !self.keys_down.contains(vk))
+                        .and_then(|vk| Hotkey::from_key(vk, flags));
+                    if let Some(hotkey) = hotkey {
+                        self.hotkey_down = Some(code);
+                        self.apply_hotkey(event_loop, hotkey);
                         return;
                     }
                 }
