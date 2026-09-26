@@ -10,6 +10,7 @@ members = [
     "crates/host",
     "crates/client",
     "crates/telemetry",
+    "crates/viewer",
     "apps/sunnad",
     "apps/sunna-cli",
 ]
@@ -22,6 +23,7 @@ publish = false
 [workspace.dependencies]
 sunna-proto = { path = "crates/proto" }
 sunna-transport = { path = "crates/transport" }
+sunna-viewer = { path = "crates/viewer" }
 sunna-capture = { path = "crates/capture" }
 sunna-codec = { path = "crates/codec" }
 sunna-input = { path = "crates/input" }

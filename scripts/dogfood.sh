@@ -82,13 +82,14 @@ case "${1:-}" in
     ;;
   view)
     HOST="${2:?usage: $0 view <host Tailscale name or 100.x address>}"
+    NAME="$HOST"
     if [[ ! "$HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       RESOLVED="$(tailscale_cli ip -4 "$HOST" 2>/dev/null | head -1 || true)"
       [ -n "$RESOLVED" ] || { echo "can't resolve $HOST on the tailnet (try its 100.x address)" >&2; exit 1; }
       HOST="$RESOLVED"
     fi
     echo "Viewing $HOST:$PORT. Close the window to end the session."
-    ./target/release/sunna-cli view "$HOST:$PORT"
+    ./target/release/sunna-cli view "$HOST:$PORT" --name "$NAME"
     ;;
   *)
     sed -n '2,17p' "$0"

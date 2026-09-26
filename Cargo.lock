@@ -2251,9 +2251,6 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
- "objc2 0.6.4",
- "qoi",
- "softbuffer",
  "sunna-capture",
  "sunna-client",
  "sunna-codec",
@@ -2262,10 +2259,10 @@ dependencies = [
  "sunna-proto",
  "sunna-telemetry",
  "sunna-transport",
+ "sunna-viewer",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "winit",
 ]
 
 [[package]]
@@ -2370,6 +2367,26 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "sunna-viewer"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "objc2 0.6.4",
+ "qoi",
+ "softbuffer",
+ "sunna-capture",
+ "sunna-client",
+ "sunna-codec",
+ "sunna-input",
+ "sunna-proto",
+ "sunna-telemetry",
+ "sunna-transport",
+ "tokio",
+ "tracing",
+ "winit",
 ]
 
 [[package]]
