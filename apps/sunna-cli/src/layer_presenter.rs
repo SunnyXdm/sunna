@@ -268,6 +268,15 @@ impl LayerPresenter {
     }
 
     fn tile_layer(&self, tile: &sunna_proto::tiles::Tile) -> Option<Retained<AnyObject>> {
+        // Validate geometry before decoding (and allocating) anything.
+        let inside = tile.width > 0
+            && tile.height > 0
+            && tile.x.checked_add(tile.width).is_some_and(|x1| x1 <= self.stream_size.0)
+            && tile.y.checked_add(tile.height).is_some_and(|y1| y1 <= self.stream_size.1);
+        let header = qoi::decode_header(&tile.qoi).ok()?;
+        if !inside || (header.width, header.height) != (tile.width, tile.height) {
+            return None;
+        }
         let (header, pixels) = qoi::decode_to_vec(&tile.qoi).ok()?;
         let (width, height) = (header.width as usize, header.height as usize);
         if header.channels.as_u8() != 4
