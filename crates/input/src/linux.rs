@@ -162,13 +162,12 @@ impl InputInjector for X11Injector {
                     tracing::debug!(scancode, "no Linux key for this Mac keycode");
                     return Ok(());
                 };
-                let keycode = (code + 8) as u8;
-                if repeat && pressed {
-                    // X autorepeat is off for synthetic keys; replay as press.
-                    self.fake(KEY_PRESS_EVENT, keycode, 0, 0)?;
-                } else {
-                    self.key(keycode, pressed)?;
+                // The X server auto-repeats held keys itself, XTEST ones
+                // included; replaying the Mac's repeats too doubled the rate.
+                if repeat {
+                    return Ok(());
                 }
+                self.key((code + 8) as u8, pressed)?;
             }
             InputEvent::Gesture { .. } => {}
         }
