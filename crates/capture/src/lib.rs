@@ -36,6 +36,28 @@ impl PixelFormat {
     }
 }
 
+/// Colour space the macOS capture delivers and the encoder tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    /// Capture converted to Display P3 (the Macs' native gamut), tagged
+    /// P3 primaries + sRGB transfer: what screen pixels really are, so the
+    /// viewer's colour management reproduces the host exactly.
+    DisplayP3,
+    /// Previous behaviour: native display pixels tagged as Rec. 709 video
+    /// (dulls colours on P3 displays). For A/B only.
+    Rec709,
+}
+
+impl ColorMode {
+    /// `SUNNA_COLOR=709` selects the old tagging; default Display P3.
+    pub fn from_env() -> Self {
+        match std::env::var("SUNNA_COLOR").as_deref() {
+            Ok("709") => ColorMode::Rec709,
+            _ => ColorMode::DisplayP3,
+        }
+    }
+}
+
 /// Pixel storage for a captured frame. The synthetic source and tests carry
 /// CPU bytes; real capture backends carry GPU surfaces so pixels flow from
 /// compositor to encoder without touching system memory (zero-copy rule,

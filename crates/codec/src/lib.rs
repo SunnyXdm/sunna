@@ -169,8 +169,11 @@ impl Decoder for Passthrough {
 
 /// The codec this platform should offer by default when hosting.
 pub fn default_codec_name() -> &'static str {
+    // HEVC on macOS: same encode latency as H.264 on an M1 but ~40% fewer
+    // bits for the same picture (dogfood build 9); Apple's own Screen
+    // Sharing streams HEVC too.
     if cfg!(target_os = "macos") {
-        "h264"
+        "hevc"
     } else {
         "raw"
     }

@@ -75,6 +75,10 @@ extern "C" {
     static kCGDisplayStreamMinimumFrameTime: CFStringRef;
     static kCGDisplayStreamYCbCrMatrix: CFStringRef;
     static kCGDisplayStreamYCbCrMatrix_ITU_R_709_2: CFStringRef;
+    static kCGDisplayStreamColorSpace: CFStringRef;
+    static kCGDisplayStreamShowCursor: CFStringRef;
+    static kCGColorSpaceDisplayP3: CFStringRef;
+    fn CGColorSpaceCreateWithName(name: CFStringRef) -> *const c_void;
 }
 
 #[link(name = "IOSurface", kind = "framework")]
@@ -485,6 +489,30 @@ impl ScreenSource {
                 CFNumber::from(1.0 / fps.max(1) as f64).as_CFType(),
             ),
         ];
+        // The viewer draws its own (local, zero-latency) cursor, so keep the
+        // host's out of the video; otherwise there are two pointers and the
+        // one in the video trails by the full round trip.
+        // SUNNA_REMOTE_CURSOR=1 puts it back.
+        let show_cursor = std::env::var("SUNNA_REMOTE_CURSOR").is_ok_and(|value| value == "1");
+        properties.push((
+            unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamShowCursor) }.as_CFType(),
+            core_foundation::boolean::CFBoolean::from(show_cursor).as_CFType(),
+        ));
+        let color = crate::ColorMode::from_env();
+        if color == crate::ColorMode::DisplayP3 {
+            // Convert to a known colour space so the stream can be tagged
+            // honestly (see ColorMode).
+            let p3 = unsafe {
+                core_foundation::base::CFType::wrap_under_create_rule(CGColorSpaceCreateWithName(
+                    kCGColorSpaceDisplayP3,
+                ))
+            };
+            properties.push((
+                unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamColorSpace) }.as_CFType(),
+                p3,
+            ));
+        }
+        tracing::info!(?color, show_cursor, "capture colour and cursor");
         if !bgra {
             // Pin the RGB→YUV matrix so the encoder can tag it (Rec. 709).
             properties.push((
