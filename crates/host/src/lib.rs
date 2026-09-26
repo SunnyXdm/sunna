@@ -259,9 +259,10 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
     let pipeline = tokio::task::spawn_blocking(move || {
         initial
             .apply((builder.config.width, builder.config.height), &settings)
-            .and_then(|stream| {
+            .and_then(|mut stream| {
                 let source = (builder.new_source)(&stream)?;
                 let encoder = (builder.new_encoder)(&stream)?;
+                stream.fast_lane &= source.supports_tiles();
                 Ok((stream, source, encoder))
             })
     })
@@ -548,9 +549,10 @@ fn media_loop(
             let started = Instant::now();
             let pipeline = stream
                 .apply((host.config.width, host.config.height), &settings)
-                .and_then(|next| {
+                .and_then(|mut next| {
                     let source = (host.new_source)(&next)?;
                     let encoder = (host.new_encoder)(&next)?;
+                    next.fast_lane &= source.supports_tiles();
                     Ok((next, source, encoder))
                 });
             match pipeline {

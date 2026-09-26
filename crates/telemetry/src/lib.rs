@@ -319,8 +319,29 @@ fn environment(role: &str) -> Value {
         "hostname": hostname(),
         "awdl_active": awdl_active(),
         "pid": std::process::id(),
-        "args": std::env::args().collect::<Vec<_>>(),
+        "args": redact_args(std::env::args()),
     })
+}
+
+/// The command line with secrets blanked: a `--token` value (keys normally
+/// come through the environment, but a hand-typed command may pass one).
+fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut redact_next = false;
+    args.into_iter()
+        .map(|arg| {
+            if std::mem::take(&mut redact_next) {
+                return "<redacted>".to_string();
+            }
+            if arg == "--token" {
+                redact_next = true;
+                arg
+            } else if arg.starts_with("--token=") {
+                "--token=<redacted>".to_string()
+            } else {
+                arg
+            }
+        })
+        .collect()
 }
 
 /// Whether AWDL (Apple's peer-to-peer Wi-Fi for AirDrop/Continuity) is up.
@@ -370,4 +391,19 @@ fn run_id() -> String {
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
     format!("{:x}-{:x}", nanos, std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_args;
+
+    #[test]
+    fn tokens_never_ship() {
+        let args = ["sunnad", "--token", "s3cret", "--name", "box", "--token=abc"]
+            .map(String::from);
+        assert_eq!(
+            redact_args(args),
+            ["sunnad", "--token", "<redacted>", "--name", "box", "--token=<redacted>"]
+        );
+    }
 }

@@ -32,6 +32,11 @@ pub enum MenuAction {
     Scale(u8),
     BitrateMbps(u32),
     ToggleFastLane,
+    /// One of the host's shortcuts (`send_keys::shortcuts_for`), by index.
+    SendShortcut(u8),
+    ToggleClipboard,
+    TypeClipboard,
+    FrameRate(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +56,7 @@ impl Codec {
 
 pub const SCALES: [u8; 3] = [100, 75, 50];
 pub const BITRATES_MBPS: [u32; 4] = [10, 20, 40, 80];
+pub const FRAME_RATES: [u32; 2] = [60, 30];
 
 impl MenuAction {
     /// NSMenuItem tags: small integers, parameters folded in.
@@ -66,6 +72,10 @@ impl MenuAction {
             MenuAction::Scale(percent) => 1000 + percent as isize,
             MenuAction::BitrateMbps(mbps) => 2000 + mbps as isize,
             MenuAction::ToggleFastLane => 6,
+            MenuAction::ToggleClipboard => 7,
+            MenuAction::TypeClipboard => 8,
+            MenuAction::SendShortcut(index) => 3000 + index as isize,
+            MenuAction::FrameRate(fps) => 4000 + fps as isize,
         }
     }
 
@@ -77,10 +87,14 @@ impl MenuAction {
             4 => MenuAction::HideButton,
             5 => MenuAction::Disconnect,
             6 => MenuAction::ToggleFastLane,
+            7 => MenuAction::ToggleClipboard,
+            8 => MenuAction::TypeClipboard,
             10 => MenuAction::Codec(Codec::Hevc),
             11 => MenuAction::Codec(Codec::H264),
             1000..=1100 => MenuAction::Scale((tag - 1000) as u8),
             2000..=2999 => MenuAction::BitrateMbps((tag - 2000) as u32),
+            3000..=3099 => MenuAction::SendShortcut((tag - 3000) as u8),
+            4000..=4240 => MenuAction::FrameRate((tag - 4000) as u32),
             _ => return None,
         })
     }
@@ -93,8 +107,17 @@ pub enum MenuEvent {
 }
 
 /// What the menu shows checked or enabled.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub struct MenuState {
+    /// Heading lines: the host, then what's streaming.
+    pub host: String,
+    pub detail: String,
+    /// Shortcuts that suit the host's OS.
+    pub shortcuts: &'static [crate::send_keys::Shortcut],
+    /// Clipboard sharing is on.
+    pub clipboard: bool,
+    /// The stream's frame rate.
+    pub fps: u32,
     pub stats: bool,
     pub fullscreen: bool,
     /// ⌘ shortcuts currently go to the remote.
@@ -295,6 +318,24 @@ unsafe fn video_menu(target: &MenuTarget, state: &MenuState) -> Retained<AnyObje
         );
     }
     add_separator(&menu);
+    add_heading(&menu, "Frame rate");
+    for fps in FRAME_RATES {
+        let title = if fps == 30 {
+            "30 fps (half the work for slow computers)".to_string()
+        } else {
+            format!("{fps} fps")
+        };
+        add_item(
+            &menu,
+            target,
+            &title,
+            MenuAction::FrameRate(fps),
+            "",
+            Some(state.fps == fps),
+            on,
+        );
+    }
+    add_separator(&menu);
     add_heading(&menu, "Bitrate limit");
     for mbps in BITRATES_MBPS {
         let checked = state.bitrate_mbps == Some(mbps);
@@ -321,6 +362,82 @@ unsafe fn video_menu(target: &MenuTarget, state: &MenuState) -> Retained<AnyObje
     menu
 }
 
+unsafe fn keyboard_menu(target: &MenuTarget, state: &MenuState) -> Retained<AnyObject> {
+    let menu: Retained<AnyObject> = msg_send![class!(NSMenu), new];
+    let _: () = msg_send![&*menu, setAutoenablesItems: Bool::NO];
+    set_dark(&menu);
+    add_item(
+        &menu,
+        target,
+        "Send ⌘ Shortcuts to Remote",
+        MenuAction::ToggleCapture,
+        "g",
+        Some(state.capture),
+        state.capture_available,
+    );
+    add_separator(&menu);
+    add_heading(&menu, "Send keys");
+    for (index, shortcut) in state.shortcuts.iter().enumerate() {
+        add_item(
+            &menu,
+            target,
+            shortcut.title,
+            MenuAction::SendShortcut(index as u8),
+            "",
+            None,
+            true,
+        );
+    }
+    menu
+}
+
+unsafe fn clipboard_menu(target: &MenuTarget, state: &MenuState) -> Retained<AnyObject> {
+    let menu: Retained<AnyObject> = msg_send![class!(NSMenu), new];
+    let _: () = msg_send![&*menu, setAutoenablesItems: Bool::NO];
+    set_dark(&menu);
+    add_item(
+        &menu,
+        target,
+        "Share Clipboard",
+        MenuAction::ToggleClipboard,
+        "",
+        Some(state.clipboard),
+        true,
+    );
+    add_item(
+        &menu,
+        target,
+        "Type Clipboard Text",
+        MenuAction::TypeClipboard,
+        "",
+        None,
+        true,
+    );
+    menu
+}
+
+/// This Mac's clipboard as text, for typing it out on the host.
+pub fn clipboard_text() -> Option<String> {
+    // SAFETY: plain AppKit calls on the main thread (menu actions run there).
+    unsafe {
+        let pasteboard: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+        if pasteboard.is_null() {
+            return None;
+        }
+        let kind = ns_string("public.utf8-plain-text");
+        let text: *mut AnyObject = msg_send![pasteboard, stringForType: &*kind];
+        if text.is_null() {
+            return None;
+        }
+        let utf8: *const std::ffi::c_char = msg_send![text, UTF8String];
+        (!utf8.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(utf8)
+                .to_string_lossy()
+                .into_owned()
+        })
+    }
+}
+
 unsafe fn add_separator(menu: &AnyObject) {
     let separator: Retained<AnyObject> = msg_send![class!(NSMenuItem), separatorItem];
     let _: () = msg_send![menu, addItem: &*separator];
@@ -341,7 +458,10 @@ unsafe fn show(job: &PopUp) {
     // Items are enabled explicitly; don't let AppKit re-validate them.
     let _: () = msg_send![&*menu, setAutoenablesItems: Bool::NO];
     set_dark(&menu);
-    let state = job.state;
+    let state = &job.state;
+    add_heading(&menu, &state.host);
+    add_heading(&menu, &state.detail);
+    add_separator(&menu);
     let screen = if state.fullscreen {
         "Windowed"
     } else {
@@ -365,17 +485,12 @@ unsafe fn show(job: &PopUp) {
         Some(state.stats),
         true,
     );
-    add_item(
-        &menu,
-        &target,
-        "Send ⌘ Shortcuts to Remote",
-        MenuAction::ToggleCapture,
-        "g",
-        Some(state.capture),
-        state.capture_available,
-    );
     add_separator(&menu);
-    let video = video_menu(&target, &state);
+    let keyboard = keyboard_menu(&target, state);
+    add_submenu(&menu, "Keyboard", &keyboard);
+    let clipboard = clipboard_menu(&target, state);
+    add_submenu(&menu, "Clipboard", &clipboard);
+    let video = video_menu(&target, state);
     add_submenu(&menu, "Video", &video);
     add_separator(&menu);
     let button = if state.button_visible {

@@ -10,12 +10,15 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod tiles;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
-#[cfg(target_os = "linux")]
-pub mod linux;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -109,8 +112,20 @@ pub struct VideoFrame {
 pub type TileSink = std::sync::Arc<dyn Fn(sunna_proto::tiles::TileBatch) + Send + Sync>;
 
 /// Daemon default only; each session negotiates its own fast lane setting.
-pub fn fast_lane_enabled() -> bool {
-    std::env::var("SUNNA_FAST_LANE").is_ok_and(|value| value == "1")
+/// Linux software H.264 defaults on; SUNNA_FAST_LANE=1/0 overrides it.
+pub fn fast_lane_enabled(software_h264: bool) -> bool {
+    fast_lane_default(
+        std::env::var("SUNNA_FAST_LANE").ok().as_deref(),
+        software_h264,
+    )
+}
+
+fn fast_lane_default(value: Option<&str>, software_h264: bool) -> bool {
+    match value {
+        Some("1") => true,
+        Some(_) => false,
+        None => cfg!(target_os = "linux") && software_h264,
+    }
 }
 
 pub trait FrameSource: Send {
@@ -118,6 +133,10 @@ pub trait FrameSource: Send {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn fps(&self) -> u32;
+    /// Whether this source can produce lossless fast-lane tiles.
+    fn supports_tiles(&self) -> bool {
+        false
+    }
     /// Start delivering fast-lane tiles for small changes to `sink`.
     /// Sources that can't report changed regions ignore this.
     fn set_tile_sink(&mut self, _sink: TileSink) {}
@@ -240,6 +259,18 @@ impl FrameSource for SyntheticSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_lane_defaults_and_overrides() {
+        assert_eq!(fast_lane_default(None, true), cfg!(target_os = "linux"));
+        assert!(!fast_lane_default(None, false));
+        for software in [false, true] {
+            assert!(fast_lane_default(Some("1"), software));
+            assert!(!fast_lane_default(Some("0"), software));
+            assert!(!fast_lane_default(Some("invalid"), software));
+        }
+        assert!(!SyntheticSource::new(64, 32, 60).supports_tiles());
+    }
 
     #[test]
     fn synthetic_source_produces_paced_frames() {

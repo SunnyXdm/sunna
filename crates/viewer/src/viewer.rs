@@ -29,6 +29,8 @@ use crate::layer_presenter::LayerPresenter;
 use crate::mac_keyboard::KeyboardCapture;
 #[cfg(target_os = "macos")]
 use crate::menu::{self, MenuAction, MenuEvent, MenuState};
+#[cfg(target_os = "macos")]
+use crate::send_keys;
 
 /// How much to scale the stream to show it in `area` (both in pixels).
 /// 1:1 when the stream was sized for this screen (a Mac host matches the
@@ -67,7 +69,8 @@ pub struct SharedFrame {
 #[cfg(target_os = "macos")]
 const NOTICE_TIME: Duration = Duration::from_secs(6);
 #[cfg(target_os = "macos")]
-const HOTKEY_HELP: &str = "••• (top left) or ⌃⌥M: menu  ·  ⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥Q disconnect";
+const HOTKEY_HELP: &str =
+    "••• (top left) or ⌃⌥M: menu  ·  ⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥Q disconnect";
 
 #[cfg(target_os = "macos")]
 const ACCESSIBILITY_HELP: &str = "To send ⌘Tab, ⌘Space and other shortcuts to the remote, allow your terminal in System Settings → Privacy & Security → Accessibility, then reconnect  ·  ⌃⌥Q disconnect";
@@ -78,7 +81,12 @@ pub fn stats_text(live: &LiveStats) -> String {
         return "connecting…".into();
     }
     let mut parts = vec![
-        format!("{} {}×{}", live.codec.to_uppercase(), live.width, live.height),
+        format!(
+            "{} {}×{}",
+            live.codec.to_uppercase(),
+            live.width,
+            live.height
+        ),
         format!("{} fps", live.fps),
     ];
     match &live.host {
@@ -93,7 +101,10 @@ pub fn stats_text(live: &LiveStats) -> String {
         parts.push(format!("latency {p50:.0} ms (p95 {p95:.0})"));
     }
     if let Some(host) = &live.host {
-        parts.push(format!("encode {:.1} ms", host.encode_us_p50 as f64 / 1000.0));
+        parts.push(format!(
+            "encode {:.1} ms",
+            host.encode_us_p50 as f64 / 1000.0
+        ));
     }
     if let Some(decode) = live.decode_ms_p50 {
         parts.push(format!("decode {decode:.1} ms"));
@@ -127,6 +138,9 @@ pub struct StreamControl {
     /// The stream size asked for at connect (this screen's), which the
     /// Resolution percentages scale.
     pub max_size: Option<(u32, u32)>,
+    /// Who the host is, for the menu's heading and its shortcuts.
+    pub host_name: String,
+    pub host_os: String,
 }
 
 pub fn run_viewer(
@@ -272,7 +286,11 @@ impl ViewerApp {
     }
 
     fn expire_notice(&mut self) {
-        if self.notice.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
             self.notice = None;
             #[cfg(target_os = "macos")]
             if let Some(layer) = self.layer.as_mut() {
@@ -315,7 +333,10 @@ impl ViewerApp {
                 return;
             }
             self.menu_open = true;
-            let capture = self.capture.as_ref().is_some_and(|capture| capture.enabled());
+            let capture = self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.enabled());
             let live = self.shared.live.lock().unwrap().clone();
             let codec = match live.codec.as_str() {
                 "hevc" => "hevc",
@@ -323,7 +344,29 @@ impl ViewerApp {
                 "raw" => "raw",
                 _ => "",
             };
+            let detail = if live.codec.is_empty() {
+                "Connecting…".to_string()
+            } else {
+                let mut parts = vec![format!(
+                    "{} {}×{}",
+                    live.codec.to_uppercase(),
+                    live.width,
+                    live.height
+                )];
+                if live.stream_fps > 0 {
+                    parts.push(format!("{} fps", live.stream_fps));
+                }
+                if let Some((p50, _)) = live.latency_ms {
+                    parts.push(format!("{p50:.0} ms"));
+                }
+                parts.join("  ·  ")
+            };
             let state = MenuState {
+                host: self.stream.host_name.clone(),
+                detail,
+                shortcuts: send_keys::shortcuts_for(&self.stream.host_os),
+                clipboard: !live.clipboard_paused,
+                fps: live.stream_fps,
                 stats: self.stats_visible,
                 fullscreen: window.fullscreen().is_some(),
                 capture,
@@ -350,7 +393,9 @@ impl ViewerApp {
     #[cfg(target_os = "macos")]
     fn request_stream(&mut self) {
         tracing::info!(settings = ?self.requested, "stream change requested");
-        self.stream.requests.send_replace(Some(self.requested.clone()));
+        self.stream
+            .requests
+            .send_replace(Some(self.requested.clone()));
         self.show_notice("Changing the stream…", NOTICE_TIME);
     }
 
@@ -359,15 +404,27 @@ impl ViewerApp {
         let live = self.shared.live.lock().unwrap().clone();
         if live.epoch != self.seen_epoch {
             self.seen_epoch = live.epoch;
-            let lane = if live.fast_lane { "fast lane on" } else { "fast lane off" };
+            let lane = if live.fast_lane {
+                "fast lane on"
+            } else {
+                "fast lane off"
+            };
             self.show_notice(
-                format!("Now streaming {} {}×{}  ·  {lane}", live.codec.to_uppercase(), live.width, live.height),
+                format!(
+                    "Now streaming {} {}×{}  ·  {lane}",
+                    live.codec.to_uppercase(),
+                    live.width,
+                    live.height
+                ),
                 Duration::from_secs(4),
             );
         }
         if live.last_stream_error.is_some() && live.last_stream_error != self.seen_stream_error {
             let error = live.last_stream_error.clone().unwrap_or_default();
-            self.show_notice(format!("Couldn't change the stream: {error}"), Duration::from_secs(8));
+            self.show_notice(
+                format!("Couldn't change the stream: {error}"),
+                Duration::from_secs(8),
+            );
         }
         self.seen_stream_error = live.last_stream_error;
     }
@@ -375,11 +432,15 @@ impl ViewerApp {
     #[cfg(target_os = "macos")]
     fn handle_menu(&mut self, event_loop: &ActiveEventLoop, event: MenuEvent) {
         match event {
-            MenuEvent::Chose(MenuAction::ToggleStats) => self.apply_hotkey(event_loop, Hotkey::ToggleStats),
+            MenuEvent::Chose(MenuAction::ToggleStats) => {
+                self.apply_hotkey(event_loop, Hotkey::ToggleStats)
+            }
             MenuEvent::Chose(MenuAction::ToggleFullscreen) => {
                 self.apply_hotkey(event_loop, Hotkey::ToggleFullscreen)
             }
-            MenuEvent::Chose(MenuAction::Disconnect) => self.apply_hotkey(event_loop, Hotkey::Disconnect),
+            MenuEvent::Chose(MenuAction::Disconnect) => {
+                self.apply_hotkey(event_loop, Hotkey::Disconnect)
+            }
             MenuEvent::Chose(MenuAction::ToggleCapture) => {
                 if let Some(enabled) = self.capture_after_menu.as_mut() {
                     *enabled = !*enabled;
@@ -391,9 +452,12 @@ impl ViewerApp {
                 self.request_stream();
             }
             MenuEvent::Chose(MenuAction::Scale(percent)) => {
-                let Some((width, height)) = self.stream.max_size else { return };
+                let Some((width, height)) = self.stream.max_size else {
+                    return;
+                };
                 self.scale = percent;
-                let scaled = |value: u32| ((value as u64 * percent as u64 / 100) as u32).max(2) & !1;
+                let scaled =
+                    |value: u32| ((value as u64 * percent as u64 / 100) as u32).max(2) & !1;
                 self.requested.max_size = Some((scaled(width), scaled(height)));
                 self.request_stream();
             }
@@ -404,6 +468,34 @@ impl ViewerApp {
             MenuEvent::Chose(MenuAction::ToggleFastLane) => {
                 let on = self.shared.live.lock().unwrap().fast_lane;
                 self.requested.fast_lane = Some(!on);
+                self.request_stream();
+            }
+            MenuEvent::Chose(MenuAction::SendShortcut(index)) => {
+                if let Some(shortcut) =
+                    send_keys::shortcuts_for(&self.stream.host_os).get(index as usize)
+                {
+                    for event in send_keys::press(shortcut.keys) {
+                        let _ = self.input.send(event);
+                    }
+                    self.show_notice(format!("Sent {}", shortcut.title), NOTICE_TIME);
+                }
+            }
+            MenuEvent::Chose(MenuAction::ToggleClipboard) => {
+                let paused = {
+                    let mut live = self.shared.live.lock().unwrap();
+                    live.clipboard_paused = !live.clipboard_paused;
+                    live.clipboard_paused
+                };
+                let note = if paused {
+                    "Clipboard sharing paused: copies stay on each computer"
+                } else {
+                    "Clipboard sharing on"
+                };
+                self.show_notice(note, NOTICE_TIME);
+            }
+            MenuEvent::Chose(MenuAction::TypeClipboard) => self.type_clipboard(),
+            MenuEvent::Chose(MenuAction::FrameRate(fps)) => {
+                self.requested.fps = Some(fps);
                 self.request_stream();
             }
             MenuEvent::Chose(MenuAction::HideButton) => {
@@ -417,7 +509,9 @@ impl ViewerApp {
             }
             MenuEvent::Closed => {
                 self.menu_open = false;
-                if let (Some(capture), Some(enabled)) = (&self.capture, self.capture_after_menu.take()) {
+                if let (Some(capture), Some(enabled)) =
+                    (&self.capture, self.capture_after_menu.take())
+                {
                     capture.set_enabled(enabled);
                 }
                 if std::mem::take(&mut self.capture_toggled_in_menu) {
@@ -427,6 +521,39 @@ impl ViewerApp {
                 }
             }
         }
+    }
+
+    /// Type this Mac's clipboard text on the host, key by key, for places a
+    /// paste can't reach (login screens, password prompts). Never logged.
+    #[cfg(target_os = "macos")]
+    fn type_clipboard(&mut self) {
+        /// Enough for a password or a command; a stray essay stays home.
+        const MAX_CHARS: usize = 4000;
+        let Some(text) = menu::clipboard_text().filter(|text| !text.is_empty()) else {
+            self.show_notice("The clipboard has no text to type", NOTICE_TIME);
+            return;
+        };
+        let text: String = text.chars().take(MAX_CHARS).collect();
+        let (keys, skipped) = send_keys::type_text(&text);
+        let typed = keys.len();
+        let input = self.input.clone();
+        // Paced, so apps that read keys one event at a time keep up.
+        std::thread::spawn(move || {
+            for group in keys {
+                for event in group {
+                    if input.send(event).is_err() {
+                        return;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+        });
+        let note = if skipped > 0 {
+            format!("Typing {typed} characters  ·  {skipped} skipped (not on a US keyboard)")
+        } else {
+            format!("Typing {typed} characters")
+        };
+        self.show_notice(note, NOTICE_TIME);
     }
 
     /// ⌃⌥G from the window's key events, which only arrive while capture
@@ -448,7 +575,10 @@ impl ViewerApp {
     fn capture_changed(&mut self) {
         #[cfg(target_os = "macos")]
         {
-            let enabled = self.capture.as_ref().is_some_and(|capture| capture.enabled());
+            let enabled = self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.enabled());
             if enabled {
                 self.release_window_keys();
                 self.show_notice(
@@ -468,7 +598,11 @@ impl ViewerApp {
     /// the Accessibility permission).
     fn install_capture(&mut self) {
         #[cfg(target_os = "macos")]
-        match KeyboardCapture::new(self.input.clone(), Arc::clone(&self.shared), self.proxy.clone()) {
+        match KeyboardCapture::new(
+            self.input.clone(),
+            Arc::clone(&self.shared),
+            self.proxy.clone(),
+        ) {
             Ok(capture) => {
                 self.capture = Some(capture);
                 self.show_notice(HOTKEY_HELP, NOTICE_TIME);
@@ -554,7 +688,9 @@ impl ViewerApp {
 
         let (dst_w, dst_h) = (size.width as usize, size.height as usize);
         let (src_w, src_h) = (frame.width as usize, frame.height as usize);
-        let Ok(bytes) = frame.data.to_cpu() else { return };
+        let Ok(bytes) = frame.data.to_cpu() else {
+            return;
+        };
         let src = &bytes[..];
         if src.len() < src_w * src_h * 4 || buffer.len() < dst_w * dst_h {
             return; // malformed frame; never index out of bounds
@@ -635,7 +771,11 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
         };
         tracing::info!(
             stream = format!("{}x{}", self.stream_size.0, self.stream_size.1),
-            window = format!("{}x{}", window.inner_size().width, window.inner_size().height),
+            window = format!(
+                "{}x{}",
+                window.inner_size().width,
+                window.inner_size().height
+            ),
             scale_factor = window.scale_factor(),
             "viewer window"
         );
@@ -702,7 +842,9 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                         let size = (frame.width.max(1), frame.height.max(1));
                         if size != self.stream_size {
                             self.stream_size = size;
-                            if let (Some(layer), Some(window)) = (self.layer.as_mut(), self.window.as_ref()) {
+                            if let (Some(layer), Some(window)) =
+                                (self.layer.as_mut(), self.window.as_ref())
+                            {
                                 layer.set_stream_size(window, size);
                             }
                         }
@@ -782,12 +924,16 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 use sunna_proto::messages::MouseButton as Proto;
                 // The menu button's clicks are the viewer's, press and release.
                 if button == winit::event::MouseButton::Left {
-                    if state == ElementState::Released && std::mem::take(&mut self.swallow_left_up) {
+                    if state == ElementState::Released && std::mem::take(&mut self.swallow_left_up)
+                    {
                         return;
                     }
                     #[cfg(target_os = "macos")]
                     if state == ElementState::Pressed
-                        && self.layer.as_ref().is_some_and(|layer| layer.button_contains(self.cursor_pt))
+                        && self
+                            .layer
+                            .as_ref()
+                            .is_some_and(|layer| layer.button_contains(self.cursor_pt))
                     {
                         self.swallow_left_up = true;
                         self.open_menu();

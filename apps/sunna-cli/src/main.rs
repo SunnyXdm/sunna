@@ -126,6 +126,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             server_name,
             token,
             host_name: name.unwrap_or_else(|| addr.ip().to_string()),
+            host_os: String::new(),
         }),
         command => {
             let runtime = tokio::runtime::Builder::new_multi_thread()

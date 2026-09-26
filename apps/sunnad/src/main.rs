@@ -202,6 +202,10 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
         Source::Synthetic => 20_000,
     });
     let bitrate_bps = bitrate_kbps.saturating_mul(1000);
+    // Probe the actual backend: H.264 can use NVENC or fall back to OpenH264.
+    let encoder = make_encoder(&args.codec, width, height, args.fps, bitrate_bps)?;
+    let fast_lane = sunna_capture::fast_lane_enabled(args.codec == "h264" && encoder.is_software());
+    drop(encoder);
     let config = HostConfig {
         clipboard: !args.no_clipboard,
         name: args.name.clone(),
@@ -210,15 +214,11 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
         fps: args.fps,
         codec: args.codec.clone(),
         max_bitrate_bps: bitrate_bps,
-        fast_lane: sunna_capture::fast_lane_enabled(),
+        fast_lane,
         simulate_loss: args.simulate_loss,
         token: args.token.clone(),
         about: about::detect(),
     };
-    let fps = args.fps;
-    let codec = args.codec.clone();
-    // Fail fast on an unbuildable codec instead of per-connection.
-    make_encoder(&codec, width, height, fps, bitrate_bps)?;
 
     tokio::select! {
         result = run_host(

@@ -18,8 +18,36 @@ struct Host {
     builds: Arc<Mutex<Vec<StreamConfig>>>,
 }
 
+// The synthetic source's tile generator is only a transport fixture.
+struct TileSource(SyntheticSource);
+
+impl FrameSource for TileSource {
+    fn next_frame(&mut self) -> anyhow::Result<sunna_capture::VideoFrame> {
+        self.0.next_frame()
+    }
+    fn width(&self) -> u32 {
+        self.0.width()
+    }
+    fn height(&self) -> u32 {
+        self.0.height()
+    }
+    fn fps(&self) -> u32 {
+        self.0.fps()
+    }
+    fn supports_tiles(&self) -> bool {
+        true
+    }
+    fn set_tile_sink(&mut self, sink: sunna_capture::TileSink) {
+        self.0.set_tile_sink(sink);
+    }
+}
+
 impl Host {
     fn start() -> Self {
+        Self::with_tiles(true)
+    }
+
+    fn with_tiles(supports_tiles: bool) -> Self {
         let server = Server::bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let addr = server.local_addr().unwrap();
         let builds = Arc::new(Mutex::new(Vec::new()));
@@ -43,11 +71,12 @@ impl Host {
                 // Exercise a source failure after validation has succeeded.
                 anyhow::ensure!(config.fps != 13, "test source failure");
                 built.lock().unwrap().push(config.clone());
-                Ok(Box::new(SyntheticSource::new(
-                    config.width,
-                    config.height,
-                    config.fps,
-                )) as Box<dyn FrameSource>)
+                let source = SyntheticSource::new(config.width, config.height, config.fps);
+                if supports_tiles {
+                    Ok(Box::new(TileSource(source)) as Box<dyn FrameSource>)
+                } else {
+                    Ok(Box::new(source) as Box<dyn FrameSource>)
+                }
             }),
             Box::new(|config| {
                 anyhow::ensure!(config.bitrate_bps != 123_000, "test encoder failure");
@@ -308,8 +337,18 @@ async fn probe_auth_busy_refusal_and_slot_release() {
     // A wrong token learns nothing more while a session runs.
     let wrong_busy = probe(host.addr, "sunna", "wrong!", TIMEOUT).await.unwrap();
     assert_eq!(
-        (wrong_busy.name, wrong_busy.busy, wrong_busy.token_ok, wrong_busy.about),
-        (wrong.name.clone(), wrong.busy, wrong.token_ok, wrong.about.clone())
+        (
+            wrong_busy.name,
+            wrong_busy.busy,
+            wrong_busy.token_ok,
+            wrong_busy.about
+        ),
+        (
+            wrong.name.clone(),
+            wrong.busy,
+            wrong.token_ok,
+            wrong.about.clone()
+        )
     );
     let (_second, _second_control, refused) = hello(host.addr).await;
     assert_eq!(
@@ -335,4 +374,61 @@ async fn probe_auth_busy_refusal_and_slot_release() {
     let (_third, mut third_control, ack) = hello(host.addr).await;
     assert!(matches!(ack, ControlMessage::HelloAck { .. }));
     third_control.send(&ControlMessage::Bye).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_source_reports_fast_lane_off() {
+    let host = Host::with_tiles(false);
+    let client = connect_insecure(host.addr, "sunna").await.unwrap();
+    let mut control = ControlChannel::open(&client.connection).await.unwrap();
+    control
+        .send(&ControlMessage::Hello {
+            version: sunna_proto::PROTOCOL_VERSION,
+            name: "test-client".into(),
+            token: "secret".into(),
+            stream: StreamSettings {
+                fast_lane: Some(true),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    let ack = tokio::time::timeout(TIMEOUT, control.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        ack,
+        ControlMessage::HelloAck {
+            fast_lane: false,
+            ..
+        }
+    ));
+    control
+        .send(&ControlMessage::SetStream(StreamSettings {
+            fast_lane: Some(true),
+            fps: Some(25),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    let changed = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let message = control.recv().await.unwrap();
+            if matches!(message, ControlMessage::StreamChanged { .. }) {
+                break message;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        changed,
+        ControlMessage::StreamChanged {
+            fast_lane: false,
+            fps: 25,
+            ..
+        }
+    ));
+    control.send(&ControlMessage::Bye).await.unwrap();
 }

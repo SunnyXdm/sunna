@@ -80,6 +80,11 @@ pub enum EncoderOutput {
 pub type EncoderSink = std::sync::mpsc::Sender<EncoderOutput>;
 
 pub trait Encoder: Send {
+    /// Whether encoding runs in software on the CPU.
+    fn is_software(&self) -> bool {
+        false
+    }
+
     /// `Ok(None)` means the encoder dropped this frame (load/rate control) —
     /// a normal event under pressure, not an error. The reference chain is
     /// unbroken: the next emitted frame references the last *emitted* one.

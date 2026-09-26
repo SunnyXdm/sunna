@@ -19,6 +19,9 @@ pub struct ViewerArgs {
     pub token: String,
     /// Shown in the window title.
     pub host_name: String,
+    /// "macOS 26.0", "Arch Linux"; empty when unknown. Picks the shortcuts
+    /// the menu offers.
+    pub host_os: String,
 }
 
 /// Largest stream this machine can show 1:1 in a window: most of the main
@@ -64,6 +67,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         server_name,
         token,
         host_name,
+        host_os,
     } = args;
     tracing::warn!("dev TLS: server certificate is NOT verified");
     let event_loop = viewer::create_event_loop()?;
@@ -147,6 +151,8 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         viewer::StreamControl {
             requests: stream_tx,
             max_size,
+            host_name: host_name.clone(),
+            host_os,
         },
         format!("Sunna — {host_name}"),
         width,

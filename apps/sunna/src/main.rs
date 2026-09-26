@@ -53,7 +53,7 @@ fn main() {
         .expect("Sunna failed to start");
 }
 
-/// `sunna viewer --addr IP:PORT --name NAME`, key in SUNNA_TOKEN.
+/// `sunna viewer --addr IP:PORT --name NAME [--os OS]`, key in SUNNA_TOKEN.
 fn run_viewer(args: Vec<String>) -> i32 {
     let _telemetry = sunna_telemetry::init("viewer", sunna_telemetry::Remote::from_env());
     let value = |flag: &str| {
@@ -71,6 +71,7 @@ fn run_viewer(args: Vec<String>) -> i32 {
         server_name: "sunna".into(),
         token: std::env::var("SUNNA_TOKEN").unwrap_or_default(),
         host_name: value("--name").unwrap_or_else(|| addr.ip().to_string()),
+        host_os: value("--os").unwrap_or_default(),
     });
     match result {
         Ok(()) => 0,
@@ -201,14 +202,19 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
             return Err(error.to_string());
         }
     };
+    let mut args = vec![
+        "viewer".to_string(),
+        "--addr".into(),
+        addr.to_string(),
+        "--name".into(),
+        machine.name.clone(),
+    ];
+    // Lets the session menu offer the host's own shortcuts.
+    if !machine.os.is_empty() {
+        args.extend(["--os".to_string(), machine.os.clone()]);
+    }
     let spawned = Command::new(exe)
-        .args([
-            "viewer",
-            "--addr",
-            &addr.to_string(),
-            "--name",
-            &machine.name,
-        ])
+        .args(&args)
         .envs(settings::viewer_env())
         // This machine's key, over dogfood.env's.
         .env("SUNNA_TOKEN", &machine.key)

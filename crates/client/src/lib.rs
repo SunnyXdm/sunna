@@ -125,6 +125,11 @@ pub struct ClientOptions {
 pub struct LiveStats {
     pub epoch: u8,
     pub fast_lane: bool,
+    /// The stream's frame rate as configured (`fps` below is measured).
+    pub stream_fps: u32,
+    /// Set by the viewer (its menu): while true, clipboard changes are
+    /// neither sent nor applied.
+    pub clipboard_paused: bool,
     pub last_stream_error: Option<String>,
     pub codec: String,
     pub width: u32,
@@ -150,8 +155,14 @@ impl LiveStats {
         self.width = info.width;
         self.height = info.height;
         self.fast_lane = info.fast_lane;
+        self.stream_fps = info.fps;
         self.last_stream_error = None;
     }
+}
+
+fn clipboard_paused(live: &Option<Arc<std::sync::Mutex<LiveStats>>>) -> bool {
+    live.as_ref()
+        .is_some_and(|live| live.lock().unwrap().clipboard_paused)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -520,6 +531,9 @@ pub async fn run_client(
                 }
             }
             data = clipboard.next() => {
+                if clipboard_paused(&options.live) {
+                    continue;
+                }
                 // Its own stream, so a large image never delays input.
                 let connection = connection.clone();
                 tokio::spawn(async move {
@@ -530,7 +544,11 @@ pub async fn run_client(
                     }
                 });
             }
-            Some(data) = clipboard_rx.recv() => clipboard.receive(data),
+            Some(data) = clipboard_rx.recv() => {
+                if !clipboard_paused(&options.live) {
+                    clipboard.receive(data);
+                }
+            }
             event = input.recv(), if input_open => {
                 match event {
                     Some(event) => control.send(&ControlMessage::Input(event)).await?,

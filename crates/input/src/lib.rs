@@ -45,14 +45,19 @@ pub fn make_injector() -> Box<dyn InputInjector> {
     }
 }
 
-/// Milestone 0a injector: logs events instead of injecting them, so the
-/// input path is exercisable end-to-end without touching the host OS.
+/// Stand-in where input can't be injected: counts events so the input path
+/// is visible in the logs. Never logs what they are: key events are what
+/// someone typed (passwords included), and logs are shipped.
 #[derive(Default)]
 pub struct LogInjector;
 
 impl InputInjector for LogInjector {
-    fn inject(&mut self, event: &InputEvent) -> anyhow::Result<()> {
-        tracing::info!(?event, "input event received (not injected: stub)");
+    fn inject(&mut self, _event: &InputEvent) -> anyhow::Result<()> {
+        static RECEIVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let received = RECEIVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if received.is_power_of_two() {
+            tracing::info!(received, "input events received (not injected: stub)");
+        }
         Ok(())
     }
 }

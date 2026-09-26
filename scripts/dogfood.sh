@@ -53,12 +53,16 @@ fi
 
 AWDL_LOOP=""
 cleanup() {
+  if [ "${1:-}" = host ] && [ "$(uname)" = Linux ] && [ "${SUNNA_DISPLAY:-:40}" != :0 ]; then
+    echo "The virtual desktop on ${SUNNA_DISPLAY:-:40} is still running, with any apps opened in it."
+    echo "Stop it with: scripts/linux-desktop.sh stop"
+  fi
   if [ -n "$AWDL_LOOP" ]; then
     kill "$AWDL_LOOP" 2>/dev/null || true
     sudo -n ifconfig awdl0 up 2>/dev/null && echo "AWDL restored."
   fi
 }
-trap cleanup EXIT INT TERM
+trap 'cleanup "${1:-}"' EXIT INT TERM
 if [ "${SUNNA_KEEP_AWDL_DOWN:-0}" = "1" ] && ifconfig awdl0 >/dev/null 2>&1; then
   echo "Holding AWDL down for this session (sudo password may be asked once)."
   sudo -v

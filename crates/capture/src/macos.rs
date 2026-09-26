@@ -25,6 +25,7 @@ use core_foundation::string::CFString;
 use core_foundation_sys::dictionary::CFDictionaryRef;
 use core_foundation_sys::string::CFStringRef;
 
+use crate::tiles::{note_tile_decision, TileDiffer, TileOutcome, TileWorker};
 use crate::{FrameData, FrameSource, PixelFormat, VideoFrame};
 
 type CGDisplayStreamRef = *mut c_void;
@@ -60,113 +61,6 @@ struct CGRect {
 
 /// kCGDisplayStreamUpdateReducedDirtyRects: changed regions, merged.
 const UPDATE_REDUCED_DIRTY_RECTS: i32 = 3;
-/// Fast lane only for small changes: at most this share of the frame.
-/// Anything bigger is left to the video encoder.
-const TILE_MAX_AREA_FRACTION: f64 = 0.04;
-/// And at most this many rectangles after merging.
-const TILE_MAX_RECTS: usize = 32;
-/// Change detection granularity, in pixels. macOS's own dirty rects are
-/// far too coarse for this (typing in VS Code reported 50-100% of the screen
-/// changed), so the tile worker diffs frames itself in blocks this size.
-const TILE_BLOCK: usize = 32;
-/// A block that keeps changing is animation (video, spinners), which the
-/// video encoder handles far better than lossless tiles: a small YouTube
-/// window was costing up to ~800 KB/s of tiles on top of the video stream.
-/// Each block keeps an exponentially decaying change count (half-life
-/// below); above the threshold it's animated and left to the video.
-/// Steady-state counts: typing at 10 keys/s ~4, 15 keys/s ~6, 30 fps ~11.
-const TILE_HEAT_HALF_LIFE_SECS: f32 = 0.25;
-const TILE_ANIMATED_HEAT: f32 = 7.0;
-/// Compressed bytes allowed per batch; beyond this the video is cheaper.
-const TILE_MAX_BATCH_BYTES: usize = 256 * 1024;
-
-/// Why captures did or didn't take the fast lane, logged every 2 s so the
-/// thresholds can be tuned from real sessions.
-#[derive(Default)]
-struct TileDecisions {
-    since: Option<std::time::Instant>,
-    captures: u32,
-    sent: u32,
-    no_rects: u32,
-    no_change: u32,
-    too_large: u32,
-    animated: u32,
-    diff_us: Vec<u64>,
-    /// Changed-area fractions (percent) and rect counts seen, for the log.
-    area_pct: Vec<f64>,
-    rect_counts: Vec<usize>,
-}
-
-impl TileDecisions {
-    fn note(&mut self, outcome: TileOutcome, area_pct: f64, rects: usize, diff_us: u64) {
-        let now = std::time::Instant::now();
-        let since = *self.since.get_or_insert(now);
-        self.captures += 1;
-        match outcome {
-            TileOutcome::Sent => self.sent += 1,
-            TileOutcome::NoRects => self.no_rects += 1,
-            TileOutcome::NoChange => self.no_change += 1,
-            TileOutcome::TooLarge => self.too_large += 1,
-            TileOutcome::Animated => self.animated += 1,
-        }
-        if diff_us > 0 {
-            self.diff_us.push(diff_us);
-        }
-        if rects > 0 {
-            self.area_pct.push(area_pct);
-            self.rect_counts.push(rects);
-        }
-        if now.duration_since(since) >= Duration::from_secs(2) {
-            let median = |values: &mut Vec<f64>| -> f64 {
-                if values.is_empty() {
-                    return 0.0;
-                }
-                values.sort_by(|a, b| a.total_cmp(b));
-                values[values.len() / 2]
-            };
-            let mut counts: Vec<f64> = self.rect_counts.iter().map(|&count| count as f64).collect();
-            let mut diff_ms: Vec<f64> = self.diff_us.iter().map(|&us| us as f64 / 1000.0).collect();
-            tracing::info!(
-                captures = self.captures,
-                sent = self.sent,
-                no_rects = self.no_rects,
-                no_change = self.no_change,
-                too_large = self.too_large,
-                animated = self.animated,
-                diff_ms_median = format!("{:.2}", median(&mut diff_ms)),
-                area_pct_median = format!("{:.2}", median(&mut self.area_pct)),
-                area_pct_max = format!("{:.2}", self.area_pct.iter().cloned().fold(0.0, f64::max)),
-                tiles_median = median(&mut counts),
-                tiles_max = self.rect_counts.iter().copied().max().unwrap_or(0),
-                "fast lane decisions"
-            );
-            *self = TileDecisions::default();
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum TileOutcome {
-    Sent,
-    /// macOS reported nothing changed.
-    NoRects,
-    /// macOS reported a change, but the pixels are identical.
-    NoChange,
-    TooLarge,
-    /// Everything that changed is animating; left to the video.
-    Animated,
-}
-
-static TILE_DECISIONS: Mutex<Option<TileDecisions>> = Mutex::new(None);
-
-fn note_tile_decision(outcome: TileOutcome, area_pct: f64, rects: usize, diff_us: u64) {
-    TILE_DECISIONS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(TileDecisions::default)
-        .note(outcome, area_pct, rects, diff_us);
-}
-
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGMainDisplayID() -> u32;
@@ -301,13 +195,23 @@ pub fn describe_displays() -> Vec<String> {
                 let (bw, bh) = if mode.is_null() {
                     (0, 0)
                 } else {
-                    let size = (CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetPixelHeight(mode));
+                    let size = (
+                        CGDisplayModeGetPixelWidth(mode),
+                        CGDisplayModeGetPixelHeight(mode),
+                    );
                     CFRelease(mode as _);
                     size
                 };
-                let kind = if CGDisplayIsBuiltin(id) != 0 { "built-in" } else { "external" };
+                let kind = if CGDisplayIsBuiltin(id) != 0 {
+                    "built-in"
+                } else {
+                    "external"
+                };
                 let main_tag = if id == main { " (main)" } else { "" };
-                (id == main, format!("display {id}{main_tag}: {kind}, {pw}x{ph} pt, {bw}x{bh} px"))
+                (
+                    id == main,
+                    format!("display {id}{main_tag}: {kind}, {pw}x{ph} pt, {bw}x{bh} px"),
+                )
             })
             .collect();
         lines.sort_by_key(|(is_main, _)| !is_main);
@@ -539,7 +443,7 @@ struct Latest {
     frame: Mutex<Option<VideoFrame>>,
     ready: Condvar,
     /// Set once the fast lane is on; the capture callback feeds it.
-    tiles: Mutex<Option<Arc<TileQueue>>>,
+    tiles: Mutex<Option<TileWorker<TileJob>>>,
 }
 
 /// Captures the main display. Frames arrive on a dispatch queue when the
@@ -588,8 +492,7 @@ impl ScreenSource {
         // BGRA for A/B comparison.
         // The fast lane sends exact RGB tiles, so it needs BGRA capture
         // (encode time is the same either way; dogfood build 5).
-        let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1")
-            || fast_lane;
+        let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1") || fast_lane;
         let (pixel_format, format) = if bgra {
             (PIXEL_FORMAT_BGRA, PixelFormat::Bgra8)
         } else {
@@ -600,12 +503,20 @@ impl ScreenSource {
         let handler = {
             let latest = Arc::clone(&latest);
             RcBlock::new(
-                move |status: i32, _display_time: u64, surface: *mut c_void, update: *mut c_void| {
+                move |status: i32,
+                      _display_time: u64,
+                      surface: *mut c_void,
+                      update: *mut c_void| {
                     if status != FRAME_STATUS_COMPLETE || surface.is_null() {
                         return;
                     }
                     if let Some(frame) = hold_surface(surface, format) {
-                        let queue = latest.tiles.lock().unwrap().clone();
+                        let queue = latest
+                            .tiles
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|worker| Arc::clone(&worker.queue));
                         if let (Some(queue), FrameData::Surface(held)) = (queue, &frame.data) {
                             let region = if update.is_null() {
                                 None
@@ -613,10 +524,9 @@ impl ScreenSource {
                                 os_dirty_region(update, frame.width as usize, frame.height as usize)
                             };
                             match region {
-                                Some(region) => queue.submit(TileJob {
+                                Some(_) => queue.submit(TileJob {
                                     surface: held.clone(),
                                     capture_ts_us: frame.capture_ts_us,
-                                    region,
                                 }),
                                 None => note_tile_decision(TileOutcome::NoRects, 0.0, 0, 0),
                             }
@@ -660,7 +570,9 @@ impl ScreenSource {
             // Convert to a known colour space so the stream can be tagged
             // honestly (see ColorMode).
             let space = unsafe {
-                core_foundation::base::CFType::wrap_under_create_rule(CGColorSpaceCreateWithName(name))
+                core_foundation::base::CFType::wrap_under_create_rule(CGColorSpaceCreateWithName(
+                    name,
+                ))
             };
             properties.push((
                 unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamColorSpace) }.as_CFType(),
@@ -699,7 +611,12 @@ impl ScreenSource {
             unsafe { CFRelease(stream as _) };
             anyhow::bail!("CGDisplayStreamStart failed: CGError {status}");
         }
-        tracing::info!(width, height, ?format, "screen capture started (CGDisplayStream)");
+        tracing::info!(
+            width,
+            height,
+            ?format,
+            "screen capture started (CGDisplayStream)"
+        );
 
         Ok(Self {
             stream,
@@ -726,7 +643,8 @@ fn union(a: Region, b: Region) -> Region {
 /// if macOS reports no change.
 fn os_dirty_region(update: *mut c_void, width: usize, height: usize) -> Option<Region> {
     let mut count = 0usize;
-    let rects = unsafe { CGDisplayStreamUpdateGetRects(update, UPDATE_REDUCED_DIRTY_RECTS, &mut count) };
+    let rects =
+        unsafe { CGDisplayStreamUpdateGetRects(update, UPDATE_REDUCED_DIRTY_RECTS, &mut count) };
     if rects.is_null() || count == 0 {
         return None;
     }
@@ -741,7 +659,8 @@ fn os_dirty_region(update: *mut c_void, width: usize, height: usize) -> Option<R
         let x0 = ((rect.x * scale_x).floor() as i64).clamp(0, width as i64) as usize;
         let y0 = ((rect.y * scale_y).floor() as i64).clamp(0, height as i64) as usize;
         let x1 = (((rect.x + rect.width) * scale_x).ceil() as i64).clamp(0, width as i64) as usize;
-        let y1 = (((rect.y + rect.height) * scale_y).ceil() as i64).clamp(0, height as i64) as usize;
+        let y1 =
+            (((rect.y + rect.height) * scale_y).ceil() as i64).clamp(0, height as i64) as usize;
         if x1 > x0 && y1 > y0 {
             let rect = (x0, y0, x1, y1);
             region = Some(region.map_or(rect, |region| union(region, rect)));
@@ -750,233 +669,29 @@ fn os_dirty_region(update: *mut c_void, width: usize, height: usize) -> Option<R
     region
 }
 
-/// A capture waiting for the tile worker. If the worker falls behind, jobs
-/// merge: the newest surface, with the union of the regions it skipped.
 struct TileJob {
     surface: SurfaceFrame,
     capture_ts_us: u64,
-    region: Region,
 }
 
-#[derive(Default)]
-struct TileQueue {
-    job: Mutex<Option<TileJob>>,
-    ready: Condvar,
-    /// Set when the capture ends; the worker exits.
-    closed: std::sync::atomic::AtomicBool,
-}
-
-impl TileQueue {
-    fn submit(&self, job: TileJob) {
-        let mut slot = self.job.lock().unwrap();
-        let region = match slot.take() {
-            Some(pending) => union(pending.region, job.region),
-            None => job.region,
-        };
-        *slot = Some(TileJob { region, ..job });
-        self.ready.notify_one();
-    }
-}
-
-/// Fast-lane worker: diffs each capture against the previous one in
-/// `TILE_BLOCK` blocks (only inside the region macOS says changed) and, when
-/// the truly changed area is small, sends those blocks as lossless tiles.
-/// Runs off the capture callback so video capture never waits on it.
-fn run_tile_worker(queue: Arc<TileQueue>, sink: crate::TileSink) {
-    let mut previous: Vec<u8> = Vec::new();
-    let mut size = (0usize, 0usize);
-    // Per block: decaying change count and when it was last updated.
-    let mut heat: Vec<(f32, std::time::Instant)> = Vec::new();
-    loop {
-        let job = {
-            let mut slot = queue.job.lock().unwrap();
-            loop {
-                if queue.closed.load(std::sync::atomic::Ordering::Acquire) {
-                    return;
-                }
-                if let Some(job) = slot.take() {
-                    break job;
-                }
-                slot = queue.ready.wait(slot).unwrap();
-            }
-        };
-        let started = std::time::Instant::now();
-        let surface = job.surface.inner.surface;
-        unsafe {
-            if IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
-                continue;
-            }
-            let (width, height) = (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
-            let stride = IOSurfaceGetBytesPerRow(surface);
-            let base = IOSurfaceGetBaseAddress(surface) as *const u8;
-            if base.is_null() {
-                IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
-                continue;
-            }
-            let row_bytes = width * 4;
-            if size != (width, height) {
-                // First frame (or a size change): take a full copy, send nothing.
-                size = (width, height);
-                previous = vec![0u8; row_bytes * height];
-                heat = vec![
-                    (0.0, std::time::Instant::now());
-                    width.div_ceil(TILE_BLOCK) * height.div_ceil(TILE_BLOCK)
-                ];
-                for row in 0..height {
-                    let src = std::slice::from_raw_parts(base.add(row * stride), row_bytes);
-                    previous[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(src);
-                }
-                IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
-                continue;
-            }
-            // Compare the whole frame block by block: macOS's region only
-            // says *that* something changed (its coordinates are coarse, and
-            // trusting them risks missing changes), and a full compare costs a
-            // few ms on this worker thread. Changed rows are copied into
-            // `previous` as we go, so it mirrors the last capture we looked at.
-            let _ = job.region;
-            let (x0, y0, x1, y1) = (0, 0, width, height);
-            let (bx0, by0) = (x0 / TILE_BLOCK, y0 / TILE_BLOCK);
-            let (bx1, by1) = (x1.div_ceil(TILE_BLOCK), y1.div_ceil(TILE_BLOCK));
-            let blocks_x = width.div_ceil(TILE_BLOCK);
-            let mut changed = vec![false; blocks_x * height.div_ceil(TILE_BLOCK)];
-            let mut changed_count = 0usize;
-            for by in by0..by1 {
-                let row_start = by * TILE_BLOCK;
-                let row_end = (row_start + TILE_BLOCK).min(height);
-                for bx in bx0..bx1 {
-                    let col_start = bx * TILE_BLOCK * 4;
-                    let col_end = ((bx + 1) * TILE_BLOCK).min(width) * 4;
-                    let mut differs = false;
-                    for row in row_start..row_end {
-                        let src = std::slice::from_raw_parts(
-                            base.add(row * stride + col_start),
-                            col_end - col_start,
-                        );
-                        let dst = &mut previous[row * row_bytes + col_start..row * row_bytes + col_end];
-                        if src != dst {
-                            dst.copy_from_slice(src);
-                            differs = true;
-                        }
-                    }
-                    if differs {
-                        changed[by * blocks_x + bx] = true;
-                        changed_count += 1;
-                    }
-                }
-            }
-            IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
-            let diff_us = started.elapsed().as_micros() as u64;
-
-            if changed_count == 0 {
-                note_tile_decision(TileOutcome::NoChange, 0.0, 0, diff_us);
-                continue;
-            }
-            // Update each changed block's heat; drop animated blocks from the
-            // tile set (they stay with the video).
-            let now = std::time::Instant::now();
-            let mut animated = 0usize;
-            for (index, block_changed) in changed.iter_mut().enumerate() {
-                if !*block_changed {
-                    continue;
-                }
-                let (count, last) = heat[index];
-                let elapsed = now.duration_since(last).as_secs_f32();
-                let decayed = count * 0.5f32.powf(elapsed / TILE_HEAT_HALF_LIFE_SECS);
-                heat[index] = (decayed + 1.0, now);
-                if decayed + 1.0 > TILE_ANIMATED_HEAT {
-                    *block_changed = false;
-                    animated += 1;
-                }
-            }
-            let changed_count = changed_count - animated;
-            if changed_count == 0 {
-                note_tile_decision(TileOutcome::Animated, 0.0, 0, diff_us);
-                continue;
-            }
-            let area = changed_count * TILE_BLOCK * TILE_BLOCK;
-            let area_pct = area as f64 * 100.0 / (width * height).max(1) as f64;
-            if area_pct > TILE_MAX_AREA_FRACTION * 100.0 {
-                note_tile_decision(TileOutcome::TooLarge, area_pct, changed_count, diff_us);
-                continue;
-            }
-            // Merge changed blocks into rectangles: horizontal runs per block
-            // row, then runs stacked with identical spans in consecutive rows.
-            // (Rects are in block units: x0, x1 exclusive, y0, y1 exclusive.)
-            let mut rects: Vec<(usize, usize, usize, usize)> = Vec::new();
-            let mut open: Vec<(usize, usize, usize, usize)> = Vec::new();
-            for by in by0..by1 {
-                let mut runs = Vec::new();
-                let mut bx = bx0;
-                while bx < bx1 {
-                    if !changed[by * blocks_x + bx] {
-                        bx += 1;
-                        continue;
-                    }
-                    let run_start = bx;
-                    while bx < bx1 && changed[by * blocks_x + bx] {
-                        bx += 1;
-                    }
-                    runs.push((run_start, bx));
-                }
-                let mut next_open = Vec::with_capacity(runs.len());
-                for (start, end) in runs {
-                    if let Some(index) = open
-                        .iter()
-                        .position(|&(x0, x1, _, y1)| x0 == start && x1 == end && y1 == by)
-                    {
-                        let (x0, x1, y0, _) = open.swap_remove(index);
-                        next_open.push((x0, x1, y0, by + 1));
-                    } else {
-                        next_open.push((start, end, by, by + 1));
-                    }
-                }
-                rects.append(&mut open); // runs that didn't continue are done
-                open = next_open;
-            }
-            rects.append(&mut open);
-            if rects.len() > TILE_MAX_RECTS {
-                note_tile_decision(TileOutcome::TooLarge, area_pct, rects.len(), diff_us);
-                continue;
-            }
-            // Cut tiles from `previous` (which now holds this capture's pixels).
-            let mut tiles = Vec::with_capacity(rects.len());
-            for (bx_start, bx_end, by_start, by_end) in rects {
-                let px0 = bx_start * TILE_BLOCK;
-                let px1 = (bx_end * TILE_BLOCK).min(width);
-                let py0 = by_start * TILE_BLOCK;
-                let py1 = (by_end * TILE_BLOCK).min(height);
-                let (tile_w, tile_h) = (px1 - px0, py1 - py0);
-                let mut pixels = Vec::with_capacity(tile_w * tile_h * 4);
-                for row in py0..py1 {
-                    pixels.extend_from_slice(&previous[row * row_bytes + px0 * 4..row * row_bytes + px1 * 4]);
-                }
-                // Opaque: the capture's alpha byte isn't meaningful.
-                for alpha in pixels.iter_mut().skip(3).step_by(4) {
-                    *alpha = 255;
-                }
-                if let Ok(qoi) = qoi::encode_to_vec(&pixels, tile_w as u32, tile_h as u32) {
-                    tiles.push(sunna_proto::tiles::Tile {
-                        x: px0 as u32,
-                        y: py0 as u32,
-                        width: tile_w as u32,
-                        height: tile_h as u32,
-                        qoi,
-                    });
-                }
-            }
-            if tiles.iter().map(|tile| tile.qoi.len()).sum::<usize>() > TILE_MAX_BATCH_BYTES {
-                note_tile_decision(TileOutcome::TooLarge, area_pct, tiles.len(), diff_us);
-                continue;
-            }
-            note_tile_decision(TileOutcome::Sent, area_pct, tiles.len(), diff_us);
-            sink(sunna_proto::tiles::TileBatch {
-                capture_ts_us: job.capture_ts_us,
-                stream_width: width as u32,
-                stream_height: height as u32,
-                tiles,
-            });
+fn diff_surface(differ: &mut TileDiffer, job: TileJob) -> Option<sunna_proto::tiles::TileBatch> {
+    let started = std::time::Instant::now();
+    let surface = job.surface.inner.surface;
+    unsafe {
+        if IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
+            return None;
         }
+        let (width, height) = (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+        let stride = IOSurfaceGetBytesPerRow(surface);
+        let base = IOSurfaceGetBaseAddress(surface) as *const u8;
+        let changed = if base.is_null() {
+            None
+        } else {
+            let pixels = std::slice::from_raw_parts(base, stride * height);
+            differ.copy_changes(pixels, stride, width, height)
+        };
+        IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
+        differ.encode_changes(changed?, job.capture_ts_us, started)
     }
 }
 
@@ -1002,15 +717,14 @@ impl FrameSource for ScreenSource {
             tracing::warn!("fast lane needs BGRA capture; tiles disabled");
             return;
         }
-        let queue = Arc::new(TileQueue::default());
-        let worker_queue = Arc::clone(&queue);
-        match std::thread::Builder::new()
-            .name("sunna-tiles".into())
-            .spawn(move || run_tile_worker(worker_queue, sink))
-        {
-            Ok(_) => *self.latest.tiles.lock().unwrap() = Some(queue),
+        match TileWorker::start(sink, diff_surface) {
+            Ok(worker) => *self.latest.tiles.lock().unwrap() = Some(worker),
             Err(error) => tracing::warn!(%error, "couldn't start the tile worker"),
         }
+    }
+
+    fn supports_tiles(&self) -> bool {
+        self.format == PixelFormat::Bgra8
     }
 
     fn next_frame(&mut self) -> anyhow::Result<VideoFrame> {
@@ -1057,11 +771,7 @@ impl FrameSource for ScreenSource {
 
 impl Drop for ScreenSource {
     fn drop(&mut self) {
-        if let Some(queue) = self.latest.tiles.lock().unwrap().take() {
-            queue.closed.store(true, std::sync::atomic::Ordering::Release);
-            let _guard = queue.job.lock().unwrap();
-            queue.ready.notify_all();
-        }
+        self.latest.tiles.lock().unwrap().take();
         unsafe {
             CGDisplayStreamStop(self.stream);
             CFRelease(self.stream as _);

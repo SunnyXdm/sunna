@@ -4,6 +4,7 @@
 # the dev VM.
 #
 #   scripts/linux-desktop.sh [display] [WIDTHxHEIGHT]
+#   scripts/linux-desktop.sh stop [display]    # the desktop and its apps
 #
 # Defaults: display :40, 1710x1112 (a MacBook Air's "looks like" size, so
 # the desktop fills the viewer's screen at native UI size).
@@ -13,20 +14,39 @@
 # sunnad can't capture yet.)
 #
 # Everything is started detached (setsid) with its own D-Bus session, so
-# the desktop outlives the terminal or SSH connection that started it.
+# the desktop outlives the terminal or SSH connection that started it, and
+# the host: apps opened in it keep running (and using CPU) until it's
+# stopped.
 set -euo pipefail
+if [ "${1:-}" = stop ]; then
+  STOP=1
+  shift
+fi
 DISPLAY_NUM="${1:-${SUNNA_DISPLAY:-:40}}"
 SIZE="${2:-${SUNNA_DESKTOP_SIZE:-1710x1112}}"
 LOG_DIR="${XDG_RUNTIME_DIR:-/tmp}/sunna-desktop"
 SESSION_PID="$LOG_DIR/session${DISPLAY_NUM#:}.pid"
 mkdir -p "$LOG_DIR"
 
+if [ -n "${STOP:-}" ]; then
+  # Everything the desktop session started shares its session id.
+  if [ -f "$SESSION_PID" ] && kill -0 "$(cat "$SESSION_PID")" 2>/dev/null; then
+    pkill -TERM -s "$(cat "$SESSION_PID")" || true
+  fi
+  rm -f "$SESSION_PID"
+  pkill -TERM -f "^Xvfb $DISPLAY_NUM " || true
+  echo "Stopped the desktop on $DISPLAY_NUM."
+  exit 0
+fi
+
 DESKTOP="${SUNNA_DESKTOP:-}"
 if [ -z "$DESKTOP" ]; then
   if command -v startplasma-x11 >/dev/null; then DESKTOP=plasma; else DESKTOP=xfce; fi
 fi
 case "$DESKTOP" in
-  plasma) SESSION_CMD=startplasma-x11 ;;
+  # No compositing: nobody sees this screen directly, and on Xvfb KWin's
+  # compositor renders in software (measured ~65% of a core while idle).
+  plasma) SESSION_CMD=startplasma-x11; export KWIN_COMPOSE=N ;;
   xfce) SESSION_CMD=startxfce4 ;;
   *) echo "SUNNA_DESKTOP must be plasma or xfce" >&2; exit 2 ;;
 esac
@@ -60,4 +80,4 @@ else
   echo $! >"$SESSION_PID"
   echo "Started $DESKTOP on $DISPLAY_NUM."
 fi
-echo "Stop it with: pkill -f 'Xvfb $DISPLAY_NUM'"
+echo "Stop it (and the apps in it) with: scripts/linux-desktop.sh stop $DISPLAY_NUM"

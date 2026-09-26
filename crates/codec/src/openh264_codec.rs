@@ -67,6 +67,10 @@ impl OpenH264Encoder {
 }
 
 impl Encoder for OpenH264Encoder {
+    fn is_software(&self) -> bool {
+        true
+    }
+
     fn encode(&mut self, frame: &VideoFrame) -> anyhow::Result<Option<EncodedFrame>> {
         anyhow::ensure!(
             frame.format == PixelFormat::Bgra8,
