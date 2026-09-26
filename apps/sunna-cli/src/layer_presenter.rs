@@ -65,6 +65,7 @@ const BITMAP_BGRX: u32 = 6 | (2 << 12);
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     static kCGColorSpaceDisplayP3: *const c_void;
+    static kCGColorSpaceSRGB: *const c_void;
     fn CGColorSpaceCreateWithName(name: *const c_void) -> *mut c_void;
     fn CGColorSpaceRelease(space: *mut c_void);
     fn CGDataProviderCreateWithCFData(data: *const c_void) -> *mut c_void;
@@ -106,7 +107,8 @@ pub struct LayerPresenter {
     video_ts_us: Option<u64>,
     /// Tile sublayers with the capture time they came from.
     overlays: VecDeque<(u64, Retained<AnyObject>)>,
-    /// Display P3: tiles are raw capture pixels, captured in Display P3.
+    /// The capture's colour space (tiles are raw capture pixels), so tiles
+    /// and video render identically.
     color_space: *mut c_void,
     /// SUNNA_TILE_DEBUG=1 outlines each tile, to check placement.
     debug_tiles: bool,
@@ -140,7 +142,12 @@ impl LayerPresenter {
             backing_scale: window.scale_factor(),
             video_ts_us: None,
             overlays: VecDeque::new(),
-            color_space: unsafe { CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3) },
+            color_space: unsafe {
+                CGColorSpaceCreateWithName(match sunna_capture::ColorMode::from_env() {
+                    sunna_capture::ColorMode::DisplayP3 => kCGColorSpaceDisplayP3,
+                    _ => kCGColorSpaceSRGB,
+                })
+            },
             debug_tiles: std::env::var("SUNNA_TILE_DEBUG").is_ok_and(|value| value == "1"),
             placed: 0,
         };

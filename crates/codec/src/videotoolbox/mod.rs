@@ -340,12 +340,16 @@ impl VtEncoder {
                 CFNumber::from(fps as i32).as_CFTypeRef(),
                 "ExpectedFrameRate",
             );
-            // Colour tags. Display P3 (default): P3 primaries with the sRGB
-            // transfer curve, which is what Mac screen pixels are; the
-            // viewer's colour management then reproduces them exactly.
-            // Tagging screen pixels as Rec. 709 video (builds 5-9) made the
-            // viewer convert them "from 709", dulling colours.
+            // Colour tags must describe what the capture delivers (see
+            // sunna_capture::ColorMode): sRGB by default (Rec. 709 primaries,
+            // sRGB transfer). Tagging screen pixels as Rec. 709 video (builds
+            // 5-9) or delivering P3 that the viewer shows as sRGB (build 10+)
+            // both dulled colours versus Parsec.
             let (primaries, transfer) = match sunna_capture::ColorMode::from_env() {
+                sunna_capture::ColorMode::Srgb => (
+                    cf_key(kCVImageBufferColorPrimaries_ITU_R_709_2),
+                    CFString::from_static_string("IEC_sRGB"), // kCVImageBufferTransferFunction_sRGB
+                ),
                 sunna_capture::ColorMode::DisplayP3 => (
                     CFString::from_static_string("P3_D65"), // kCVImageBufferColorPrimaries_P3_D65
                     CFString::from_static_string("IEC_sRGB"), // kCVImageBufferTransferFunction_sRGB

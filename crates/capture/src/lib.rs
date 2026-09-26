@@ -39,21 +39,26 @@ impl PixelFormat {
 /// Colour space the macOS capture delivers and the encoder tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
-    /// Capture converted to Display P3 (the Macs' native gamut), tagged
-    /// P3 primaries + sRGB transfer: what screen pixels really are, so the
-    /// viewer's colour management reproduces the host exactly.
+    /// Capture converted to sRGB and tagged sRGB (Rec. 709 primaries, sRGB
+    /// transfer). The viewer's Core Animation treats the video as sRGB, so
+    /// this displays correctly; UI and web colours are sRGB anyway.
+    /// Measured against Parsec on VS Code's #2dd4bf swatch: P3 capture shown
+    /// as sRGB gave (131,207,191) vs the correct ~(107,210,192).
+    Srgb,
+    /// Capture converted to Display P3, tagged P3 (the tag isn't honoured by
+    /// the viewer's CALayer path yet, so saturated colours come out dull).
     DisplayP3,
-    /// Previous behaviour: native display pixels tagged as Rec. 709 video
-    /// (dulls colours on P3 displays). For A/B only.
+    /// Native display pixels tagged as Rec. 709 video. For A/B only.
     Rec709,
 }
 
 impl ColorMode {
-    /// `SUNNA_COLOR=709` selects the old tagging; default Display P3.
+    /// `SUNNA_COLOR=p3` or `=709` for the alternatives; default sRGB.
     pub fn from_env() -> Self {
         match std::env::var("SUNNA_COLOR").as_deref() {
+            Ok("p3") => ColorMode::DisplayP3,
             Ok("709") => ColorMode::Rec709,
-            _ => ColorMode::DisplayP3,
+            _ => ColorMode::Srgb,
         }
     }
 }

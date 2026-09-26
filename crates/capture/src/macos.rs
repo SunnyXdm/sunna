@@ -202,6 +202,7 @@ extern "C" {
     static kCGDisplayStreamColorSpace: CFStringRef;
     static kCGDisplayStreamShowCursor: CFStringRef;
     static kCGColorSpaceDisplayP3: CFStringRef;
+    static kCGColorSpaceSRGB: CFStringRef;
     fn CGColorSpaceCreateWithName(name: CFStringRef) -> *const c_void;
 }
 
@@ -645,17 +646,20 @@ impl ScreenSource {
             core_foundation::boolean::CFBoolean::from(show_cursor).as_CFType(),
         ));
         let color = crate::ColorMode::from_env();
-        if color == crate::ColorMode::DisplayP3 {
+        let target_space = match color {
+            crate::ColorMode::Srgb => Some(unsafe { kCGColorSpaceSRGB }),
+            crate::ColorMode::DisplayP3 => Some(unsafe { kCGColorSpaceDisplayP3 }),
+            crate::ColorMode::Rec709 => None,
+        };
+        if let Some(name) = target_space {
             // Convert to a known colour space so the stream can be tagged
             // honestly (see ColorMode).
-            let p3 = unsafe {
-                core_foundation::base::CFType::wrap_under_create_rule(CGColorSpaceCreateWithName(
-                    kCGColorSpaceDisplayP3,
-                ))
+            let space = unsafe {
+                core_foundation::base::CFType::wrap_under_create_rule(CGColorSpaceCreateWithName(name))
             };
             properties.push((
                 unsafe { CFString::wrap_under_get_rule(kCGDisplayStreamColorSpace) }.as_CFType(),
-                p3,
+                space,
             ));
         }
         tracing::info!(?color, show_cursor, "capture colour and cursor");
