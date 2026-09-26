@@ -110,6 +110,8 @@ pub struct LayerPresenter {
     color_space: *mut c_void,
     /// SUNNA_TILE_DEBUG=1 outlines each tile, to check placement.
     debug_tiles: bool,
+    /// Tiles placed so far (the first few are logged with their geometry).
+    placed: u64,
 }
 
 fn ns_string(text: &str) -> Retained<AnyObject> {
@@ -140,6 +142,7 @@ impl LayerPresenter {
             overlays: VecDeque::new(),
             color_space: unsafe { CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3) },
             debug_tiles: std::env::var("SUNNA_TILE_DEBUG").is_ok_and(|value| value == "1"),
+            placed: 0,
         };
         let size = window.inner_size();
         presenter.fit(window, (size.width, size.height));
@@ -239,35 +242,65 @@ impl LayerPresenter {
     }
 
     /// Where a tile (stream pixels, top-left origin) lands in the root
-    /// layer, in points with the layer's bottom-left origin.
-    fn tile_frame(&self, x: u32, y: u32, width: u32, height: u32) -> CGRect {
-        let (win_w, win_h) = (self.window_px.0 as f64, self.window_px.1 as f64);
+    /// layer, in points. Uses the layer's real bounds (the full-screen window
+    /// changes height as the menu bar shows and hides) and its real
+    /// orientation, rather than assuming either.
+    fn tile_frame(&mut self, x: u32, y: u32, width: u32, height: u32) -> CGRect {
+        let bounds: CGRect = unsafe { msg_send![&*self.layer, bounds] };
+        let flipped: bool = unsafe { msg_send![&*self.layer, isGeometryFlipped] };
+        let points = self.backing_scale.max(1.0);
+        // Everything below in backing pixels, top-left origin.
+        let (layer_w, layer_h) = (bounds.size.width * points, bounds.size.height * points);
         let (stream_w, stream_h) = (self.stream_size.0 as f64, self.stream_size.1 as f64);
-        let scale = if self.one_to_one == Some(true) {
+        // Same rule as the contents gravity: 1:1 when it fits, else aspect-fit.
+        let scale = if stream_w <= layer_w && stream_h <= layer_h {
             1.0
         } else {
-            (win_w / stream_w).min(win_h / stream_h)
+            (layer_w / stream_w).min(layer_h / stream_h)
         };
-        let origin_x = (win_w - stream_w * scale) / 2.0;
-        let origin_y = (win_h - stream_h * scale) / 2.0;
+        let origin_x = (layer_w - stream_w * scale) / 2.0;
+        let origin_y = (layer_h - stream_h * scale) / 2.0;
         let px_x = origin_x + x as f64 * scale;
         let px_y = origin_y + y as f64 * scale;
         let px_w = width as f64 * scale;
         let px_h = height as f64 * scale;
-        let points = self.backing_scale.max(1.0);
-        CGRect {
+        // Unflipped Core Animation geometry has its origin bottom-left.
+        let y_points = if flipped {
+            px_y / points
+        } else {
+            (layer_h - (px_y + px_h)) / points
+        };
+        let frame = CGRect {
             origin: CGPoint {
-                x: px_x / points,
-                y: (win_h - (px_y + px_h)) / points,
+                x: bounds.origin.x + px_x / points,
+                y: bounds.origin.y + y_points,
             },
             size: CGSize {
                 width: px_w / points,
                 height: px_h / points,
             },
+        };
+        if self.placed < 3 {
+            tracing::info!(
+                tile = format!("{x},{y} {width}x{height}"),
+                layer_bounds_pt = format!(
+                    "{},{} {}x{}",
+                    bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height
+                ),
+                flipped,
+                scale,
+                frame_pt = format!(
+                    "{:.1},{:.1} {:.1}x{:.1}",
+                    frame.origin.x, frame.origin.y, frame.size.width, frame.size.height
+                ),
+                "tile placement"
+            );
         }
+        self.placed += 1;
+        frame
     }
 
-    fn tile_layer(&self, tile: &sunna_proto::tiles::Tile) -> Option<Retained<AnyObject>> {
+    fn tile_layer(&mut self, tile: &sunna_proto::tiles::Tile) -> Option<Retained<AnyObject>> {
         // Validate geometry before decoding (and allocating) anything.
         let inside = tile.width > 0
             && tile.height > 0
