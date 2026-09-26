@@ -23,6 +23,9 @@ const KEEP_ALIVE: usize = 4;
 pub struct LayerPresenter {
     layer: Retained<AnyObject>,
     recent: VecDeque<SurfaceFrame>,
+    stream_size: (u32, u32),
+    /// Currently drawing 1:1 (true) or scaled to fit (false).
+    one_to_one: Option<bool>,
 }
 
 fn ns_string(text: &str) -> Retained<AnyObject> {
@@ -31,23 +34,50 @@ fn ns_string(text: &str) -> Retained<AnyObject> {
 }
 
 impl LayerPresenter {
-    pub fn new(window: &Window) -> anyhow::Result<Self> {
+    pub fn new(window: &Window, stream_size: (u32, u32)) -> anyhow::Result<Self> {
         let RawWindowHandle::AppKit(handle) = window.window_handle()?.as_raw() else {
             anyhow::bail!("not an AppKit window");
         };
         let view = handle.ns_view.as_ptr() as *mut AnyObject;
         let layer: Retained<AnyObject> = unsafe { msg_send![class!(CALayer), new] };
         unsafe {
-            let gravity = ns_string("resizeAspect"); // kCAGravityResizeAspect
-            let _: () = msg_send![&*layer, setContentsGravity: &*gravity];
             // Layer-hosting view: set the layer first, then turn layers on.
             let _: () = msg_send![view, setLayer: &*layer];
             let _: () = msg_send![view, setWantsLayer: Bool::YES];
         }
-        Ok(Self {
+        let mut presenter = Self {
             layer,
             recent: VecDeque::with_capacity(KEEP_ALIVE + 1),
-        })
+            stream_size,
+            one_to_one: None,
+        };
+        let size = window.inner_size();
+        presenter.fit(window, (size.width, size.height));
+        Ok(presenter)
+    }
+
+    /// Draw the stream pixel-for-pixel (centred) when it fits the window,
+    /// otherwise scale it down to fit. Scaling screen content blurs text,
+    /// so 1:1 wins whenever possible.
+    pub fn fit(&mut self, window: &Window, window_px: (u32, u32)) {
+        let fits = self.stream_size.0 <= window_px.0 && self.stream_size.1 <= window_px.1;
+        if self.one_to_one == Some(fits) {
+            return;
+        }
+        self.one_to_one = Some(fits);
+        let gravity = if fits { "center" } else { "resizeAspect" }; // kCAGravity*
+        unsafe {
+            let gravity = ns_string(gravity);
+            let _: () = msg_send![&*self.layer, setContentsGravity: &*gravity];
+            // One content pixel per screen pixel on Retina displays.
+            let _: () = msg_send![&*self.layer, setContentsScale: window.scale_factor()];
+        }
+        tracing::info!(
+            one_to_one = fits,
+            stream = format!("{}x{}", self.stream_size.0, self.stream_size.1),
+            window = format!("{}x{}", window_px.0, window_px.1),
+            "viewer scaling"
+        );
     }
 
     /// Show `frame` now. Must run on the main thread.

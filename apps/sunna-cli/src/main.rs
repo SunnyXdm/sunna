@@ -119,17 +119,23 @@ fn viewer_max_size() -> Option<(u32, u32)> {
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .map_or(1.0, |value| value.clamp(0.25, 1.0));
+    // Full screen (the default) can show the whole display; windowed mode
+    // leaves room for the menu bar, Dock and title bar. Asking for the full
+    // screen lets a host with an equal or smaller display send its native
+    // pixels, shown 1:1 — a 3360x2100 M1 screen was being scaled to
+    // 2846x1778 on the host and back up on the viewer, blurring text twice.
+    let (fraction_w, fraction_h) = if crate::viewer::windowed() { (0.9, 0.8) } else { (1.0, 1.0) };
     #[cfg(target_os = "macos")]
     {
         let (width, height) = sunna_capture::macos::main_display_pixel_size();
         Some((
-            (width as f64 * 0.9 * scale) as u32,
-            (height as f64 * 0.8 * scale) as u32,
+            (width as f64 * fraction_w * scale) as u32,
+            (height as f64 * fraction_h * scale) as u32,
         ))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = scale;
+        let _ = (scale, fraction_w, fraction_h);
         None
     }
 }

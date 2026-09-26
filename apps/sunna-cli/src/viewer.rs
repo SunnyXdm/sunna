@@ -24,6 +24,11 @@ use crate::keymap;
 #[cfg(target_os = "macos")]
 use crate::layer_presenter::LayerPresenter;
 
+/// `SUNNA_WINDOWED=1` opens a window instead of full screen.
+pub fn windowed() -> bool {
+    std::env::var("SUNNA_WINDOWED").is_ok_and(|value| value == "1")
+}
+
 /// Shared between the network thread (writer) and the viewer (reader).
 #[derive(Default)]
 pub struct SharedFrame {
@@ -106,7 +111,9 @@ impl ViewerApp {
             return (0.0, 0.0, win_w, win_h);
         }
         let (stream_w, stream_h) = (self.stream_size.0 as f64, self.stream_size.1 as f64);
-        let scale = (win_w / stream_w).min(win_h / stream_h);
+        // Matches the layer presenter: 1:1 when the stream fits, otherwise
+        // scaled down to fit.
+        let scale = (win_w / stream_w).min(win_h / stream_h).min(1.0);
         let (w, h) = (stream_w * scale, stream_h * scale);
         ((win_w - w) / 2.0, (win_h - h) / 2.0, w, h)
     }
@@ -215,9 +222,13 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 }
             }
         }
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title(&self.title)
             .with_inner_size(PhysicalSize::new(width, height));
+        if cfg!(target_os = "macos") && !windowed() {
+            attributes =
+                attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -233,7 +244,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             "viewer window"
         );
         #[cfg(target_os = "macos")]
-        match LayerPresenter::new(&window) {
+        match LayerPresenter::new(&window, self.stream_size) {
             Ok(layer) => {
                 tracing::info!("presenting via CALayer (zero-copy IOSurface)");
                 self.layer = Some(layer);
@@ -299,7 +310,13 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     self.render();
                 }
             }
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(size) => {
+                #[cfg(target_os = "macos")]
+                if let (Some(layer), Some(window)) = (self.layer.as_mut(), self.window.as_ref()) {
+                    layer.fit(window, (size.width, size.height));
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = size;
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
