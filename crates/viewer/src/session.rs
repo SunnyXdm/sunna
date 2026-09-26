@@ -35,7 +35,11 @@ fn viewer_max_size() -> Option<(u32, u32)> {
     // screen lets a host with an equal or smaller display send its native
     // pixels, shown 1:1 — a 3360x2100 M1 screen was being scaled to
     // 2846x1778 on the host and back up on the viewer, blurring text twice.
-    let (fraction_w, fraction_h) = if viewer::windowed() { (0.9, 0.8) } else { (1.0, 1.0) };
+    let (fraction_w, fraction_h) = if viewer::windowed() {
+        (0.9, 0.8)
+    } else {
+        (1.0, 1.0)
+    };
     #[cfg(target_os = "macos")]
     {
         let (width, height) = sunna_capture::macos::main_display_pixel_size();
@@ -79,6 +83,9 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let tile_proxy = event_loop.create_proxy();
     let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(u32, u32)>();
+    // The in-session menu's Video choices, sent to the host as SetStream.
+    let (stream_tx, stream_rx) = tokio::sync::watch::channel(None);
+    let max_size = viewer_max_size();
     std::thread::spawn(move || {
         let _endpoint_guard = client.endpoint;
         let mut announced = false;
@@ -86,7 +93,11 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             clipboard: true,
             name: "sunna-viewer".into(),
             token,
-            max_size: viewer_max_size(),
+            stream: sunna_proto::messages::StreamSettings {
+                max_size,
+                ..Default::default()
+            },
+            stream_requests: Some(stream_rx),
             duration: None,
             live: Some(live),
         };
@@ -107,17 +118,22 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             },
             input_rx,
         ));
-        match result {
+        // A failed session exits non-zero: the app reports the reason.
+        let code = match result {
             Ok(report) => {
                 tracing::info!(report = %report, "session ended");
                 println!("{report}");
+                0
             }
-            Err(error) => tracing::error!("session error: {error:#}"),
-        }
+            Err(error) => {
+                tracing::error!("session error: {error:#}");
+                1
+            }
+        };
         // The event loop has no reason to outlive the session; exit skips
         // destructors, so ship remaining telemetry first.
         sunna_telemetry::flush();
-        std::process::exit(0);
+        std::process::exit(code);
     });
 
     // Wait briefly for the first frame to learn the stream size.
@@ -128,6 +144,10 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         event_loop,
         shared,
         input_tx,
+        viewer::StreamControl {
+            requests: stream_tx,
+            max_size,
+        },
         format!("Sunna — {host_name}"),
         width,
         height,

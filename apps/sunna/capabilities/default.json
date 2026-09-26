@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The launcher window: core APIs only. Commands are defined in src/main.rs.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

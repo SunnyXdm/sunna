@@ -111,30 +111,32 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
     }
 }
 
-fn make_source_factory(source: Source, fps: u32) -> sunna_host::SourceFactory {
+fn make_source_factory(source: Source) -> sunna_host::SourceFactory {
     match source {
-        Source::Synthetic => Box::new(move |width, height| {
-            Ok(Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>)
+        Source::Synthetic => Box::new(move |stream| {
+            Ok(Box::new(SyntheticSource::new(stream.width, stream.height, stream.fps)) as Box<dyn FrameSource>)
         }),
         Source::Screen => {
             #[cfg(target_os = "macos")]
             {
                 // CGDisplayStream scales on the GPU to the session's size.
-                Box::new(move |width, height| {
+                Box::new(move |stream| {
                     Ok(Box::new(sunna_capture::macos::ScreenSource::new(
-                        Some(width),
-                        Some(height),
-                        fps,
+                        Some(stream.width),
+                        Some(stream.height),
+                        stream.fps,
+                        // Raw video also needs CPU-readable BGRA pixels.
+                        stream.fast_lane || stream.codec == "raw",
                     )?) as Box<dyn FrameSource>)
                 })
             }
             #[cfg(target_os = "linux")]
             {
-                Box::new(move |width, height| {
+                Box::new(move |stream| {
                     Ok(Box::new(sunna_capture::linux::ScreenSource::new(
-                        Some(width),
-                        Some(height),
-                        fps,
+                        Some(stream.width),
+                        Some(stream.height),
+                        stream.fps,
                     )?) as Box<dyn FrameSource>)
                 })
             }
@@ -197,6 +199,7 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
         fps: args.fps,
         codec: args.codec.clone(),
         max_bitrate_bps: bitrate_bps,
+        fast_lane: sunna_capture::fast_lane_enabled(),
         simulate_loss: args.simulate_loss,
         token: args.token.clone(),
     };
@@ -209,8 +212,8 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
         result = run_host(
             server,
             config,
-            make_source_factory(args.source, fps),
-            Box::new(move |width, height| make_encoder(&codec, width, height, fps, bitrate_bps)),
+            make_source_factory(args.source),
+            Box::new(move |stream| make_encoder(&stream.codec, stream.width, stream.height, stream.fps, stream.bitrate_bps)),
             Box::new(make_injector),
         ) => result,
         _ = tokio::signal::ctrl_c() => {

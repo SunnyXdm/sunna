@@ -1,0 +1,281 @@
+/* Minimal, native-feeling dark UI. System font, one accent colour, status
+   colours only where they carry meaning. */
+:root {
+  --bg: #0e0f12;
+  --surface: #16181d;
+  --hover: #1d2026;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e7e9ee;
+  --muted: #8b90a0;
+  --accent: #5b8cff;
+  --ready: #3ddc84;
+  --busy: #f5b94b;
+  --error: #ff5c5c;
+  --radius: 10px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-feature-settings: "tnum";
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Traffic lights sit at the top-left of an Overlay title bar. */
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 14px 0 84px;
+  flex: none;
+}
+
+.wordmark {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  flex: 1;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: default;
+}
+
+button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.icon-button:hover { background: var(--hover); color: var(--text); }
+.icon-button svg { width: 17px; height: 17px; fill: currentColor; }
+
+.text-button {
+  color: var(--accent);
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+.text-button:hover { background: var(--hover); }
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 14px 14px;
+}
+
+.section-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 4px 8px;
+}
+
+.machines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.machines:empty { display: none; }
+
+.machine {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  min-height: 56px;
+}
+.machine + .machine { border-top: 1px solid var(--border); }
+.machine:hover { background: var(--hover); }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.machine[data-state="ready"] .dot { background: var(--ready); box-shadow: 0 0 0 3px rgba(61, 220, 132, 0.15); }
+.machine[data-state="busy"] .dot { background: var(--busy); }
+.machine[data-state="wrong-token"] .dot { background: var(--error); }
+.machine[data-state="offline"] { opacity: 0.55; }
+
+.machine-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.machine-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.machine-detail {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  flex: none;
+}
+.pill:hover { filter: brightness(1.1); }
+.pill:active { filter: brightness(0.95); }
+.pill:disabled { background: var(--hover); color: var(--muted); filter: none; }
+
+.others-toggle {
+  display: block;
+  margin: 12px 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 0;
+}
+.others-toggle:hover { color: var(--text); }
+.others-toggle[hidden], .machines[hidden] { display: none; }
+.others .machine { min-height: 44px; padding: 8px 12px; }
+
+.empty {
+  text-align: center;
+  padding: 40px 24px;
+  color: var(--muted);
+}
+.empty-title { color: var(--text); font-weight: 600; margin: 0 0 6px; }
+.empty-body { margin: 0; }
+
+code {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  color: var(--text);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.banner {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgba(255, 92, 92, 0.1);
+  border: 1px solid rgba(255, 92, 92, 0.3);
+  color: var(--text);
+}
+.banner[data-kind="info"] {
+  background: rgba(91, 140, 255, 0.1);
+  border-color: rgba(91, 140, 255, 0.3);
+}
+
+.footer {
+  flex: none;
+  padding: 8px 18px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Settings slide over the home screen. */
+.sheet {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  animation: rise 160ms ease-out;
+}
+.sheet[hidden] { display: none; }
+@keyframes rise {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.sheet-header {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 14px 0 84px;
+}
+.sheet-title { font-weight: 600; flex: 1; text-align: center; }
+.spacer { width: 40px; }
+
+.settings {
+  padding: 4px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-weight: 600; }
+.field-row { display: flex; gap: 8px; align-items: center; }
+.field-hint { color: var(--muted); font-size: 11px; }
+
+input[type="password"], input[type="text"] {
+  flex: 1;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 9px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.toggle input { margin: 2px 0 0; accent-color: var(--accent); }
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet { animation: none; }
+}

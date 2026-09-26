@@ -5,25 +5,67 @@
 //! (event-driven capture on real backends), and `send_datagram` is synchronous
 //! fire-and-forget, so no async hop sits between capture and the wire.
 //!
-//! Milestone 0 limitation: one session at a time; further connections are
-//! served after the current one ends. Multi-guest co-play is Milestone 3.
+//! One viewer owns the pipeline; probes and busy refusals run concurrently.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sunna_capture::FrameSource;
 use sunna_codec::Encoder;
 use sunna_input::InputInjector;
 use sunna_proto::media::packetize;
-use sunna_proto::messages::{ControlMessage, HostStats};
+use sunna_proto::messages::{ControlMessage, HostStats, StreamSettings};
 use sunna_transport::quinn::{Connection, SendDatagramError};
 use sunna_transport::{ControlChannel, Server};
 
-/// Builds a frame source producing frames of the given size.
-pub type SourceFactory = Box<dyn Fn(u32, u32) -> anyhow::Result<Box<dyn FrameSource>> + Send + Sync>;
-/// Builds an encoder for frames of the given size.
-pub type EncoderFactory = Box<dyn Fn(u32, u32) -> anyhow::Result<Box<dyn Encoder>> + Send + Sync>;
+#[derive(Debug, Clone)]
+pub struct StreamConfig {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub codec: String,
+    pub bitrate_bps: u32,
+    pub fast_lane: bool,
+}
+
+impl StreamConfig {
+    fn apply(&self, native: (u32, u32), settings: &StreamSettings) -> anyhow::Result<Self> {
+        let mut next = self.clone();
+        if let Some(codec) = &settings.codec {
+            anyhow::ensure!(
+                matches!(codec.as_str(), "raw" | "h264" | "hevc"),
+                "unknown codec: {codec}"
+            );
+            next.codec = codec.clone();
+        }
+        if let Some(size) = settings.max_size {
+            anyhow::ensure!(size.0 >= 2 && size.1 >= 2, "max_size must be at least 2x2");
+            (next.width, next.height) = fit_within(native, Some(size));
+        }
+        if let Some(fps) = settings.fps {
+            anyhow::ensure!(fps > 0, "fps must be positive");
+            next.fps = fps;
+        }
+        if let Some(kbps) = settings.max_bitrate_kbps {
+            next.bitrate_bps = kbps
+                .checked_mul(1000)
+                .filter(|bps| *bps > 0)
+                .ok_or_else(|| anyhow::anyhow!("invalid bitrate"))?;
+        }
+        if let Some(fast_lane) = settings.fast_lane {
+            next.fast_lane = fast_lane;
+        }
+        Ok(next)
+    }
+}
+
+/// Factories run on the media thread when a viewer changes settings.
+pub type SourceFactory =
+    Box<dyn Fn(&StreamConfig) -> anyhow::Result<Box<dyn FrameSource>> + Send + Sync>;
+pub type EncoderFactory =
+    Box<dyn Fn(&StreamConfig) -> anyhow::Result<Box<dyn Encoder>> + Send + Sync>;
+
 pub type InjectorFactory = Box<dyn Fn() -> Box<dyn InputInjector> + Send + Sync>;
 
 #[derive(Debug, Clone)]
@@ -42,6 +84,7 @@ pub struct HostConfig {
     pub codec: String,
     /// Encoder ceiling; also the AIMD upper bound. Ignored by the raw codec.
     pub max_bitrate_bps: u32,
+    pub fast_lane: bool,
     /// Dev-only: drop this fraction of outgoing media datagrams (0.0..1.0)
     /// to exercise FEC and keyframe recovery.
     pub simulate_loss: f64,
@@ -53,10 +96,36 @@ pub struct HostConfig {
 struct SessionSignals {
     force_keyframe: AtomicBool,
     target_bitrate_bps: AtomicU32,
+    max_bitrate_bps: AtomicU32,
+    reconfigure: Mutex<Option<StreamSettings>>,
     /// Input events injected since the last host window (stats only).
     input_events: AtomicU32,
     /// The last host window's stats, waiting to go to the viewer.
     stats: std::sync::Mutex<Option<HostStats>>,
+}
+
+struct HostState {
+    config: HostConfig,
+    new_source: SourceFactory,
+    new_encoder: EncoderFactory,
+    new_injector: InjectorFactory,
+    busy: AtomicBool,
+}
+
+struct SessionSlot(Arc<HostState>);
+
+impl Drop for SessionSlot {
+    fn drop(&mut self) {
+        self.0.busy.store(false, Ordering::Release);
+    }
+}
+
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Accept-and-serve loop. Returns when the endpoint is closed.
@@ -67,75 +136,137 @@ pub async fn run_host(
     new_encoder: EncoderFactory,
     new_injector: InjectorFactory,
 ) -> anyhow::Result<()> {
+    let host = Arc::new(HostState {
+        config,
+        new_source,
+        new_encoder,
+        new_injector,
+        busy: AtomicBool::new(false),
+    });
+    let mut sessions = tokio::task::JoinSet::new();
     loop {
-        let Some(accepted) = server.accept().await else {
-            return Ok(());
-        };
-        match accepted {
-            Ok(connection) => {
-                let remote = connection.remote_address();
-                tracing::info!(%remote, "session started");
-                match serve(&connection, &config, &new_source, &new_encoder, &new_injector).await
-                {
-                    Ok(()) => tracing::info!(%remote, "session ended"),
-                    Err(error) => tracing::info!(%remote, %error, "session ended"),
+        tokio::select! {
+            incoming = server.endpoint.accept() => {
+                let Some(incoming) = incoming else { return Ok(()) };
+                let host = Arc::clone(&host);
+                sessions.spawn(async move {
+                    match incoming.await {
+                        Ok(connection) => {
+                            let remote = connection.remote_address();
+                            if let Err(error) = serve(&connection, host).await {
+                                tracing::info!(%remote, %error, "session ended");
+                            }
+                        }
+                        Err(error) => tracing::warn!(%error, "incoming connection failed"),
+                    }
+                });
+            }
+            Some(result) = sessions.join_next() => {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "session task failed");
                 }
             }
-            Err(error) => tracing::warn!(%error, "incoming connection failed"),
         }
     }
 }
 
-async fn serve(
-    connection: &Connection,
-    config: &HostConfig,
-    new_source: &SourceFactory,
-    new_encoder: &EncoderFactory,
-    new_injector: &InjectorFactory,
-) -> anyhow::Result<()> {
+async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<()> {
+    let config = &host.config;
     let mut control = ControlChannel::accept(connection).await?;
-    let (width, height) = match control.recv().await? {
+    let settings = match control.recv().await? {
+        ControlMessage::Probe { token } => {
+            let token_ok = config.token.is_empty() || tokens_match(&token, &config.token);
+            control
+                .send(&ControlMessage::ProbeAck {
+                    name: if token_ok {
+                        config.name.clone()
+                    } else {
+                        String::new()
+                    },
+                    version: sunna_proto::PROTOCOL_VERSION,
+                    busy: token_ok && host.busy.load(Ordering::Acquire),
+                    token_ok,
+                })
+                .await?;
+            control.finish().await?;
+            return Ok(());
+        }
         ControlMessage::Hello {
             version,
             name,
             token,
-            max_size,
+            stream,
         } => {
+            if !config.token.is_empty() && !tokens_match(&token, &config.token) {
+                control
+                    .send(&ControlMessage::Refused {
+                        reason: "wrong session token".into(),
+                    })
+                    .await?;
+                control.finish().await?;
+                anyhow::bail!("client {name:?} presented a wrong session token");
+            }
             if version != sunna_proto::PROTOCOL_VERSION {
                 let reason = format!(
                     "protocol version mismatch: client {version}, host {} (rebuild both sides)",
                     sunna_proto::PROTOCOL_VERSION
                 );
-                let _ = control.send(&ControlMessage::Refused { reason: reason.clone() }).await;
+                control
+                    .send(&ControlMessage::Refused {
+                        reason: reason.clone(),
+                    })
+                    .await?;
+                control.finish().await?;
                 anyhow::bail!(reason);
             }
-            if !config.token.is_empty() && !tokens_match(&token, &config.token) {
-                let _ = control
-                    .send(&ControlMessage::Refused { reason: "wrong session token".into() })
-                    .await;
-                anyhow::bail!("client {name:?} presented a wrong session token");
-            }
-            let size = fit_within((config.width, config.height), max_size);
-            tracing::info!(
-                client = %name,
-                ?max_size,
-                width = size.0,
-                height = size.1,
-                "hello received"
-            );
-            size
+            stream
         }
-        other => anyhow::bail!("expected Hello, got {other:?}"),
+        other => anyhow::bail!("expected Hello or Probe, got {other:?}"),
     };
-    // Build the pipeline before acknowledging so a failure reaches the
-    // client as a refusal instead of a silent stream.
-    let pipeline = new_source(width, height).and_then(|source| Ok((source, new_encoder(width, height)?)));
-    let (mut source, encoder) = match pipeline {
+    if host
+        .busy
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        control
+            .send(&ControlMessage::Refused {
+                reason: "busy: another viewer is connected".into(),
+            })
+            .await?;
+        control.finish().await?;
+        return Ok(());
+    }
+    let slot = SessionSlot(Arc::clone(&host));
+    let (width, height) = fit_within((config.width, config.height), None);
+    let initial = StreamConfig {
+        width,
+        height,
+        fps: config.fps,
+        codec: config.codec.clone(),
+        bitrate_bps: config.max_bitrate_bps,
+        fast_lane: config.fast_lane,
+    };
+    // Refuse before acknowledging if the requested pipeline cannot be built.
+    let builder = Arc::clone(&host);
+    let pipeline = tokio::task::spawn_blocking(move || {
+        initial
+            .apply((builder.config.width, builder.config.height), &settings)
+            .and_then(|stream| {
+                let source = (builder.new_source)(&stream)?;
+                let encoder = (builder.new_encoder)(&stream)?;
+                Ok((stream, source, encoder))
+            })
+    })
+    .await?;
+    let (stream, source, encoder) = match pipeline {
         Ok(pipeline) => pipeline,
         Err(error) => {
-            let _ = control
-                .send(&ControlMessage::Refused { reason: format!("host pipeline failed: {error}") })
-                .await;
+            control
+                .send(&ControlMessage::Refused {
+                    reason: format!("host pipeline failed: {error}"),
+                })
+                .await?;
+            control.finish().await?;
             return Err(error);
         }
     };
@@ -143,69 +274,52 @@ async fn serve(
         .send(&ControlMessage::HelloAck {
             version: sunna_proto::PROTOCOL_VERSION,
             name: config.name.clone(),
-            width,
-            height,
-            fps: config.fps,
-            codec: config.codec.clone(),
+            width: stream.width,
+            height: stream.height,
+            fps: stream.fps,
+            codec: stream.codec.clone(),
+            fast_lane: stream.fast_lane,
         })
         .await?;
 
-    let tile_writer = if sunna_capture::fast_lane_enabled() {
-        let (tiles_tx, tiles_rx) = tokio::sync::mpsc::unbounded_channel();
-        source.set_tile_sink(Arc::new(move |batch| {
-            let _ = tiles_tx.send(batch);
-        }));
-        tracing::info!("fast lane enabled: small changes go out as lossless tiles");
-        Some(tokio::spawn(tile_writer(connection.clone(), tiles_rx)))
-    } else {
-        None
-    };
-
     let stop = Arc::new(AtomicBool::new(false));
-    let min_bitrate_bps = min_bitrate(config.max_bitrate_bps);
+    let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
     let signals = Arc::new(SessionSignals {
-        force_keyframe: AtomicBool::new(false),
-        // Start well below the ceiling and ramp up — starting hot congests
-        // constrained paths for seconds before adaptation can react.
-        target_bitrate_bps: AtomicU32::new(config.max_bitrate_bps.min(15_000_000)),
+        force_keyframe: AtomicBool::new(true),
+        target_bitrate_bps: AtomicU32::new(stream.bitrate_bps.min(15_000_000)),
+        max_bitrate_bps: AtomicU32::new(stream.bitrate_bps),
+        reconfigure: Mutex::new(None),
         input_events: AtomicU32::new(0),
-        stats: std::sync::Mutex::new(None),
+        stats: Mutex::new(None),
     });
+    let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();
     let media_thread = {
         let connection = connection.clone();
         let stop = Arc::clone(&stop);
         let signals = Arc::clone(&signals);
-        let simulate_loss = config.simulate_loss;
+        let host = Arc::clone(&host);
+        let runtime = tokio::runtime::Handle::current();
         std::thread::spawn(move || {
+            let _slot = slot;
             media_loop(
-                connection,
-                source,
-                encoder,
-                stop,
-                signals,
-                simulate_loss,
-                min_bitrate_bps,
+                connection, source, encoder, stop, signals, host, stream, updates_tx, runtime,
             )
         })
     };
-
-    let mut injector = new_injector();
+    let mut injector = (host.new_injector)();
     let result = control_loop(
         connection,
         control,
         injector.as_mut(),
         &signals,
-        config.max_bitrate_bps,
+        updates_rx,
         config.clipboard,
     )
     .await;
     injector.release_all();
-
     stop.store(true, Ordering::Relaxed);
-    let _ = media_thread.join();
-    if let Some(writer) = tile_writer {
-        writer.abort();
-    }
+    // Teardown can flush hardware callbacks; keep the async runtime responsive.
+    let _ = tokio::task::spawn_blocking(move || media_thread.join()).await;
     result
 }
 
@@ -238,7 +352,10 @@ async fn tile_writer(
     loop {
         tokio::select! {
             batch = batches.recv() => {
-                let Some(batch) = batch else { return };
+                let Some(batch) = batch else {
+                    let _ = stream.finish();
+                    return;
+                };
                 let Ok(encoded) = sunna_proto::tiles::encode(&batch) else { continue };
                 let now = Instant::now();
                 tokens = (tokens + now.duration_since(refilled).as_secs_f64() * BUDGET_BYTES_PER_SEC)
@@ -330,7 +447,6 @@ const MAX_SENDER_BACKLOG: usize = 300 * 1024;
 /// signal we have — at most every 500 ms. Shared by both media threads.
 struct LocalCut {
     last: std::sync::Mutex<Instant>,
-    min_bitrate_bps: u32,
 }
 
 impl LocalCut {
@@ -339,7 +455,7 @@ impl LocalCut {
         if last.elapsed() > Duration::from_millis(500) {
             *last = Instant::now();
             let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
-            let next = (current * 3 / 4).max(self.min_bitrate_bps);
+            let next = (current / 4 * 3).max(min_bitrate(signals.max_bitrate_bps.load(Ordering::Relaxed)));
             signals.target_bitrate_bps.store(next, Ordering::Relaxed);
             tracing::debug!(backlog, bitrate = next, reason, "cutting bitrate");
         }
@@ -352,66 +468,162 @@ fn send_backlog(connection: &Connection) -> usize {
 
 /// Capture → encoder (this thread) and encoder output → wire (a send thread),
 /// so finished frames go out the moment the encoder hands them back.
+#[allow(clippy::too_many_arguments)]
 fn media_loop(
     connection: Connection,
-    source: Box<dyn FrameSource>,
-    encoder: Box<dyn Encoder>,
+    mut source: Box<dyn FrameSource>,
+    mut encoder: Box<dyn Encoder>,
     stop: Arc<AtomicBool>,
     signals: Arc<SessionSignals>,
-    simulate_loss: f64,
-    min_bitrate_bps: u32,
+    host: Arc<HostState>,
+    mut stream: StreamConfig,
+    updates: tokio::sync::mpsc::UnboundedSender<ControlMessage>,
+    runtime: tokio::runtime::Handle,
 ) {
-    let (sink, outputs) = std::sync::mpsc::channel();
     let admission_drops = Arc::new(AtomicU32::new(0));
     let cuts = Arc::new(LocalCut {
-        last: std::sync::Mutex::new(Instant::now() - Duration::from_secs(1)),
-        min_bitrate_bps,
+        last: Mutex::new(Instant::now() - Duration::from_secs(1)),
     });
-    let sender = {
-        let connection = connection.clone();
-        let stop = Arc::clone(&stop);
-        let signals = Arc::clone(&signals);
-        let admission_drops = Arc::clone(&admission_drops);
-        let cuts = Arc::clone(&cuts);
-        std::thread::Builder::new().name("sunna-send".into()).spawn(move || {
-            send_loop(connection, outputs, stop, signals, admission_drops, cuts, simulate_loss)
-        })
-    };
-    submit_loop(&connection, source, encoder, &stop, &signals, sink, &admission_drops, &cuts);
-    // The encoder (dropped above) flushed its pending frames, so every sink
-    // clone is gone and the send loop drains and exits.
-    match sender {
-        Ok(handle) => {
-            let _ = handle.join();
+    let mut epoch = 0u8;
+    let mut wire_frame_id = 0;
+    loop {
+        let writer = if stream.fast_lane {
+            let (tiles_tx, tiles_rx) = tokio::sync::mpsc::unbounded_channel();
+            source.set_tile_sink(Arc::new(move |batch| {
+                let _ = tiles_tx.send(batch);
+            }));
+            Some(runtime.spawn(tile_writer(connection.clone(), tiles_rx)))
+        } else {
+            None
+        };
+        let (sink, outputs) = std::sync::mpsc::channel();
+        let sender = {
+            let connection = connection.clone();
+            let stop = Arc::clone(&stop);
+            let signals = Arc::clone(&signals);
+            let admission_drops = Arc::clone(&admission_drops);
+            let cuts = Arc::clone(&cuts);
+            let simulate_loss = host.config.simulate_loss;
+            std::thread::spawn(move || {
+                send_loop(
+                    connection,
+                    outputs,
+                    stop,
+                    signals,
+                    admission_drops,
+                    cuts,
+                    simulate_loss,
+                    epoch,
+                    wire_frame_id,
+                )
+            })
+        };
+        let replacement = loop {
+            let Some(settings) = submit_loop(
+                &connection,
+                source.as_mut(),
+                encoder.as_mut(),
+                &stop,
+                &signals,
+                &sink,
+                &admission_drops,
+                &cuts,
+            ) else {
+                break None;
+            };
+            let started = Instant::now();
+            let pipeline = stream
+                .apply((host.config.width, host.config.height), &settings)
+                .and_then(|next| {
+                    let source = (host.new_source)(&next)?;
+                    let encoder = (host.new_encoder)(&next)?;
+                    Ok((next, source, encoder))
+                });
+            match pipeline {
+                Ok(pipeline) => break Some((pipeline, started)),
+                Err(error) => {
+                    tracing::info!(elapsed_ms = started.elapsed().as_millis() as u64,
+                        %error, "stream reconfigure failed");
+                    let _ = updates.send(ControlMessage::SetStreamFailed {
+                        reason: error.to_string(),
+                    });
+                }
+            }
+        };
+        // Flush all old callbacks before changing the wire epoch.
+        drop(encoder);
+        drop(source);
+        drop(sink);
+        let sent = sender.join();
+        if sent.is_err() {
+            stop.store(true, Ordering::Relaxed);
         }
-        Err(error) => tracing::warn!(%error, "failed to start the send thread"),
+        wire_frame_id = sent.unwrap_or(wire_frame_id);
+        if let Some(writer) = writer {
+            writer.abort();
+        }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let Some(((next, next_source, next_encoder), started)) = replacement else {
+            break;
+        };
+        stream = next;
+        source = next_source;
+        encoder = next_encoder;
+        epoch = epoch.wrapping_add(1);
+        signals
+            .max_bitrate_bps
+            .store(stream.bitrate_bps, Ordering::Relaxed);
+        signals
+            .target_bitrate_bps
+            .store(stream.bitrate_bps.min(15_000_000), Ordering::Relaxed);
+        signals.force_keyframe.store(true, Ordering::Relaxed);
+        let _ = updates.send(ControlMessage::StreamChanged {
+            epoch,
+            width: stream.width,
+            height: stream.height,
+            fps: stream.fps,
+            codec: stream.codec.clone(),
+            fast_lane: stream.fast_lane,
+        });
+        tracing::info!(
+            epoch,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "stream reconfigured"
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn submit_loop(
     connection: &Connection,
-    mut source: Box<dyn FrameSource>,
-    mut encoder: Box<dyn Encoder>,
+    source: &mut dyn FrameSource,
+    encoder: &mut dyn Encoder,
     stop: &AtomicBool,
     signals: &SessionSignals,
-    sink: sunna_codec::EncoderSink,
+    sink: &sunna_codec::EncoderSink,
     admission_drops: &AtomicU32,
     cuts: &LocalCut,
-) {
+) -> Option<StreamSettings> {
     // The encoder factory configured the ceiling; align it with the actual
     // starting target before the first frame.
-    let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
+    let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed)
+        .min(signals.max_bitrate_bps.load(Ordering::Relaxed));
     encoder.set_target_bitrate(applied_bitrate);
     let mut consecutive_failures: u32 = 0;
     let max_in_flight = max_in_flight();
     tracing::info!(max_in_flight, "encode pipeline");
 
     while !stop.load(Ordering::Relaxed) {
+        if let Some(settings) = signals.reconfigure.lock().unwrap().take() {
+            return Some(settings);
+        }
         if signals.force_keyframe.swap(false, Ordering::Relaxed) {
             encoder.request_keyframe();
         }
-        let target_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed);
+        let target_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed)
+            .min(signals.max_bitrate_bps.load(Ordering::Relaxed));
         if target_bitrate != applied_bitrate {
             encoder.set_target_bitrate(target_bitrate);
             applied_bitrate = target_bitrate;
@@ -444,7 +656,7 @@ fn submit_loop(
             cuts.cut(signals, "backlog before encode", backlog);
             continue;
         }
-        match encoder.submit(&frame, &sink) {
+        match encoder.submit(&frame, sink) {
             Ok(()) => consecutive_failures = 0,
             Err(error) => {
                 consecutive_failures += 1;
@@ -457,6 +669,7 @@ fn submit_loop(
             }
         }
     }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -468,7 +681,9 @@ fn send_loop(
     admission_drops: Arc<AtomicU32>,
     cuts: Arc<LocalCut>,
     simulate_loss: f64,
-) {
+    epoch: u8,
+    mut wire_frame_id: u64,
+) -> u64 {
     use sunna_codec::EncoderOutput;
 
     let max_datagram = connection.max_datagram_size().unwrap_or(1200).min(1200);
@@ -477,7 +692,6 @@ fn send_loop(
     // chain survives) don't look like loss to the client's gap detection. An
     // encoded frame dropped at the sender still consumes its id: that gap is
     // real, because later frames reference it.
-    let mut wire_frame_id: u64 = 0;
     let mut consecutive_failures: u32 = 0;
     let mut window = HostWindow::new();
     // Deterministic xorshift for dev loss simulation; no RNG dependency.
@@ -519,7 +733,7 @@ fn send_loop(
                 consecutive_failures = 0;
                 window.encoded(&encoded);
                 let datagrams = packetize(
-                    wire_frame_id,
+                    epoch,                    wire_frame_id,
                     encoded.capture_ts_us,
                     encoded.keyframe,
                     &encoded.data,
@@ -568,6 +782,7 @@ fn send_loop(
             &signals,
         );
     }
+    wire_frame_id
 }
 
 /// Per-second host-side stats, logged as one `host window` event.
@@ -652,7 +867,7 @@ async fn control_loop(
     control: ControlChannel,
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
-    max_bitrate_bps: u32,
+    mut updates: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     clipboard: bool,
 ) -> anyhow::Result<()> {
     // `recv` isn't cancellation-safe, so it gets its own task (as in the
@@ -677,7 +892,7 @@ async fn control_loop(
         &mut messages,
         injector,
         signals,
-        max_bitrate_bps,
+        &mut updates,
         &mut clipboard,
         &mut incoming,
     )
@@ -732,7 +947,7 @@ async fn handle_control(
     messages: &mut tokio::sync::mpsc::Receiver<sunna_transport::Result<ControlMessage>>,
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
-    max_bitrate_bps: u32,
+    updates: &mut tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     clipboard: &mut sunna_clipboard::ClipboardSession,
     incoming_clipboard: &mut tokio::sync::mpsc::Receiver<sunna_proto::messages::ClipboardData>,
 ) -> anyhow::Result<()> {
@@ -741,11 +956,15 @@ async fn handle_control(
     // the odd frame, and cutting for it parks desktop streams at an ugly
     // floor); slow additive recovery on clean windows. Placeholder until
     // delay-based CC (research/08 §5.7).
-    let min_bitrate_bps = min_bitrate(max_bitrate_bps);
     let mut p95_baseline_us: Option<u64> = None;
     let mut stats_interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         let message = tokio::select! {
+            update = updates.recv() => {
+                let Some(update) = update else { return Ok(()) };
+                control.send(&update).await?;
+                continue;
+            }
             data = clipboard.next() => {
                 spawn_clipboard_send(connection, data);
                 continue;
@@ -767,6 +986,9 @@ async fn handle_control(
             }
         };
         match message {
+            Ok(ControlMessage::SetStream(settings)) => {
+                *signals.reconfigure.lock().unwrap() = Some(settings);
+            }
             Ok(ControlMessage::Input(event)) => {
                 injector.inject(&event)?;
                 signals.input_events.fetch_add(1, Ordering::Relaxed);
@@ -789,6 +1011,8 @@ async fn handle_control(
                 chunks_recovered,
                 e2e_p95_us,
             }) => {
+                let max_bitrate_bps = signals.max_bitrate_bps.load(Ordering::Relaxed);
+                let min_bitrate_bps = min_bitrate(max_bitrate_bps);
                 let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
                 // Latency inflation vs the best p95 this session = queues are
                 // building somewhere on the path.
@@ -815,7 +1039,7 @@ async fn handle_control(
                 let total = frames_complete + frames_dropped;
                 let heavy_loss = frames_dropped > 0 && frames_dropped * 20 >= total.max(1);
                 let next = if heavy_loss || inflated {
-                    (current * 3 / 4).max(min_bitrate_bps)
+                    (current / 4 * 3).max(min_bitrate_bps)
                 } else if holding || frames_dropped > 0 {
                     current
                 } else {

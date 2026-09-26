@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sunna</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- The title bar is transparent (Overlay); this strip is where the
+       window is dragged from, clear of the traffic lights. -->
+  <header class="titlebar" data-tauri-drag-region>
+    <span class="wordmark" data-tauri-drag-region>Sunna</span>
+    <button class="icon-button" id="open-settings" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 6.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Zm7.1 4.4-1.6-.3a5.8 5.8 0 0 1-.6 1.4l.9 1.4-1.6 1.6-1.4-.9c-.4.3-.9.5-1.4.6l-.3 1.6H8.9l-.3-1.6a5.8 5.8 0 0 1-1.4-.6l-1.4.9-1.6-1.6.9-1.4a5.8 5.8 0 0 1-.6-1.4l-1.6-.3V8.9l1.6-.3c.1-.5.3-1 .6-1.4l-.9-1.4 1.6-1.6 1.4.9c.4-.3.9-.5 1.4-.6l.3-1.6h2.3l.3 1.6c.5.1 1 .3 1.4.6l1.4-.9 1.6 1.6-.9 1.4c.3.4.5.9.6 1.4l1.6.3v2.3Z"/></svg>
+    </button>
+  </header>
+
+  <main id="home">
+    <div class="section-label">
+      <span>Your machines</span>
+      <button class="text-button" id="refresh" title="Look again">Refresh</button>
+    </div>
+    <ul id="machines" class="machines" aria-live="polite"></ul>
+    <div id="empty" class="empty" hidden>
+      <p class="empty-title">No machines hosting yet</p>
+      <p class="empty-body">On the computer you want to reach, run
+        <code>scripts/dogfood.sh host</code>. It shows up here within a few seconds.</p>
+    </div>
+    <button class="others-toggle" id="others-toggle" hidden></button>
+    <ul id="others" class="machines others" hidden></ul>
+    <div id="banner" class="banner" role="status" hidden></div>
+  </main>
+
+  <footer class="footer">
+    <span id="status">Looking on your tailnet…</span>
+  </footer>
+
+  <section id="settings" class="sheet" hidden aria-label="Settings">
+    <div class="sheet-header">
+      <button class="text-button" id="close-settings">Done</button>
+      <span class="sheet-title">Settings</span>
+      <span class="spacer"></span>
+    </div>
+    <form id="settings-form" class="settings">
+      <label class="field">
+        <span class="field-label">Session token</span>
+        <span class="field-row">
+          <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Same on every machine">
+          <button type="button" class="text-button" id="toggle-token">Show</button>
+        </span>
+        <span class="field-hint">Every machine must use the same token. It's stored in ~/.sunna/dogfood.env.</span>
+      </label>
+      <label class="toggle">
+        <input id="windowed" type="checkbox">
+        <span>Open sessions in a window instead of full screen</span>
+      </label>
+      <label class="toggle">
+        <input id="stats" type="checkbox" checked>
+        <span>Show the stats bar when a session starts</span>
+      </label>
+      <label class="toggle">
+        <input id="button" type="checkbox" checked>
+        <span>Show the menu button (⌃⌥M opens the menu either way)</span>
+      </label>
+      <div class="settings-actions">
+        <span id="saved" class="field-hint" hidden>Saved</span>
+        <button type="submit" class="pill">Save</button>
+      </div>
+    </form>
+  </section>
+
+  <template id="machine-row">
+    <li class="machine">
+      <span class="dot"></span>
+      <span class="machine-text">
+        <span class="machine-name"></span>
+        <span class="machine-detail"></span>
+      </span>
+      <button class="pill connect">Connect</button>
+    </li>
+  </template>
+
+  <script src="main.js"></script>
+</body>
+</html>

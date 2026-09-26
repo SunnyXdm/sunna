@@ -49,6 +49,19 @@ enum Command {
         /// Session token printed by (or given to) sunnad.
         #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
         token: String,
+        /// Apply the stream options this many seconds into the session.
+        #[arg(long)]
+        set_stream_after: Option<u64>,
+        #[arg(long)]
+        codec: Option<String>,
+        #[arg(long, value_parser = parse_size)]
+        max_size: Option<(u32, u32)>,
+        #[arg(long)]
+        bitrate_kbps: Option<u32>,
+        #[arg(long)]
+        fps: Option<u32>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        fast_lane: Option<bool>,
         /// Share this machine's clipboard with the host.
         #[arg(long)]
         clipboard: bool,
@@ -74,6 +87,16 @@ enum Command {
         #[arg(long, default_value_t = 0.0)]
         simulate_loss: f64,
     },
+}
+
+fn parse_size(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value.split_once('x').ok_or("expected WxH")?;
+    let width = width.parse::<u32>().map_err(|_| "invalid width")?;
+    let height = height.parse::<u32>().map_err(|_| "invalid height")?;
+    if width < 2 || height < 2 {
+        return Err("dimensions must be at least 2".into());
+    }
+    Ok((width, height))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -122,15 +145,35 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             seconds,
             token,
             clipboard,
+            set_stream_after,
+            codec,
+            max_size,
+            bitrate_kbps,
+            fps,
+            fast_lane,
         } => {
             tracing::warn!("dev TLS: server certificate is NOT verified");
             let client = connect_insecure(addr, &server_name).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+            let settings = sunna_proto::messages::StreamSettings {
+                codec, max_size, max_bitrate_kbps: bitrate_kbps, fps, fast_lane,
+            };
+            let (requests, stream_requests) = tokio::sync::watch::channel(None);
+            let stream = if let Some(seconds) = set_stream_after {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(seconds)).await;
+                    let _ = requests.send(Some(settings));
+                });
+                Default::default()
+            } else {
+                settings
+            };
             let options = ClientOptions {
                 name: "sunna-cli".into(),
                 clipboard,
                 token,
-                max_size: None,
+                stream,
+                stream_requests: Some(stream_requests),
                 duration: seconds.map(Duration::from_secs),
                 live: None,
             };
@@ -157,6 +200,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 fps,
                 codec: codec.clone(),
                 max_bitrate_bps: bitrate_bps,
+                fast_lane: false,
                 simulate_loss,
                 token: String::new(),
                 clipboard: false,
@@ -165,10 +209,10 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let host_task = tokio::spawn(run_host(
                 server,
                 config,
-                Box::new(move |width, height| {
-                    Ok(Box::new(SyntheticSource::new(width, height, fps)) as Box<dyn FrameSource>)
+                Box::new(move |stream| {
+                    Ok(Box::new(SyntheticSource::new(stream.width, stream.height, stream.fps)) as Box<dyn FrameSource>)
                 }),
-                Box::new(move |width, height| make_encoder(&codec, width, height, fps, bitrate_bps)),
+                Box::new(move |stream| make_encoder(&stream.codec, stream.width, stream.height, stream.fps, stream.bitrate_bps)),
                 Box::new(|| Box::new(LogInjector) as Box<dyn InputInjector>),
             ));
 
@@ -178,7 +222,8 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 name: "bench-client".into(),
                 clipboard: false,
                 token: String::new(),
-                max_size: None,
+                stream: Default::default(),
+                stream_requests: None,
                 duration: Some(Duration::from_secs(seconds)),
                 live: None,
             };

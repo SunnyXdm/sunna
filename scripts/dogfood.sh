@@ -5,6 +5,7 @@
 #   scripts/dogfood.sh host           # on the Mac or Linux box to control
 #   scripts/dogfood.sh view <host>    # on the Mac you sit at; <host> is the
 #                                     # host's Tailscale name or 100.x address
+#   scripts/dogfood.sh app            # the Sunna app: pick a machine, connect
 #
 # One-time setup on each Mac: ~/.sunna/dogfood.env containing
 #   SUNNA_TOKEN=<same value on both Macs>
@@ -44,7 +45,11 @@ tailscale_cli() {
 }
 
 export SUNNA_GIT_HASH="$(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty)"
-cargo build --release
+if [ "${1:-}" = app ]; then
+  cargo build --release -p sunna
+else
+  cargo build --release
+fi
 
 AWDL_LOOP=""
 cleanup() {
@@ -80,6 +85,10 @@ case "${1:-}" in
     echo "Hosting on $IP:$PORT (tailnet only). Ctrl-C to stop."
     ./target/release/sunnad --source screen --listen "$IP:$PORT" --name "$NAME"
     ;;
+  app)
+    echo "Opening Sunna. Machines on your tailnet that are hosting show up in the list."
+    ./target/release/sunna
+    ;;
   view)
     HOST="${2:?usage: $0 view <host Tailscale name or 100.x address>}"
     NAME="$HOST"
@@ -92,7 +101,7 @@ case "${1:-}" in
     ./target/release/sunna-cli view "$HOST:$PORT" --name "$NAME"
     ;;
   *)
-    sed -n '2,17p' "$0"
+    sed -n '2,18p' "$0"
     exit 2
     ;;
 esac

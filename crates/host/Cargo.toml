@@ -15,3 +15,6 @@ sunna-proto.workspace = true
 sunna-transport.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+sunna-client.workspace = true

@@ -17,7 +17,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 /// Fixed header prepended to every media datagram.
 ///
 /// Layout (big-endian): frame_id u64 | chunk_index u16 | chunk_count u16 |
-/// frame_len u32 | capture_ts_us u64 | flags u8 — 25 bytes.
+/// frame_len u32 | capture_ts_us u64 | flags u8 | epoch u8 — 26 bytes.
 ///
 /// For parity datagrams (`FLAG_PARITY`), `chunk_index` is the parity *group*
 /// index and `chunk_count`/`frame_len` still describe the data frame.
@@ -29,9 +29,10 @@ pub struct MediaHeader {
     pub frame_len: u32,
     pub capture_ts_us: u64,
     pub flags: u8,
+    pub epoch: u8,
 }
 
-pub const MEDIA_HEADER_LEN: usize = 25;
+pub const MEDIA_HEADER_LEN: usize = 26;
 pub const FLAG_KEYFRAME: u8 = 0b0000_0001;
 pub const FLAG_PARITY: u8 = 0b0000_0010;
 
@@ -47,6 +48,7 @@ impl MediaHeader {
         buf.put_u32(self.frame_len);
         buf.put_u64(self.capture_ts_us);
         buf.put_u8(self.flags);
+        buf.put_u8(self.epoch);
     }
 
     /// Parse a datagram into (header, payload). Returns `None` if too short.
@@ -62,6 +64,7 @@ impl MediaHeader {
             frame_len: cursor.get_u32(),
             capture_ts_us: cursor.get_u64(),
             flags: cursor.get_u8(),
+            epoch: cursor.get_u8(),
         };
         Some((header, &datagram[MEDIA_HEADER_LEN..]))
     }
@@ -85,6 +88,7 @@ fn chunk_size_at(frame_len: usize, chunk_count: usize, index: usize) -> usize {
 /// Split an encoded frame into data + parity datagrams of at most
 /// `max_datagram` bytes each.
 pub fn packetize(
+    epoch: u8,
     frame_id: u64,
     capture_ts_us: u64,
     keyframe: bool,
@@ -100,6 +104,7 @@ pub fn packetize(
     let standard = standard_chunk_size(payload.len(), chunk_count);
 
     let header = |chunk_index: u16, flags: u8| MediaHeader {
+        epoch,
         frame_id,
         chunk_index,
         chunk_count: chunk_count as u16,
@@ -228,6 +233,12 @@ impl Reassembler {
         Self::default()
     }
 
+    /// Discard the old epoch's partial frame without recording a loss.
+    pub fn reset_epoch(&mut self) {
+        self.current = None;
+        self.last_completed = None;
+    }
+
     pub fn push(&mut self, datagram: &[u8]) -> Option<CompleteFrame> {
         let (header, payload) = MediaHeader::parse(datagram)?;
 
@@ -328,6 +339,7 @@ mod tests {
     #[test]
     fn header_roundtrip() {
         let header = MediaHeader {
+            epoch: 173,
             frame_id: 42,
             chunk_index: 3,
             chunk_count: 9,
@@ -346,7 +358,7 @@ mod tests {
     #[test]
     fn packetize_reassemble_roundtrip() {
         let payload = payload(10_000);
-        let datagrams = packetize(1, 99, true, &payload, 1200);
+        let datagrams = packetize(0, 1, 99, true, &payload, 1200);
         let data_count = datagrams.iter().filter(|d| !is_parity(d)).count();
         let parity_count = datagrams.len() - data_count;
         assert!(data_count > 1);
@@ -367,7 +379,7 @@ mod tests {
     #[test]
     fn single_loss_per_group_is_recovered() {
         let payload = payload(9_500);
-        let datagrams = packetize(7, 0, false, &payload, 1200);
+        let datagrams = packetize(0, 7, 0, false, &payload, 1200);
         let mut reassembler = Reassembler::new();
         let mut complete = None;
         // Drop the first data datagram of every parity group.
@@ -390,7 +402,7 @@ mod tests {
     #[test]
     fn last_short_chunk_is_recoverable() {
         let payload = payload(2_500); // 3 chunks at 1200 max: sizes 834/834/832
-        let datagrams = packetize(9, 0, false, &payload, 1200);
+        let datagrams = packetize(0, 9, 0, false, &payload, 1200);
         let last_data_index = datagrams
             .iter()
             .enumerate()
@@ -414,7 +426,7 @@ mod tests {
     #[test]
     fn double_loss_in_group_is_not_recovered() {
         let payload = payload(9_000);
-        let datagrams = packetize(3, 0, false, &payload, 1200);
+        let datagrams = packetize(0, 3, 0, false, &payload, 1200);
         let mut reassembler = Reassembler::new();
         let mut complete = None;
         let mut data_index = 0usize;
@@ -433,8 +445,8 @@ mod tests {
 
     #[test]
     fn newer_frame_supersedes_partial() {
-        let old = packetize(1, 0, false, &payload(5000), 1200);
-        let new = packetize(2, 0, false, &payload(3000), 1200);
+        let old = packetize(0, 1, 0, false, &payload(5000), 1200);
+        let new = packetize(0, 2, 0, false, &payload(3000), 1200);
         let mut reassembler = Reassembler::new();
         // Only part of frame 1 arrives, then all of frame 2.
         reassembler.push(&old[0]);

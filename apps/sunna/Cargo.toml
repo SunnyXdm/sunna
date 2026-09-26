@@ -1,0 +1,20 @@
+[package]
+name = "sunna"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Sunna: remote desktop that feels native"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sunna-client.workspace = true
+sunna-proto.workspace = true
+sunna-telemetry.workspace = true
+sunna-viewer.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+tracing.workspace = true

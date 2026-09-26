@@ -8,7 +8,7 @@
 //! - Modifiers are re-checked against the event's flags on every event and
 //!   released if the Mac says they're up, so a missed key-up (focus change,
 //!   system dialog) can't leave Shift or Cmd stuck on the host.
-//! - ⌃⌥ + S/F/G/Q are the viewer's own and never reach the host, including
+//! - ⌃⌥ + S/F/G/Q/M are the viewer's own and never reach the host, including
 //!   their key-ups.
 
 // Only the hotkeys are used where there's no event tap (non-macOS).
@@ -22,6 +22,7 @@ mod vk {
     pub const F: u16 = 0x03;
     pub const G: u16 = 0x05;
     pub const Q: u16 = 0x0C;
+    pub const M: u16 = 0x2E;
     pub const CAPS_LOCK: u16 = 0x39;
     pub const FUNCTION: u16 = 0x3F;
 }
@@ -74,6 +75,8 @@ pub enum Hotkey {
     ToggleCapture,
     /// ⌃⌥Q
     Disconnect,
+    /// ⌃⌥M: the in-session menu.
+    Menu,
 }
 
 impl Hotkey {
@@ -90,6 +93,7 @@ impl Hotkey {
             vk::F => Some(Self::ToggleFullscreen),
             vk::G => Some(Self::ToggleCapture),
             vk::Q => Some(Self::Disconnect),
+            vk::M => Some(Self::Menu),
             _ => None,
         }
     }

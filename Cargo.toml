@@ -13,6 +13,23 @@ members = [
     "crates/viewer",
     "apps/sunnad",
     "apps/sunna-cli",
+    "apps/sunna",
+]
+# The Sunna app (Tauri) needs WebKitGTK to build on Linux; build it with
+# `cargo build -p sunna`.
+default-members = [
+    "crates/proto",
+    "crates/transport",
+    "crates/capture",
+    "crates/codec",
+    "crates/input",
+    "crates/host",
+    "crates/client",
+    "crates/telemetry",
+    "crates/clipboard",
+    "crates/viewer",
+    "apps/sunnad",
+    "apps/sunna-cli",
 ]
 
 [workspace.package]

@@ -15,18 +15,21 @@
 //! path asymmetry. Same-machine, the offset converges near zero.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use sunna_codec::make_decoder;
-use sunna_proto::media::{CompleteFrame, Reassembler};
-use sunna_proto::messages::{ControlMessage, HostStats, InputEvent};
+use sunna_proto::media::{CompleteFrame, MediaHeader, Reassembler};
+use sunna_proto::messages::{ControlMessage, HostStats, InputEvent, StreamSettings};
 use sunna_proto::stats::Percentiles;
 use sunna_transport::quinn::Connection;
 use sunna_transport::ControlChannel;
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
+    pub epoch: u8,
+    pub fast_lane: bool,
     pub host_name: String,
     pub width: u32,
     pub height: u32,
@@ -39,6 +42,7 @@ pub struct BenchReport {
     pub info: SessionInfo,
     pub elapsed: Duration,
     pub frames_completed: u64,
+    pub decode_errors: u64,
     pub frames_dropped: u64,
     pub frames_skipped_awaiting_keyframe: u64,
     pub keyframes_requested: u64,
@@ -108,8 +112,8 @@ pub struct ClientOptions {
     pub name: String,
     /// Session token the host expects (empty if the host has none).
     pub token: String,
-    /// Largest stream this client can show 1:1, in physical pixels.
-    pub max_size: Option<(u32, u32)>,
+    pub stream: StreamSettings,
+    pub stream_requests: Option<tokio::sync::watch::Receiver<Option<StreamSettings>>>,
     /// Disconnect after this long; runs until the connection closes if `None`.
     pub duration: Option<Duration>,
     /// Updated every second with the session's numbers (stats overlay).
@@ -119,6 +123,9 @@ pub struct ClientOptions {
 /// The session's latest per-second numbers, for a stats overlay.
 #[derive(Debug, Clone, Default)]
 pub struct LiveStats {
+    pub epoch: u8,
+    pub fast_lane: bool,
+    pub last_stream_error: Option<String>,
     pub codec: String,
     pub width: u32,
     pub height: u32,
@@ -136,6 +143,69 @@ pub struct LiveStats {
     pub host: Option<HostStats>,
 }
 
+impl LiveStats {
+    fn stream_changed(&mut self, info: &SessionInfo) {
+        self.epoch = info.epoch;
+        self.codec = info.codec.clone();
+        self.width = info.width;
+        self.height = info.height;
+        self.fast_lane = info.fast_lane;
+        self.last_stream_error = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeResult {
+    pub name: String,
+    pub version: u16,
+    pub busy: bool,
+    pub token_ok: bool,
+}
+
+/// Query a peer without starting capture or taking its viewer slot.
+pub async fn probe(
+    addr: SocketAddr,
+    server_name: &str,
+    token: &str,
+    timeout: Duration,
+) -> anyhow::Result<ProbeResult> {
+    tokio::time::timeout(timeout, async {
+        let client = sunna_transport::connect_insecure(addr, server_name).await?;
+        let mut control = ControlChannel::open(&client.connection).await?;
+        control
+            .send(&ControlMessage::Probe {
+                token: token.into(),
+            })
+            .await?;
+        let result = match control.recv().await? {
+            ControlMessage::ProbeAck {
+                name,
+                version,
+                busy,
+                token_ok,
+            } => Ok(ProbeResult {
+                name,
+                version,
+                busy,
+                token_ok,
+            }),
+            other => anyhow::bail!("expected ProbeAck, got {other:?}"),
+        };
+        client.connection.close(0u32.into(), b"probe complete");
+        result
+    })
+    .await?
+}
+
+enum DecodeItem {
+    Frame(CompleteFrame),
+    Reconfigure {
+        codec: String,
+        width: u32,
+        height: u32,
+    },
+}
+
 /// Compressed frames in flight between the network task and the decode
 /// thread. Deliberately roomy: every P-frame references the one before, so
 /// dropping a compressed frame costs a keyframe round trip and a visible
@@ -150,6 +220,7 @@ enum DecodeEvent {
     /// Decoded; `age_us` is local-now minus the host capture stamp (the
     /// network task applies the clock offset).
     Decoded {
+        epoch: u8,
         frame_id: u64,
         keyframe: bool,
         age_us: i64,
@@ -158,7 +229,8 @@ enum DecodeEvent {
         assembly_us: u64,
     },
     /// A frame can't be decoded until the next keyframe (gap or decode error).
-    NeedKeyframe,
+    NeedKeyframe { epoch: u8 },
+    Failed(String),
 }
 
 #[derive(Default)]
@@ -171,15 +243,32 @@ struct DecodeCounters {
 
 fn spawn_decoder(
     mut decoder: Box<dyn sunna_codec::Decoder>,
-    frames: std::sync::mpsc::Receiver<CompleteFrame>,
+    mut frames: tokio::sync::mpsc::Receiver<DecodeItem>,
     events: tokio::sync::mpsc::UnboundedSender<DecodeEvent>,
     counters: Arc<DecodeCounters>,
     mut on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new().name("sunna-decode".into()).spawn(move || {
+        let mut epoch = 0u8;
         let mut awaiting_keyframe = true; // nothing decodable before the first IDR
         let mut last_frame: Option<u64> = None;
-        for frame in frames {
+        while let Some(item) = frames.blocking_recv() {
+            let frame = match item {
+                DecodeItem::Frame(frame) => frame,
+                DecodeItem::Reconfigure { codec, width, height } => {
+                    match make_decoder(&codec, width, height) {
+                        Ok(next) => decoder = next,
+                        Err(error) => {
+                            let _ = events.send(DecodeEvent::Failed(error.to_string()));
+                            return;
+                        }
+                    }
+                    epoch = epoch.wrapping_add(1);
+                    awaiting_keyframe = true;
+                    last_frame = None;
+                    continue;
+                }
+            };
             // A gap in frame ids is a frame lost in the network (or dropped
             // here); later P-frames reference it.
             if let Some(last) = last_frame {
@@ -187,7 +276,7 @@ fn spawn_decoder(
                     counters.gap_lost.fetch_add(frame.frame_id - last - 1, Ordering::Relaxed);
                     if !frame.keyframe && !awaiting_keyframe {
                         awaiting_keyframe = true;
-                        let _ = events.send(DecodeEvent::NeedKeyframe);
+                        let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
                     }
                 }
             }
@@ -203,6 +292,7 @@ fn spawn_decoder(
                     counters.decoded.fetch_add(1, Ordering::Relaxed);
                     let age_us = sunna_proto::now_us() as i64 - decoded.capture_ts_us as i64;
                     let _ = events.send(DecodeEvent::Decoded {
+                        epoch,
                         frame_id: frame.frame_id,
                         keyframe: frame.keyframe,
                         age_us,
@@ -217,7 +307,7 @@ fn spawn_decoder(
                     tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
                     if !awaiting_keyframe {
                         awaiting_keyframe = true;
-                        let _ = events.send(DecodeEvent::NeedKeyframe);
+                        let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
                     }
                 }
             }
@@ -238,7 +328,7 @@ fn spawn_decoder(
 /// ahead of the video; see `sunna_proto::tiles`), from a network task.
 pub async fn run_client(
     connection: Connection,
-    options: ClientOptions,
+    mut options: ClientOptions,
     on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send + 'static,
     on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
     mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
@@ -249,10 +339,10 @@ pub async fn run_client(
             version: sunna_proto::PROTOCOL_VERSION,
             name: options.name.clone(),
             token: options.token.clone(),
-            max_size: options.max_size,
+            stream: options.stream.clone(),
         })
         .await?;
-    let info = match control.recv().await? {
+    let mut info = match control.recv().await? {
         ControlMessage::HelloAck {
             version,
             name,
@@ -260,6 +350,7 @@ pub async fn run_client(
             height,
             fps,
             codec,
+            fast_lane,
         } => {
             anyhow::ensure!(
                 version == sunna_proto::PROTOCOL_VERSION,
@@ -267,6 +358,8 @@ pub async fn run_client(
                 sunna_proto::PROTOCOL_VERSION
             );
             SessionInfo {
+                epoch: 0,
+                fast_lane,
                 host_name: name,
                 width,
                 height,
@@ -283,9 +376,12 @@ pub async fn run_client(
         height = info.height,
         fps = info.fps,
         codec = %info.codec,
-        requested_max = ?options.max_size,
+        requested_max = ?options.stream.max_size,
         "session established"
     );
+    if let Some(live) = &options.live {
+        live.lock().unwrap().stream_changed(&info);
+    }
     let decoder = make_decoder(&info.codec, info.width, info.height)?;
 
     // The receive half gets its own task: `recv` isn't cancellation-safe, so
@@ -312,7 +408,7 @@ pub async fn run_client(
     ));
 
     let counters = Arc::new(DecodeCounters::default());
-    let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<CompleteFrame>(DECODE_QUEUE);
+    let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodeItem>(DECODE_QUEUE);
     let (event_tx, mut decode_events) = tokio::sync::mpsc::unbounded_channel();
     let decode_thread = spawn_decoder(decoder, frame_rx, event_tx, Arc::clone(&counters), on_frame)?;
     let mut frame_tx = Some(frame_tx);
@@ -366,8 +462,27 @@ pub async fn run_client(
     let mut input_open = true;
     let mut clipboard = sunna_clipboard::ClipboardSession::start(options.clipboard);
 
+    if let Some(requests) = &mut options.stream_requests {
+        requests.mark_changed();
+    }
+    let mut stream_error = None;
     loop {
         tokio::select! {
+            request = async {
+                match &mut options.stream_requests {
+                    Some(requests) => {
+                        requests.changed().await.ok()?;
+                        Some(requests.borrow_and_update().clone())
+                    }
+                    None => std::future::pending().await,
+                }
+            } => {
+                match request {
+                    Some(Some(settings)) => control.send(&ControlMessage::SetStream(settings)).await?,
+                    Some(None) => {}
+                    None => options.stream_requests = None,
+                }
+            }
             data = clipboard.next() => {
                 // Its own stream, so a large image never delays input.
                 let connection = connection.clone();
@@ -388,6 +503,9 @@ pub async fn run_client(
             }
             datagram = connection.read_datagram() => {
                 let Ok(datagram) = datagram else { break };
+                if !MediaHeader::parse(&datagram).is_some_and(|(header, _)| header.epoch == info.epoch) {
+                    continue;
+                }
                 let now = Instant::now();
                 if let Some(previous) = last_datagram_at.replace(now) {
                     let gap = now.duration_since(previous).as_micros() as u64;
@@ -408,15 +526,15 @@ pub async fn run_client(
                     need_keyframe = true;
                 }
                 if let (Some(frame), Some(tx)) = (completed, frame_tx.as_ref()) {
-                    match tx.try_send(frame) {
+                    match tx.try_send(DecodeItem::Frame(frame)) {
                         Ok(()) => {}
                         // Decode has stalled for ~2 s: drop; the id gap makes
                         // the decode thread wait for a keyframe, which we request.
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                             queue_full_drops += 1;
                             need_keyframe = true;
                         }
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                             frame_tx = None;
                             tracing::warn!("decode thread exited");
                         }
@@ -434,6 +552,7 @@ pub async fn run_client(
             event = decode_events.recv() => {
                 match event {
                     Some(DecodeEvent::Decoded {
+                        epoch,
                         frame_id,
                         keyframe,
                         age_us,
@@ -441,7 +560,7 @@ pub async fn run_client(
                         bytes,
                         assembly_us,
                     }) => {
-                        if keyframe {
+                        if keyframe && epoch == info.epoch {
                             if let Some(since) = awaiting_keyframe_since.take() {
                                 tracing::debug!(
                                     stalled_ms = since.elapsed().as_millis() as u64,
@@ -470,7 +589,15 @@ pub async fn run_client(
                         window_decode_us.push(decode_us);
                         window_frames += 1;
                     }
-                    Some(DecodeEvent::NeedKeyframe) => {
+                    Some(DecodeEvent::Failed(error)) => {
+                        stream_error = Some(error);
+                        let _ = control.send(&ControlMessage::Bye).await;
+                        break;
+                    }
+                    Some(DecodeEvent::NeedKeyframe { epoch }) => {
+                        if epoch != info.epoch {
+                            continue;
+                        }
                         awaiting_keyframe_since.get_or_insert_with(Instant::now);
                         if last_keyframe_request.elapsed() > Duration::from_millis(100) {
                             keyframes_requested += 1;
@@ -499,6 +626,35 @@ pub async fn run_client(
                             min_rtt_us = Some(rtt);
                             clock_offset_us =
                                 Some(t_us as i64 - ((peer_t_us + received) / 2) as i64);
+                        }
+                    }
+                    Some(ControlMessage::StreamChanged { epoch, width, height, fps, codec, fast_lane }) => {
+                        info.epoch = epoch;
+                        info.width = width;
+                        info.height = height;
+                        info.fps = fps;
+                        info.codec = codec.clone();
+                        info.fast_lane = fast_lane;
+                        reassembler.reset_epoch();
+                        awaiting_keyframe_since = Some(Instant::now());
+                        last_keyframe_request = Instant::now();
+                        keyframes_requested += 1;
+                        control.send(&ControlMessage::RequestKeyframe).await?;
+                        if let Some(tx) = &frame_tx {
+                            // This marker must precede every frame of the new epoch.
+                            if tx.send(DecodeItem::Reconfigure { codec, width, height }).await.is_err() {
+                                stream_error = Some("decode thread exited during reconfigure".into());
+                                break;
+                            }
+                        }
+                        if let Some(live) = &options.live {
+                            live.lock().unwrap().stream_changed(&info);
+                        }
+                    }
+                    Some(ControlMessage::SetStreamFailed { reason }) => {
+                        tracing::warn!(%reason, "stream settings rejected");
+                        if let Some(live) = &options.live {
+                            live.lock().unwrap().last_stream_error = Some(reason);
                         }
                     }
                     Some(ControlMessage::HostStats(stats)) => {
@@ -593,10 +749,14 @@ pub async fn run_client(
     tile_reader.abort();
     drop(frame_tx);
     let _ = decode_thread.join();
+    if let Some(error) = stream_error {
+        anyhow::bail!("decoder reconfigure failed: {error}");
+    }
     Ok(BenchReport {
         info,
         elapsed: started.elapsed(),
         frames_completed: reassembler.completed_frames,
+        decode_errors: counters.decode_errors.load(Ordering::Relaxed),
         frames_dropped: counters.gap_lost.load(Ordering::Relaxed),
         frames_skipped_awaiting_keyframe: counters.skipped_awaiting_keyframe.load(Ordering::Relaxed),
         keyframes_requested,
@@ -611,23 +771,21 @@ pub async fn run_client(
 
 /// Read fast-lane tile batches until the stream or connection ends.
 /// Unidirectional streams from the host: the fast-lane tile stream (one
-/// per session, opened only when enabled) and one stream per clipboard copy.
+/// per epoch when enabled) and one stream per clipboard copy.
 async fn accept_streams(
     connection: Connection,
     on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
     stats: tokio::sync::mpsc::UnboundedSender<(i64, usize)>,
     clipboard: tokio::sync::mpsc::Sender<sunna_proto::messages::ClipboardData>,
 ) {
-    let mut on_tiles = Some(on_tiles);
+    let on_tiles = Arc::new(Mutex::new(on_tiles));
     while let Ok(mut stream) = connection.accept_uni().await {
         let mut magic = [0u8; 4];
         if stream.read_exact(&mut magic).await.is_err() {
             continue;
         }
         if magic == sunna_proto::tiles::TILE_STREAM_MAGIC {
-            if let Some(on_tiles) = on_tiles.take() {
-                tokio::spawn(read_tiles(stream, on_tiles, stats.clone()));
-            }
+            tokio::spawn(read_tiles(stream, Arc::clone(&on_tiles), stats.clone()));
         } else if magic == sunna_transport::CLIPBOARD_STREAM_MAGIC {
             let clipboard = clipboard.clone();
             tokio::spawn(async move {
@@ -646,7 +804,7 @@ async fn accept_streams(
 
 async fn read_tiles(
     mut stream: sunna_transport::quinn::RecvStream,
-    mut on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
+    on_tiles: Arc<Mutex<impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static>>,
     stats: tokio::sync::mpsc::UnboundedSender<(i64, usize)>,
 ) {
     use sunna_proto::tiles;
@@ -669,9 +827,122 @@ async fn read_tiles(
             Ok(batch) => {
                 let age_us = sunna_proto::now_us() as i64 - batch.capture_ts_us as i64;
                 let _ = stats.send((age_us, len + 4));
-                on_tiles(batch);
+                on_tiles.lock().unwrap()(batch);
             }
             Err(error) => tracing::debug!(%error, "bad tile batch"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn decoder_switches_raw_to_h264() {
+        use sunna_capture::FrameSource;
+        use sunna_codec::Encoder;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (events, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let counters = Arc::new(DecodeCounters::default());
+        let (decoded_tx, decoded_rx) = std::sync::mpsc::channel();
+        let decoder = spawn_decoder(
+            make_decoder("raw", 320, 180).unwrap(),
+            rx,
+            events,
+            Arc::clone(&counters),
+            move |frame| {
+                decoded_tx.send(frame).unwrap();
+            },
+        )
+        .unwrap();
+        tx.blocking_send(DecodeItem::Frame(CompleteFrame {
+            frame_id: 0,
+            capture_ts_us: sunna_proto::now_us(),
+            keyframe: true,
+            data: bytes::Bytes::from(vec![0; 320 * 180 * 4]),
+            assembly_us: 0,
+        }))
+        .unwrap();
+        tx.blocking_send(DecodeItem::Reconfigure {
+            codec: "h264".into(),
+            width: 160,
+            height: 90,
+        })
+        .unwrap();
+        let mut source = sunna_capture::SyntheticSource::new(160, 90, 30);
+        let mut encoder = sunna_codec::openh264_codec::OpenH264Encoder::new(30, 1_000_000).unwrap();
+        let frame = encoder
+            .encode(&source.next_frame().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(frame.keyframe);
+        tx.blocking_send(DecodeItem::Frame(CompleteFrame {
+            frame_id: 100,
+            capture_ts_us: frame.capture_ts_us,
+            keyframe: frame.keyframe,
+            data: frame.data,
+            assembly_us: 0,
+        }))
+        .unwrap();
+        drop(tx);
+        decoder.join().unwrap();
+        let decoded: Vec<_> = decoded_rx.iter().collect();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!((decoded[0].width, decoded[0].height), (320, 180));
+        assert_eq!((decoded[1].width, decoded[1].height), (160, 90));
+        assert_eq!(counters.decode_errors.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.gap_lost.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn decoder_reconfigure_gates_keyframes_and_resets_gaps() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (events, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let counters = Arc::new(DecodeCounters::default());
+        let (decoded_tx, decoded_rx) = std::sync::mpsc::channel();
+        let decoder = spawn_decoder(
+            make_decoder("raw", 2, 2).unwrap(),
+            rx,
+            events,
+            Arc::clone(&counters),
+            move |frame| {
+                decoded_tx.send(frame).unwrap();
+            },
+        )
+        .unwrap();
+        let frame = |frame_id, keyframe, size| {
+            DecodeItem::Frame(CompleteFrame {
+                frame_id,
+                keyframe,
+                capture_ts_us: sunna_proto::now_us(),
+                data: bytes::Bytes::from(vec![0; size]),
+                assembly_us: 0,
+            })
+        };
+        tx.blocking_send(frame(1, true, 16)).unwrap();
+        tx.blocking_send(DecodeItem::Reconfigure {
+            codec: "raw".into(),
+            width: 4,
+            height: 2,
+        })
+        .unwrap();
+        tx.blocking_send(frame(100, false, 32)).unwrap();
+        tx.blocking_send(frame(101, true, 32)).unwrap();
+        drop(tx);
+        decoder.join().unwrap();
+        let decoded: Vec<_> = decoded_rx.iter().collect();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!((decoded[0].width, decoded[0].height), (2, 2));
+        assert_eq!((decoded[1].width, decoded[1].height), (4, 2));
+        assert_eq!(decoded[1].frame_id, 101);
+        assert_eq!(counters.gap_lost.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.decode_errors.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            counters.skipped_awaiting_keyframe.load(Ordering::Relaxed),
+            1
+        );
     }
 }

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sunna_client::LiveStats;
 use sunna_codec::DecodedFrame;
-use sunna_proto::messages::InputEvent;
+use sunna_proto::messages::{InputEvent, StreamSettings};
 use tokio::sync::mpsc::UnboundedSender;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -27,6 +27,8 @@ use crate::keymap;
 use crate::layer_presenter::LayerPresenter;
 #[cfg(target_os = "macos")]
 use crate::mac_keyboard::KeyboardCapture;
+#[cfg(target_os = "macos")]
+use crate::menu::{self, MenuAction, MenuEvent, MenuState};
 
 /// How much to scale the stream to show it in `area` (both in pixels).
 /// 1:1 when the stream was sized for this screen (a Mac host matches the
@@ -65,7 +67,7 @@ pub struct SharedFrame {
 #[cfg(target_os = "macos")]
 const NOTICE_TIME: Duration = Duration::from_secs(6);
 #[cfg(target_os = "macos")]
-const HOTKEY_HELP: &str = "⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥S stats  ·  ⌃⌥Q disconnect";
+const HOTKEY_HELP: &str = "••• (top left) or ⌃⌥M: menu  ·  ⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥Q disconnect";
 
 #[cfg(target_os = "macos")]
 const ACCESSIBILITY_HELP: &str = "To send ⌘Tab, ⌘Space and other shortcuts to the remote, allow your terminal in System Settings → Privacy & Security → Accessibility, then reconnect  ·  ⌃⌥Q disconnect";
@@ -117,16 +119,32 @@ pub fn create_event_loop() -> anyhow::Result<EventLoop<FrameReady>> {
     Ok(EventLoop::<FrameReady>::with_user_event().build()?)
 }
 
+/// How the viewer changes the stream mid-session (the menu's Video items).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct StreamControl {
+    /// Desired settings, sent to the host as SetStream.
+    pub requests: tokio::sync::watch::Sender<Option<StreamSettings>>,
+    /// The stream size asked for at connect (this screen's), which the
+    /// Resolution percentages scale.
+    pub max_size: Option<(u32, u32)>,
+}
+
 pub fn run_viewer(
     event_loop: EventLoop<FrameReady>,
     shared: Arc<SharedFrame>,
     input: UnboundedSender<InputEvent>,
+    stream: StreamControl,
     title: String,
     width: u32,
     height: u32,
 ) -> anyhow::Result<()> {
     let proxy = event_loop.create_proxy();
     let mut app = ViewerApp {
+        stream,
+        requested: StreamSettings::default(),
+        scale: 100,
+        seen_epoch: 0,
+        seen_stream_error: None,
         proxy,
         notice: None,
         #[cfg(target_os = "macos")]
@@ -144,6 +162,12 @@ pub fn run_viewer(
         stats_visible: std::env::var("SUNNA_STATS").map_or(true, |value| value != "0"),
         stats_updated: Instant::now() - Duration::from_secs(1),
         hotkey_down: None,
+        button_visible: std::env::var("SUNNA_MENU_BUTTON").map_or(true, |value| value != "0"),
+        cursor_pt: (0.0, 0.0),
+        swallow_left_up: false,
+        menu_open: false,
+        capture_after_menu: None,
+        capture_toggled_in_menu: false,
         #[cfg(target_os = "macos")]
         layer: None,
         presented: 0,
@@ -154,6 +178,18 @@ pub fn run_viewer(
 }
 
 struct ViewerApp {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    stream: StreamControl,
+    /// Everything asked for so far: each request carries the whole desired
+    /// state, so quick successive choices can't lose one.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    requested: StreamSettings,
+    /// Resolution as a percentage of `stream.max_size`.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    scale: u8,
+    /// Stream epoch and error last announced in a notice.
+    seen_epoch: u8,
+    seen_stream_error: Option<String>,
     /// Wakes the event loop (the keyboard tap uses it for hotkeys).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     proxy: EventLoopProxy<FrameReady>,
@@ -182,6 +218,20 @@ struct ViewerApp {
     /// A viewer hotkey's key is held (window key path): its key-up is ours
     /// too, not the host's.
     hotkey_down: Option<KeyCode>,
+    /// The floating menu button is shown (the menu's "Hide Menu Button").
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    button_visible: bool,
+    /// Pointer position in points from the window's top-left.
+    cursor_pt: (f64, f64),
+    /// The left press opened the menu: its release isn't the host's.
+    swallow_left_up: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    menu_open: bool,
+    /// Keyboard capture to restore when the menu closes.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    capture_after_menu: Option<bool>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    capture_toggled_in_menu: bool,
     /// Zero-copy presenter; when set, softbuffer isn't used.
     #[cfg(target_os = "macos")]
     layer: Option<LayerPresenter>,
@@ -198,6 +248,7 @@ impl ViewerApp {
             return;
         }
         self.stats_updated = Instant::now();
+        self.stream_changed();
         let text = self
             .stats_visible
             .then(|| stats_text(&self.shared.live.lock().unwrap()));
@@ -244,8 +295,136 @@ impl ViewerApp {
             }
             Hotkey::ToggleCapture => self.toggle_capture(),
             Hotkey::Disconnect => {
-                tracing::info!("disconnect requested (⌃⌥Q)");
+                tracing::info!("disconnect requested");
                 event_loop.exit();
+            }
+            Hotkey::Menu => self.open_menu(),
+        }
+    }
+
+    /// Pop up the in-session menu under the button. While it's open the
+    /// keyboard goes to the menu, never the host: capture is off and keys
+    /// held through the window are released.
+    fn open_menu(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let (Some(layer), Some(window)) = (self.layer.as_ref(), self.window.as_ref()) else {
+                return;
+            };
+            if self.menu_open {
+                return;
+            }
+            self.menu_open = true;
+            let capture = self.capture.as_ref().is_some_and(|capture| capture.enabled());
+            let live = self.shared.live.lock().unwrap().clone();
+            let codec = match live.codec.as_str() {
+                "hevc" => "hevc",
+                "h264" => "h264",
+                "raw" => "raw",
+                _ => "",
+            };
+            let state = MenuState {
+                stats: self.stats_visible,
+                fullscreen: window.fullscreen().is_some(),
+                capture,
+                capture_available: self.capture.is_some(),
+                button_visible: self.button_visible,
+                codec,
+                stream_size: self.stream_size,
+                fast_lane: live.fast_lane,
+                scale: self.scale,
+                bitrate_mbps: self.requested.max_bitrate_kbps.map(|kbps| kbps / 1000),
+                video_available: !codec.is_empty(),
+            };
+            let (view, location) = (layer.view(), layer.menu_location());
+            self.capture_after_menu = Some(capture);
+            if let Some(capture) = &self.capture {
+                capture.set_enabled(false);
+            }
+            self.release_window_keys();
+            menu::pop_up(&self.proxy, view, location, state);
+        }
+    }
+
+    /// Ask the host for `requested`; `stream_changed` reports the outcome.
+    #[cfg(target_os = "macos")]
+    fn request_stream(&mut self) {
+        tracing::info!(settings = ?self.requested, "stream change requested");
+        self.stream.requests.send_replace(Some(self.requested.clone()));
+        self.show_notice("Changing the stream…", NOTICE_TIME);
+    }
+
+    /// Say when the stream changed (or couldn't), once each.
+    fn stream_changed(&mut self) {
+        let live = self.shared.live.lock().unwrap().clone();
+        if live.epoch != self.seen_epoch {
+            self.seen_epoch = live.epoch;
+            let lane = if live.fast_lane { "fast lane on" } else { "fast lane off" };
+            self.show_notice(
+                format!("Now streaming {} {}×{}  ·  {lane}", live.codec.to_uppercase(), live.width, live.height),
+                Duration::from_secs(4),
+            );
+        }
+        if live.last_stream_error.is_some() && live.last_stream_error != self.seen_stream_error {
+            let error = live.last_stream_error.clone().unwrap_or_default();
+            self.show_notice(format!("Couldn't change the stream: {error}"), Duration::from_secs(8));
+        }
+        self.seen_stream_error = live.last_stream_error;
+    }
+
+    #[cfg(target_os = "macos")]
+    fn handle_menu(&mut self, event_loop: &ActiveEventLoop, event: MenuEvent) {
+        match event {
+            MenuEvent::Chose(MenuAction::ToggleStats) => self.apply_hotkey(event_loop, Hotkey::ToggleStats),
+            MenuEvent::Chose(MenuAction::ToggleFullscreen) => {
+                self.apply_hotkey(event_loop, Hotkey::ToggleFullscreen)
+            }
+            MenuEvent::Chose(MenuAction::Disconnect) => self.apply_hotkey(event_loop, Hotkey::Disconnect),
+            MenuEvent::Chose(MenuAction::ToggleCapture) => {
+                if let Some(enabled) = self.capture_after_menu.as_mut() {
+                    *enabled = !*enabled;
+                    self.capture_toggled_in_menu = true;
+                }
+            }
+            MenuEvent::Chose(MenuAction::Codec(codec)) => {
+                self.requested.codec = Some(codec.name().into());
+                self.request_stream();
+            }
+            MenuEvent::Chose(MenuAction::Scale(percent)) => {
+                let Some((width, height)) = self.stream.max_size else { return };
+                self.scale = percent;
+                let scaled = |value: u32| ((value as u64 * percent as u64 / 100) as u32).max(2) & !1;
+                self.requested.max_size = Some((scaled(width), scaled(height)));
+                self.request_stream();
+            }
+            MenuEvent::Chose(MenuAction::BitrateMbps(mbps)) => {
+                self.requested.max_bitrate_kbps = Some(mbps * 1000);
+                self.request_stream();
+            }
+            MenuEvent::Chose(MenuAction::ToggleFastLane) => {
+                let on = self.shared.live.lock().unwrap().fast_lane;
+                self.requested.fast_lane = Some(!on);
+                self.request_stream();
+            }
+            MenuEvent::Chose(MenuAction::HideButton) => {
+                self.button_visible = !self.button_visible;
+                if let Some(layer) = self.layer.as_mut() {
+                    layer.set_button_visible(self.button_visible);
+                }
+                if !self.button_visible {
+                    self.show_notice("Menu button hidden  ·  ⌃⌥M opens the menu", NOTICE_TIME);
+                }
+            }
+            MenuEvent::Closed => {
+                self.menu_open = false;
+                if let (Some(capture), Some(enabled)) = (&self.capture, self.capture_after_menu.take()) {
+                    capture.set_enabled(enabled);
+                }
+                if std::mem::take(&mut self.capture_toggled_in_menu) {
+                    self.capture_changed();
+                } else {
+                    self.release_window_keys();
+                }
             }
         }
     }
@@ -466,6 +645,9 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 tracing::info!("presenting via CALayer (zero-copy IOSurface)");
                 self.layer = Some(layer);
                 self.window = Some(window);
+                if let Some(layer) = self.layer.as_mut() {
+                    layer.set_button_visible(self.button_visible);
+                }
                 self.install_capture();
                 return;
             }
@@ -504,6 +686,10 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
         }
         self.expire_notice();
         #[cfg(target_os = "macos")]
+        for event in menu::take_events() {
+            self.handle_menu(event_loop, event);
+        }
+        #[cfg(target_os = "macos")]
         if self.layer.is_some() {
             // Show immediately rather than waiting for the next redraw. Video
             // first: it retires tiles it already contains; tiles newer than it
@@ -512,6 +698,14 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             if let Some(frame) = frame {
                 match frame.data {
                     sunna_capture::FrameData::Surface(surface) => {
+                        // The host changed the stream's size (Resolution menu).
+                        let size = (frame.width.max(1), frame.height.max(1));
+                        if size != self.stream_size {
+                            self.stream_size = size;
+                            if let (Some(layer), Some(window)) = (self.layer.as_mut(), self.window.as_ref()) {
+                                layer.set_stream_size(window, size);
+                            }
+                        }
                         if let Some(layer) = self.layer.as_mut() {
                             layer.show(surface, frame.capture_ts_us);
                         }
@@ -564,6 +758,15 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             // coordinates; keys → mac virtual keycodes (see keymap.rs).
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(window) = &self.window {
+                    let scale = window.scale_factor();
+                    self.cursor_pt = (position.x / scale, position.y / scale);
+                }
+                #[cfg(target_os = "macos")]
+                if let Some(layer) = self.layer.as_mut() {
+                    let over = layer.button_contains(self.cursor_pt);
+                    layer.set_button_hover(over);
+                }
+                if let Some(window) = &self.window {
                     let size = window.inner_size();
                     if size.width > 0 && size.height > 0 {
                         let (x0, y0, w, h) =
@@ -577,6 +780,20 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 use sunna_proto::messages::MouseButton as Proto;
+                // The menu button's clicks are the viewer's, press and release.
+                if button == winit::event::MouseButton::Left {
+                    if state == ElementState::Released && std::mem::take(&mut self.swallow_left_up) {
+                        return;
+                    }
+                    #[cfg(target_os = "macos")]
+                    if state == ElementState::Pressed
+                        && self.layer.as_ref().is_some_and(|layer| layer.button_contains(self.cursor_pt))
+                    {
+                        self.swallow_left_up = true;
+                        self.open_menu();
+                        return;
+                    }
+                }
                 let button = match button {
                     winit::event::MouseButton::Left => Proto::Left,
                     winit::event::MouseButton::Right => Proto::Right,

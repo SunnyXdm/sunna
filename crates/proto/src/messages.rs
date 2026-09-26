@@ -2,6 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Requested changes; absent fields keep the current value or host default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StreamSettings {
+    /// "hevc", "h264", or "raw".
+    pub codec: Option<String>,
+    /// Largest stream the viewer wants, in physical pixels.
+    pub max_size: Option<(u32, u32)>,
+    pub max_bitrate_kbps: Option<u32>,
+    pub fps: Option<u32>,
+    pub fast_lane: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMessage {
     /// First message from the client after the control stream opens.
@@ -10,10 +22,7 @@ pub enum ControlMessage {
         name: String,
         /// Shared session token; the host refuses clients that don't match.
         token: String,
-        /// Largest stream the viewer can show 1:1, in physical pixels. The
-        /// host scales capture on its GPU to fit, instead of the viewer
-        /// scaling (and blurring) a larger stream.
-        max_size: Option<(u32, u32)>,
+        stream: StreamSettings,
     },
     /// Host refusal (bad token, busy...), sent instead of `HelloAck`.
     Refused { reason: String },
@@ -25,6 +34,24 @@ pub enum ControlMessage {
         height: u32,
         fps: u32,
         codec: String,
+        fast_lane: bool,
+    },
+    SetStream(StreamSettings),
+    StreamChanged {
+        epoch: u8,
+        width: u32,
+        height: u32,
+        fps: u32,
+        codec: String,
+        fast_lane: bool,
+    },
+    SetStreamFailed { reason: String },
+    Probe { token: String },
+    ProbeAck {
+        name: String,
+        version: u16,
+        busy: bool,
+        token_ok: bool,
     },
     /// RTT probe. `t_us` is the sender's clock at send time.
     Ping { seq: u32, t_us: u64 },
@@ -182,7 +209,10 @@ mod tests {
                 version: 0,
                 name: "test".into(),
                 token: "secret".into(),
-                max_size: Some((2304, 1440)),
+                stream: StreamSettings {
+                    max_size: Some((2304, 1440)),
+                    ..Default::default()
+                },
             },
             ControlMessage::Input(InputEvent::Gesture {
                 kind: GestureKind::Swipe,
@@ -196,6 +226,38 @@ mod tests {
                 rotation_delta: 0.0,
             }),
             ControlMessage::Ping { seq: 7, t_us: 123 },
+            ControlMessage::SetStream(StreamSettings {
+                codec: Some("h264".into()),
+                max_size: Some((160, 90)),
+                max_bitrate_kbps: Some(2000),
+                fps: Some(30),
+                fast_lane: Some(false),
+            }),
+            ControlMessage::StreamChanged {
+                epoch: 255,
+                width: 160,
+                height: 90,
+                fps: 30,
+                codec: "h264".into(),
+                fast_lane: true,
+            },
+            ControlMessage::SetStreamFailed { reason: "unsupported codec".into() },
+            ControlMessage::Probe { token: "secret".into() },
+            ControlMessage::ProbeAck {
+                name: "host".into(),
+                version: 3,
+                busy: true,
+                token_ok: true,
+            },
+            ControlMessage::HelloAck {
+                version: 3,
+                name: "host".into(),
+                width: 320,
+                height: 180,
+                fps: 60,
+                codec: "raw".into(),
+                fast_lane: false,
+            },
         ];
         for msg in &messages {
             let bytes = encode(msg).unwrap();

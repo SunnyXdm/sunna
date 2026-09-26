@@ -9,6 +9,8 @@ mod keymap;
 mod layer_presenter;
 #[cfg(target_os = "macos")]
 mod mac_keyboard;
+#[cfg(target_os = "macos")]
+mod menu;
 mod session;
 mod viewer;
 

@@ -120,6 +120,21 @@ pub struct LayerPresenter {
     stats: Option<StatsBar>,
     /// A short notice (bottom), while shown.
     notice: Option<StatsBar>,
+    /// The window's content view (menus pop up in it).
+    view: *mut AnyObject,
+    /// The floating menu button, while shown.
+    button: Option<MenuButton>,
+}
+
+/// Where the menu button sits: top-left, in points.
+const BUTTON_ORIGIN: (f64, f64) = (14.0, 14.0);
+const BUTTON_SIZE: (f64, f64) = (36.0, 24.0);
+const BUTTON_IDLE_OPACITY: f32 = 0.35;
+const BUTTON_HOVER_OPACITY: f32 = 0.95;
+
+struct MenuButton {
+    background: Retained<AnyObject>,
+    hovered: bool,
 }
 
 /// A rounded translucent bar with one line of text, over the video.
@@ -190,6 +205,8 @@ impl LayerPresenter {
             placed: 0,
             stats: None,
             notice: None,
+            view,
+            button: None,
         };
         let size = window.inner_size();
         presenter.fit(window, (size.width, size.height));
@@ -206,6 +223,7 @@ impl LayerPresenter {
             self.clear_overlays();
             self.window_px = window_px;
         }
+        self.place_button();
         let stream = (self.stream_size.0 as f64, self.stream_size.1 as f64);
         let fits = stream_scale(stream, (window_px.0 as f64, window_px.1 as f64)) == 1.0;
         if self.one_to_one == Some(fits) {
@@ -225,6 +243,122 @@ impl LayerPresenter {
             window = format!("{}x{}", window_px.0, window_px.1),
             "viewer scaling"
         );
+    }
+
+    /// The host changed the stream's size: re-fit, and drop tiles placed
+    /// for the old one.
+    pub fn set_stream_size(&mut self, window: &Window, size: (u32, u32)) {
+        self.stream_size = size;
+        self.one_to_one = None;
+        self.clear_overlays();
+        let window_px = window.inner_size();
+        self.fit(window, (window_px.width, window_px.height));
+    }
+
+    /// The window's content view, for popping up menus.
+    pub fn view(&self) -> *mut AnyObject {
+        self.view
+    }
+
+    /// Show or hide the floating menu button.
+    pub fn set_button_visible(&mut self, visible: bool) {
+        if visible == self.button.is_some() {
+            return;
+        }
+        unsafe {
+            let _: () = msg_send![class!(CATransaction), begin];
+            let _: () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
+            match self.button.take() {
+                Some(button) => {
+                    let _: () = msg_send![&*button.background, removeFromSuperlayer];
+                }
+                None => {
+                    let background: Retained<AnyObject> = msg_send![class!(CALayer), new];
+                    let color = CGColorCreateSRGB(0.0, 0.0, 0.0, 0.6);
+                    let _: () = msg_send![&*background, setBackgroundColor: color as *mut AnyObject];
+                    CGColorRelease(color);
+                    let _: () = msg_send![&*background, setCornerRadius: 7.0f64];
+                    let _: () = msg_send![&*background, setZPosition: 1001.0f64];
+                    let _: () = msg_send![&*background, setOpacity: BUTTON_IDLE_OPACITY];
+                    let text: Retained<AnyObject> = msg_send![class!(CATextLayer), new];
+                    let dots = ns_string("•••");
+                    let _: () = msg_send![&*text, setString: &*dots];
+                    let _: () = msg_send![&*text, setFontSize: 13.0f64];
+                    let alignment = ns_string("center");
+                    let _: () = msg_send![&*text, setAlignmentMode: &*alignment];
+                    let color = CGColorCreateSRGB(1.0, 1.0, 1.0, 1.0);
+                    let _: () = msg_send![&*text, setForegroundColor: color as *mut AnyObject];
+                    CGColorRelease(color);
+                    let _: () = msg_send![&*text, setContentsScale: self.backing_scale];
+                    let inner = CGRect {
+                        origin: CGPoint { x: 0.0, y: 3.0 },
+                        size: CGSize { width: BUTTON_SIZE.0, height: BUTTON_SIZE.1 - 6.0 },
+                    };
+                    let _: () = msg_send![&*text, setFrame: inner];
+                    let _: () = msg_send![&*background, addSublayer: &*text];
+                    let _: () = msg_send![&*self.layer, addSublayer: &*background];
+                    self.button = Some(MenuButton { background, hovered: false });
+                }
+            }
+            let _: () = msg_send![class!(CATransaction), commit];
+        }
+        self.place_button();
+    }
+
+    /// Keep the button at the top-left corner of the layer.
+    fn place_button(&mut self) {
+        let Some(button) = &self.button else { return };
+        unsafe {
+            let bounds: CGRect = msg_send![&*self.layer, bounds];
+            let flipped: bool = msg_send![&*self.layer, isGeometryFlipped];
+            let y = if flipped {
+                BUTTON_ORIGIN.1
+            } else {
+                bounds.size.height - BUTTON_ORIGIN.1 - BUTTON_SIZE.1
+            };
+            let frame = CGRect {
+                origin: CGPoint { x: BUTTON_ORIGIN.0, y },
+                size: CGSize { width: BUTTON_SIZE.0, height: BUTTON_SIZE.1 },
+            };
+            let _: () = msg_send![class!(CATransaction), begin];
+            let _: () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
+            let _: () = msg_send![&*button.background, setFrame: frame];
+            let _: () = msg_send![class!(CATransaction), commit];
+        }
+    }
+
+    /// Whether a window position (points from the top-left) is on the button.
+    pub fn button_contains(&self, point: (f64, f64)) -> bool {
+        self.button.is_some()
+            && (BUTTON_ORIGIN.0..BUTTON_ORIGIN.0 + BUTTON_SIZE.0).contains(&point.0)
+            && (BUTTON_ORIGIN.1..BUTTON_ORIGIN.1 + BUTTON_SIZE.1).contains(&point.1)
+    }
+
+    /// Brighten the button while the pointer is over it.
+    pub fn set_button_hover(&mut self, hovered: bool) {
+        let Some(button) = self.button.as_mut() else { return };
+        if button.hovered == hovered {
+            return;
+        }
+        button.hovered = hovered;
+        let opacity = if hovered { BUTTON_HOVER_OPACITY } else { BUTTON_IDLE_OPACITY };
+        unsafe {
+            let _: () = msg_send![&*button.background, setOpacity: opacity];
+        }
+    }
+
+    /// Where the menu opens: just under the button, in the view's own
+    /// coordinates (AppKit views aren't flipped unless they say so).
+    pub fn menu_location(&self) -> (f64, f64) {
+        let below = BUTTON_ORIGIN.1 + BUTTON_SIZE.1 + 4.0;
+        unsafe {
+            let flipped: bool = msg_send![self.view, isFlipped];
+            if flipped {
+                return (BUTTON_ORIGIN.0, below);
+            }
+            let bounds: CGRect = msg_send![self.view, bounds];
+            (BUTTON_ORIGIN.0, bounds.size.height - below)
+        }
     }
 
     /// Show `text` in the stats bar at the top centre, or hide the bar.

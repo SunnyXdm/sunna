@@ -565,7 +565,12 @@ pub struct ScreenSource {
 unsafe impl Send for ScreenSource {}
 
 impl ScreenSource {
-    pub fn new(width: Option<u32>, height: Option<u32>, fps: u32) -> anyhow::Result<Self> {
+    pub fn new(
+        width: Option<u32>,
+        height: Option<u32>,
+        fps: u32,
+        fast_lane: bool,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             ensure_screen_capture_access(),
             "Screen Recording permission is not granted. macOS should have shown a prompt; \
@@ -584,7 +589,7 @@ impl ScreenSource {
         // The fast lane sends exact RGB tiles, so it needs BGRA capture
         // (encode time is the same either way; dogfood build 5).
         let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1")
-            || crate::fast_lane_enabled();
+            || fast_lane;
         let (pixel_format, format) = if bgra {
             (PIXEL_FORMAT_BGRA, PixelFormat::Bgra8)
         } else {

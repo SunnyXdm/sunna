@@ -108,8 +108,7 @@ pub struct VideoFrame {
 /// from a capture thread.
 pub type TileSink = std::sync::Arc<dyn Fn(sunna_proto::tiles::TileBatch) + Send + Sync>;
 
-/// Whether the fast lane (lossless tiles for small changes) is enabled:
-/// `SUNNA_FAST_LANE=1` on the host.
+/// Daemon default only; each session negotiates its own fast lane setting.
 pub fn fast_lane_enabled() -> bool {
     std::env::var("SUNNA_FAST_LANE").is_ok_and(|value| value == "1")
 }

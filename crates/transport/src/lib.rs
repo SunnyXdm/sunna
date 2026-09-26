@@ -281,6 +281,13 @@ impl ControlChannel {
         self.receiver.recv().await
     }
 
+    /// Deliver a final reply before dropping the last connection handle.
+    pub async fn finish(mut self) -> Result<()> {
+        self.sender.send.finish()?;
+        let _ = self.sender.send.stopped().await;
+        Ok(())
+    }
+
     /// Split into halves so a dedicated task can own the receiver.
     pub fn into_split(self) -> (ControlSender, ControlReceiver) {
         (self.sender, self.receiver)
@@ -351,6 +358,7 @@ mod tests {
                     height: 360,
                     fps: 60,
                     codec: "raw".into(),
+                    fast_lane: false,
                 })
                 .await
                 .unwrap();
@@ -369,7 +377,7 @@ mod tests {
                 version: sunna_proto::PROTOCOL_VERSION,
                 name: "test-client".into(),
                 token: String::new(),
-                max_size: None,
+                stream: messages::StreamSettings::default(),
             })
             .await
             .unwrap();
