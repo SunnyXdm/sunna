@@ -209,10 +209,14 @@ fn spawn_decoder(
 ///
 /// `input` carries local input events to forward to the host; drop the sender
 /// (or pass a channel that never sends) for view-only sessions.
+///
+/// `on_tiles` receives fast-lane tile batches (small changed regions sent
+/// ahead of the video; see `sunna_proto::tiles`), from a network task.
 pub async fn run_client(
     connection: Connection,
     options: ClientOptions,
     on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send + 'static,
+    on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
     mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
@@ -272,6 +276,11 @@ pub async fn run_client(
         }
     });
 
+    // Fast-lane tiles arrive on a unidirectional stream the host opens only
+    // when enabled; (age, bytes) per batch feed the window stats.
+    let (tile_stat_tx, mut tile_stats) = tokio::sync::mpsc::unbounded_channel::<(i64, usize)>();
+    let tile_reader = tokio::spawn(read_tiles(connection.clone(), on_tiles, tile_stat_tx));
+
     let counters = Arc::new(DecodeCounters::default());
     let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<CompleteFrame>(DECODE_QUEUE);
     let (event_tx, mut decode_events) = tokio::sync::mpsc::unbounded_channel();
@@ -306,6 +315,9 @@ pub async fn run_client(
     let mut window_recovered_base: u64 = 0;
     // Network stall diagnostics, independent of clock sync: the longest
     // silence between datagrams, and frames that arrived very late.
+    let mut window_tile_batches: u32 = 0;
+    let mut window_tile_bytes: usize = 0;
+    let mut window_tile_ages: Vec<u64> = Vec::new();
     let mut last_datagram_at: Option<Instant> = None;
     let mut window_max_gap_us: u64 = 0;
     let mut window_gaps_over_50ms: u32 = 0;
@@ -426,6 +438,13 @@ pub async fn run_client(
                     None => {}
                 }
             }
+            stat = tile_stats.recv() => {
+                if let Some((age_us, bytes)) = stat {
+                    window_tile_batches += 1;
+                    window_tile_bytes += bytes;
+                    window_tile_ages.push((age_us + clock_offset_us.unwrap_or(0)).max(0) as u64);
+                }
+            }
             message = messages.recv() => {
                 match message {
                     Some(ControlMessage::Pong { t_us, peer_t_us, .. }) => {
@@ -485,8 +504,15 @@ pub async fn run_client(
                     max_gap_ms = window_max_gap_us / 1000,
                     gaps_over_50ms = window_gaps_over_50ms,
                     slow_frames = window_slow_frames,
+                    tile_batches = window_tile_batches,
+                    tile_kb = window_tile_bytes / 1024,
+                    tile_latency = %Percentiles::from_samples(std::mem::take(&mut window_tile_ages))
+                        .map(|w| w.to_string())
+                        .unwrap_or_else(|| "-".into()),
                     "window"
                 );
+                window_tile_batches = 0;
+                window_tile_bytes = 0;
                 window_frames = 0;
                 window_bytes = 0;
                 window_max_gap_us = 0;
@@ -502,6 +528,7 @@ pub async fn run_client(
     }
 
     reader.abort();
+    tile_reader.abort();
     drop(frame_tx);
     let _ = decode_thread.join();
     Ok(BenchReport {
@@ -518,4 +545,45 @@ pub async fn run_client(
         rtt: Percentiles::from_samples(rtt_samples),
         clock_offset_us,
     })
+}
+
+/// Read fast-lane tile batches until the stream or connection ends.
+async fn read_tiles(
+    connection: Connection,
+    mut on_tiles: impl FnMut(sunna_proto::tiles::TileBatch) + Send + 'static,
+    stats: tokio::sync::mpsc::UnboundedSender<(i64, usize)>,
+) {
+    use sunna_proto::tiles;
+    let Ok(mut stream) = connection.accept_uni().await else {
+        return;
+    };
+    let mut magic = [0u8; 4];
+    if stream.read_exact(&mut magic).await.is_err() || magic != tiles::TILE_STREAM_MAGIC {
+        tracing::debug!("ignoring an unknown unidirectional stream");
+        return;
+    }
+    tracing::info!("fast lane: receiving tiles");
+    loop {
+        let mut len = [0u8; 4];
+        if stream.read_exact(&mut len).await.is_err() {
+            return;
+        }
+        let len = u32::from_be_bytes(len) as usize;
+        if len > tiles::MAX_BATCH_BYTES {
+            tracing::warn!(len, "oversized tile batch; closing the fast lane");
+            return;
+        }
+        let mut body = vec![0u8; len];
+        if stream.read_exact(&mut body).await.is_err() {
+            return;
+        }
+        match tiles::decode(&body) {
+            Ok(batch) => {
+                let age_us = sunna_proto::now_us() as i64 - batch.capture_ts_us as i64;
+                let _ = stats.send((age_us, len + 4));
+                on_tiles(batch);
+            }
+            Err(error) => tracing::debug!(%error, "bad tile batch"),
+        }
+    }
 }

@@ -33,6 +33,8 @@ pub fn windowed() -> bool {
 #[derive(Default)]
 pub struct SharedFrame {
     pub latest: Mutex<Option<DecodedFrame>>,
+    /// Fast-lane tile batches waiting to be drawn (in arrival order).
+    pub tiles: Mutex<Vec<sunna_proto::tiles::TileBatch>>,
 }
 
 /// Wake signal sent by the network thread after storing a frame.
@@ -275,19 +277,27 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: FrameReady) {
         #[cfg(target_os = "macos")]
         if self.layer.is_some() {
-            // Show immediately rather than waiting for the next redraw.
+            // Show immediately rather than waiting for the next redraw. Video
+            // first: it retires tiles it already contains; tiles newer than it
+            // then go on top.
             let frame = self.shared.latest.lock().unwrap().take();
             if let Some(frame) = frame {
                 match frame.data {
                     sunna_capture::FrameData::Surface(surface) => {
                         if let Some(layer) = self.layer.as_mut() {
-                            layer.show(surface);
+                            layer.show(surface, frame.capture_ts_us);
                         }
                         self.note_presented();
                     }
                     sunna_capture::FrameData::Cpu(_) => {
                         tracing::warn!("CPU frame with the layer presenter; dropped");
                     }
+                }
+            }
+            let batches = std::mem::take(&mut *self.shared.tiles.lock().unwrap());
+            if let (Some(layer), Some(window)) = (self.layer.as_mut(), self.window.as_ref()) {
+                for batch in batches {
+                    layer.add_tiles(window, batch);
                 }
             }
             return;

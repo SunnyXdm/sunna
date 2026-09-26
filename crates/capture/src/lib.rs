@@ -99,11 +99,24 @@ pub struct VideoFrame {
 /// Blocking frame producer. The host pipeline runs it on a dedicated thread;
 /// implementations must pace themselves (event-driven on the compositor where
 /// the platform allows, timer-paced for the synthetic source).
+/// Receives fast-lane tile batches (see `sunna_proto::tiles`), possibly
+/// from a capture thread.
+pub type TileSink = std::sync::Arc<dyn Fn(sunna_proto::tiles::TileBatch) + Send + Sync>;
+
+/// Whether the fast lane (lossless tiles for small changes) is enabled:
+/// `SUNNA_FAST_LANE=1` on the host.
+pub fn fast_lane_enabled() -> bool {
+    std::env::var("SUNNA_FAST_LANE").is_ok_and(|value| value == "1")
+}
+
 pub trait FrameSource: Send {
     fn next_frame(&mut self) -> anyhow::Result<VideoFrame>;
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn fps(&self) -> u32;
+    /// Start delivering fast-lane tiles for small changes to `sink`.
+    /// Sources that can't report changed regions ignore this.
+    fn set_tile_sink(&mut self, _sink: TileSink) {}
 }
 
 /// Timer-paced synthetic test pattern (moving vertical bar over a gradient).
@@ -115,6 +128,7 @@ pub struct SyntheticSource {
     frame_id: u64,
     period: Duration,
     next_deadline: Instant,
+    tiles: Option<TileSink>,
 }
 
 impl SyntheticSource {
@@ -127,6 +141,7 @@ impl SyntheticSource {
             frame_id: 0,
             period: Duration::from_secs_f64(1.0 / fps as f64),
             next_deadline: Instant::now(),
+            tiles: None,
         }
     }
 }
@@ -164,6 +179,31 @@ impl FrameSource for SyntheticSource {
             }
         }
 
+        // Fast lane test path: the moving bar's column as a lossless tile, so
+        // the tile stream can be exercised without a real display.
+        if let Some(sink) = &self.tiles {
+            let tile_w = 8.min(width - bar);
+            let mut pixels = Vec::with_capacity(tile_w * height * 4);
+            for y in 0..height {
+                let row = y * width * 4 + bar * 4;
+                pixels.extend_from_slice(&data[row..row + tile_w * 4]);
+            }
+            if let Ok(qoi) = qoi::encode_to_vec(&pixels, tile_w as u32, height as u32) {
+                sink(sunna_proto::tiles::TileBatch {
+                    capture_ts_us,
+                    stream_width: self.width,
+                    stream_height: self.height,
+                    tiles: vec![sunna_proto::tiles::Tile {
+                        x: bar as u32,
+                        y: 0,
+                        width: tile_w as u32,
+                        height: height as u32,
+                        qoi,
+                    }],
+                });
+            }
+        }
+
         let frame = VideoFrame {
             frame_id: self.frame_id,
             width: self.width,
@@ -186,6 +226,10 @@ impl FrameSource for SyntheticSource {
 
     fn fps(&self) -> u32 {
         self.fps
+    }
+
+    fn set_tile_sink(&mut self, sink: TileSink) {
+        self.tiles = Some(sink);
     }
 }
 

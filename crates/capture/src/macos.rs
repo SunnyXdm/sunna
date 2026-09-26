@@ -48,10 +48,31 @@ const IDLE_REDELIVERY: Duration = Duration::from_millis(100);
 
 type CGDisplayModeRef = *mut c_void;
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct CGRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// kCGDisplayStreamUpdateReducedDirtyRects: changed regions, merged.
+const UPDATE_REDUCED_DIRTY_RECTS: i32 = 3;
+/// Fast lane only for small changes: at most this share of the frame and
+/// this many rectangles. Anything bigger is left to the video encoder.
+const TILE_MAX_AREA_FRACTION: f64 = 0.04;
+const TILE_MAX_RECTS: usize = 32;
+
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+    fn CGDisplayStreamUpdateGetRects(
+        update: *mut c_void,
+        rect_type: i32,
+        rect_count: *mut usize,
+    ) -> *const CGRect;
     fn CGDisplayIsBuiltin(display: u32) -> u32;
     fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGDisplayPixelsHigh(display: u32) -> usize;
@@ -413,6 +434,7 @@ impl std::fmt::Debug for SurfaceFrame {
 struct Latest {
     frame: Mutex<Option<VideoFrame>>,
     ready: Condvar,
+    tiles: Mutex<Option<crate::TileSink>>,
 }
 
 /// Captures the main display. Frames arrive on a dispatch queue when the
@@ -453,7 +475,10 @@ impl ScreenSource {
         // VideoToolbox skips its own RGB→YUV pass (encode was ~20 ms/frame at
         // 2846x1778 on an M1 with BGRA input). SUNNA_CAPTURE_BGRA=1 restores
         // BGRA for A/B comparison.
-        let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1");
+        // The fast lane sends exact RGB tiles, so it needs BGRA capture
+        // (encode time is the same either way; dogfood build 5).
+        let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1")
+            || crate::fast_lane_enabled();
         let (pixel_format, format) = if bgra {
             (PIXEL_FORMAT_BGRA, PixelFormat::Bgra8)
         } else {
@@ -464,11 +489,20 @@ impl ScreenSource {
         let handler = {
             let latest = Arc::clone(&latest);
             RcBlock::new(
-                move |status: i32, _display_time: u64, surface: *mut c_void, _update: *mut c_void| {
+                move |status: i32, _display_time: u64, surface: *mut c_void, update: *mut c_void| {
                     if status != FRAME_STATUS_COMPLETE || surface.is_null() {
                         return;
                     }
                     if let Some(frame) = hold_surface(surface, format) {
+                        let sink = latest.tiles.lock().unwrap().clone();
+                        if let (Some(sink), PixelFormat::Bgra8, false) =
+                            (sink, format, update.is_null())
+                        {
+                            if let Some(batch) = extract_tiles(surface, update, frame.capture_ts_us)
+                            {
+                                sink(batch);
+                            }
+                        }
                         *latest.frame.lock().unwrap() = Some(frame);
                         latest.ready.notify_one();
                     }
@@ -559,6 +593,83 @@ impl ScreenSource {
     }
 }
 
+/// Fast lane: if this capture changed only a small part of the screen, copy
+/// those rectangles out of the (BGRA) surface and QOI-compress them.
+fn extract_tiles(
+    surface: IOSurfaceRef,
+    update: *mut c_void,
+    capture_ts_us: u64,
+) -> Option<sunna_proto::tiles::TileBatch> {
+    let (width, height) = unsafe { (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface)) };
+    let mut count = 0usize;
+    let rects = unsafe { CGDisplayStreamUpdateGetRects(update, UPDATE_REDUCED_DIRTY_RECTS, &mut count) };
+    if rects.is_null() || count == 0 || count > TILE_MAX_RECTS {
+        return None;
+    }
+    let rects = unsafe { std::slice::from_raw_parts(rects, count) };
+    // Update rects are in display points (as in Chromium's CGDisplayStream
+    // capturer); map them onto the (possibly scaled) output pixels.
+    let (points_w, points_h) = main_display_size();
+    let scale_x = width as f64 / points_w.max(1) as f64;
+    let scale_y = height as f64 / points_h.max(1) as f64;
+    let mut pixel_rects = Vec::with_capacity(count);
+    let mut area = 0usize;
+    for rect in rects {
+        // One pixel of margin so edge antialiasing is included.
+        let x0 = ((rect.x * scale_x).floor() as i64 - 1).clamp(0, width as i64) as usize;
+        let y0 = ((rect.y * scale_y).floor() as i64 - 1).clamp(0, height as i64) as usize;
+        let x1 = (((rect.x + rect.width) * scale_x).ceil() as i64 + 1).clamp(0, width as i64) as usize;
+        let y1 = (((rect.y + rect.height) * scale_y).ceil() as i64 + 1).clamp(0, height as i64) as usize;
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        area += (x1 - x0) * (y1 - y0);
+        pixel_rects.push((x0, y0, x1 - x0, y1 - y0));
+    }
+    if pixel_rects.is_empty()
+        || area as f64 > (width * height) as f64 * TILE_MAX_AREA_FRACTION
+    {
+        return None;
+    }
+    let mut tiles = Vec::with_capacity(pixel_rects.len());
+    unsafe {
+        if IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
+            return None;
+        }
+        let stride = IOSurfaceGetBytesPerRow(surface);
+        let base = IOSurfaceGetBaseAddress(surface) as *const u8;
+        if !base.is_null() {
+            for &(x, y, w, h) in &pixel_rects {
+                let mut pixels = Vec::with_capacity(w * h * 4);
+                for row in y..y + h {
+                    let start = base.add(row * stride + x * 4);
+                    pixels.extend_from_slice(std::slice::from_raw_parts(start, w * 4));
+                }
+                // Opaque: the capture's alpha byte isn't meaningful.
+                for alpha in pixels.iter_mut().skip(3).step_by(4) {
+                    *alpha = 255;
+                }
+                if let Ok(qoi) = qoi::encode_to_vec(&pixels, w as u32, h as u32) {
+                    tiles.push(sunna_proto::tiles::Tile {
+                        x: x as u32,
+                        y: y as u32,
+                        width: w as u32,
+                        height: h as u32,
+                        qoi,
+                    });
+                }
+            }
+        }
+        IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
+    }
+    (!tiles.is_empty()).then(|| sunna_proto::tiles::TileBatch {
+        capture_ts_us,
+        stream_width: width as u32,
+        stream_height: height as u32,
+        tiles,
+    })
+}
+
 /// Wrap a stream surface as a frame without touching its pixels.
 fn hold_surface(surface: IOSurfaceRef, format: PixelFormat) -> Option<VideoFrame> {
     // Stamp before anything else so the timestamp is as close to the
@@ -576,6 +687,10 @@ fn hold_surface(surface: IOSurfaceRef, format: PixelFormat) -> Option<VideoFrame
 }
 
 impl FrameSource for ScreenSource {
+    fn set_tile_sink(&mut self, sink: crate::TileSink) {
+        *self.latest.tiles.lock().unwrap() = Some(sink);
+    }
+
     fn next_frame(&mut self) -> anyhow::Result<VideoFrame> {
         let interval = IDLE_REDELIVERY.max(Duration::from_secs_f64(1.0 / self.fps as f64));
         let mut guard = self.latest.frame.lock().unwrap();

@@ -1577,6 +1577,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qoi"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2180,6 +2189,7 @@ dependencies = [
  "bytes",
  "core-foundation 0.10.1",
  "core-foundation-sys",
+ "qoi",
  "sunna-proto",
  "tracing",
 ]
@@ -2191,6 +2201,7 @@ dependencies = [
  "anyhow",
  "clap",
  "objc2 0.6.4",
+ "qoi",
  "softbuffer",
  "sunna-capture",
  "sunna-client",

@@ -126,7 +126,7 @@ async fn serve(
     // Build the pipeline before acknowledging so a failure reaches the
     // client as a refusal instead of a silent stream.
     let pipeline = new_source(width, height).and_then(|source| Ok((source, new_encoder(width, height)?)));
-    let (source, encoder) = match pipeline {
+    let (mut source, encoder) = match pipeline {
         Ok(pipeline) => pipeline,
         Err(error) => {
             let _ = control
@@ -145,6 +145,17 @@ async fn serve(
             codec: config.codec.clone(),
         })
         .await?;
+
+    let tile_writer = if sunna_capture::fast_lane_enabled() {
+        let (tiles_tx, tiles_rx) = tokio::sync::mpsc::unbounded_channel();
+        source.set_tile_sink(Arc::new(move |batch| {
+            let _ = tiles_tx.send(batch);
+        }));
+        tracing::info!("fast lane enabled: small changes go out as lossless tiles");
+        Some(tokio::spawn(tile_writer(connection.clone(), tiles_rx)))
+    } else {
+        None
+    };
 
     let stop = Arc::new(AtomicBool::new(false));
     let min_bitrate_bps = min_bitrate(config.max_bitrate_bps);
@@ -185,7 +196,61 @@ async fn serve(
 
     stop.store(true, Ordering::Relaxed);
     let _ = media_thread.join();
+    if let Some(writer) = tile_writer {
+        writer.abort();
+    }
     result
+}
+
+/// Sends fast-lane tile batches on their own reliable stream, in capture
+/// order, and logs per-second totals.
+async fn tile_writer(
+    connection: Connection,
+    mut batches: tokio::sync::mpsc::UnboundedReceiver<sunna_proto::tiles::TileBatch>,
+) {
+    let mut stream = match connection.open_uni().await {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, "couldn't open the tile stream; fast lane off");
+            return;
+        }
+    };
+    if stream.write_all(&sunna_proto::tiles::TILE_STREAM_MAGIC).await.is_err() {
+        return;
+    }
+    let mut report = tokio::time::interval(Duration::from_secs(1));
+    let (mut batch_count, mut tile_count, mut bytes) = (0u32, 0u32, 0usize);
+    loop {
+        tokio::select! {
+            batch = batches.recv() => {
+                let Some(batch) = batch else { return };
+                let Ok(encoded) = sunna_proto::tiles::encode(&batch) else { continue };
+                let mut framed = Vec::with_capacity(4 + encoded.len());
+                framed.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                framed.extend_from_slice(&encoded);
+                if let Err(error) = stream.write_all(&framed).await {
+                    tracing::debug!(%error, "tile stream closed");
+                    return;
+                }
+                batch_count += 1;
+                tile_count += batch.tiles.len() as u32;
+                bytes += framed.len();
+            }
+            _ = report.tick() => {
+                if batch_count > 0 {
+                    tracing::info!(
+                        batches = batch_count,
+                        tiles = tile_count,
+                        kb = bytes / 1024,
+                        "fast lane window"
+                    );
+                }
+                batch_count = 0;
+                tile_count = 0;
+                bytes = 0;
+            }
+        }
+    }
 }
 
 /// Bitrate floor: below ~1/8 of the ceiling (and 3 Mbps) a desktop stream

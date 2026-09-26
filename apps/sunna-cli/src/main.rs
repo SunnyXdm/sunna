@@ -154,6 +154,8 @@ fn view(addr: SocketAddr, server_name: String, token: String) -> anyhow::Result<
     let connection = client.connection.clone();
 
     let network_shared = Arc::clone(&shared);
+    let tile_shared = Arc::clone(&shared);
+    let tile_proxy = event_loop.create_proxy();
     let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(String, u32, u32)>();
     std::thread::spawn(move || {
@@ -175,6 +177,10 @@ fn view(addr: SocketAddr, server_name: String, token: String) -> anyhow::Result<
                 }
                 *network_shared.latest.lock().unwrap() = Some(frame);
                 let _ = proxy.send_event(viewer::FrameReady);
+            },
+            move |batch| {
+                tile_shared.tiles.lock().unwrap().push(batch);
+                let _ = tile_proxy.send_event(viewer::FrameReady);
             },
             input_rx,
         ));
@@ -223,7 +229,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 max_size: None,
                 duration: seconds.map(Duration::from_secs),
             };
-            let report = run_client(client.connection, options, |_| {}, input_rx).await?;
+            let report = run_client(client.connection, options, |_| {}, |_| {}, input_rx).await?;
             println!("{report}");
         }
         Command::Bench {
@@ -268,7 +274,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 max_size: None,
                 duration: Some(Duration::from_secs(seconds)),
             };
-            let report = run_client(client.connection, options, |_| {}, input_rx).await?;
+            let report = run_client(client.connection, options, |_| {}, |_| {}, input_rx).await?;
             host_task.abort();
             println!("{report}");
         }

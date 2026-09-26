@@ -6,6 +6,7 @@
 pub mod media;
 pub mod messages;
 pub mod stats;
+pub mod tiles;
 
 /// ALPN identifier for the Sunna protocol.
 pub const ALPN: &[u8] = b"sunna/0";

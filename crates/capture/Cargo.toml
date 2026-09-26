@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
+qoi.workspace = true
 sunna-proto.workspace = true
 tracing.workspace = true
 
