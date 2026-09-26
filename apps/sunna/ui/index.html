@@ -8,12 +8,12 @@
   <script type="module" src="main.js"></script>
 </head>
 <body>
-  <!-- Icons (most after Feather, MIT) -->
+  <!-- Icons (the interface ones after Feather, MIT) -->
   <svg class="sprite" aria-hidden="true">
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
-    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M17 7 7 17M7 7l10 10"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M15 9V5.5A2.5 2.5 0 0 0 12.5 3h-7A2.5 2.5 0 0 0 3 5.5v7A2.5 2.5 0 0 0 5.5 15H9"/></symbol>
@@ -23,72 +23,72 @@
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6M19 6l-.9 13.1A2 2 0 0 1 16.1 21H7.9a2 2 0 0 1-2-1.9L5 6"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
-    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v5M12 16.5h.01"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 16.5v-9M8 11l4-4 4 4"/></symbol>
     <symbol id="i-dots" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="5" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="5" cy="19" r="2" opacity=".35"/><circle cx="12" cy="19" r="2"/><circle cx="19" cy="19" r="2" opacity=".35"/></g></symbol>
-    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8.5 20.5h7M12 16.5v4"/></symbol>
     <symbol id="i-laptop" viewBox="0 0 24 24"><path d="M4.5 16V6.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2V16M2 19.5h20"/></symbol>
-    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="7" rx="2"/><rect x="3" y="13.5" width="18" height="7" rx="2"/><path d="M7 7h.01M7 17h.01"/></symbol>
-    <symbol id="i-power" viewBox="0 0 24 24"><path d="M18.4 6.6a9 9 0 1 1-12.8 0M12 2.5V12"/></symbol>
+
+    <!-- OS marks: our own drawings, not the vendors' logos. -->
+    <!-- macOS: the Command key symbol (a public symbol, not Apple's logo). -->
+    <symbol id="os-command" viewBox="0 0 24 24"><path d="M9 6v12a3 3 0 1 1-3-3h12a3 3 0 1 1-3 3V6a3 3 0 1 1 3 3H6a3 3 0 1 1 3-3z"/></symbol>
+    <!-- Windows: a plain window, not the four-pane logo. -->
+    <symbol id="os-window" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M3 9.5h18"/></symbol>
+    <!-- Anything else: a screen. -->
+    <symbol id="os-screen" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8.5 20.5h7M12 16.5v4"/></symbol>
+    <!-- Linux: a penguin after Tux by Larry Ewing (lewing@isc.tamu.edu),
+         who drew him with The GIMP. -->
+    <symbol id="os-tux" viewBox="0 0 24 24">
+      <path d="M12 1.9c-3 0-4.8 2.4-4.8 5.5 0 1.6-.5 2.6-1.4 3.9-1.4 2-2.4 3.9-2.4 6.1 0 2.8 2.9 4.8 8.6 4.8s8.6-2 8.6-4.8c0-2.2-1-4.1-2.4-6.1-.9-1.3-1.4-2.3-1.4-3.9 0-3.1-1.8-5.5-4.8-5.5Z" fill="#15161a" stroke="#ffffff" stroke-opacity=".32" stroke-width=".6"/>
+      <path d="M12 10.1c-2.7 0-4.5 2.7-4.5 5.8 0 3 1.8 5 4.5 5s4.5-2 4.5-5c0-3.1-1.8-5.8-4.5-5.8Z" fill="#f4f1ea" stroke="none"/>
+      <ellipse cx="10.3" cy="6.5" rx="1.35" ry="1.7" fill="#f4f1ea" stroke="none"/>
+      <ellipse cx="13.7" cy="6.5" rx="1.35" ry="1.7" fill="#f4f1ea" stroke="none"/>
+      <circle cx="10.65" cy="6.85" r=".7" fill="#15161a" stroke="none"/>
+      <circle cx="13.35" cy="6.85" r=".7" fill="#15161a" stroke="none"/>
+      <path d="M9.6 9.1c.7-1 1.5-1.5 2.4-1.5s1.7.5 2.4 1.5c-.7.9-1.5 1.4-2.4 1.4s-1.7-.5-2.4-1.4Z" fill="#f6b21b" stroke="none"/>
+      <path d="M4.9 20.9c0-1.2 1.3-2 2.9-2 1.5 0 2.7.9 2.7 2s-1.2 1.7-2.8 1.7-2.8-.5-2.8-1.7ZM19.1 20.9c0-1.2-1.3-2-2.9-2-1.5 0-2.7.9-2.7 2s1.2 1.7 2.8 1.7 2.8-.5 2.8-1.7Z" fill="#f6b21b" stroke="none"/>
+    </symbol>
   </svg>
 
-  <!-- The sky: follows the local time of day (sky.js). -->
-  <div class="sky" aria-hidden="true">
-    <div class="sky-base"></div>
-    <div class="stars" id="stars"></div>
-    <div class="haze"></div>
-    <div class="sun"></div>
-    <div class="grain"></div>
-  </div>
-
   <div class="app" id="app">
-    <header class="topbar" data-tauri-drag-region="deep">
-      <div class="topbar-actions">
-        <button class="glass-button" id="add-button" title="Add a computer (⌘N)">
-          <svg class="icon"><use href="#i-plus"/></svg><span>Add</span>
-        </button>
-        <button class="glass-button round" id="settings-button" title="Settings (⌘,)" aria-label="Settings">
-          <svg class="icon"><use href="#i-settings"/></svg>
-        </button>
+    <header class="toolbar" data-tauri-drag-region="deep">
+      <div class="toolbar-title">
+        <h1>Computers</h1>
+        <p id="summary">&nbsp;</p>
       </div>
+      <span class="spacer"></span>
+      <button class="tool" id="add-button" title="Add a Computer (⌘N)" aria-label="Add a computer">
+        <svg class="icon"><use href="#i-plus"/></svg>
+      </button>
+      <button class="tool" id="settings-button" title="Settings (⌘,)" aria-label="Settings">
+        <svg class="icon"><use href="#i-settings"/></svg>
+      </button>
     </header>
 
     <main class="home" id="home">
-      <section class="hero" data-tauri-drag-region="deep">
-        <h1 class="greeting" id="greeting">Hello</h1>
-        <p class="summary" id="summary">&nbsp;</p>
-      </section>
-
       <section class="grid" id="grid" role="list" aria-label="Your computers"></section>
 
       <section class="welcome" id="welcome" hidden>
-        <div class="welcome-device" aria-hidden="true">
-          <div class="welcome-screen">
-            <div class="dawn">
-              <span class="dawn-sun"></span>
-              <span class="dawn-horizon"></span>
-              <span class="dawn-glow"></span>
-            </div>
+        <div class="nosignal" aria-hidden="true">
+          <div class="nosignal-screen">
+            <span class="nosignal-x"><span class="nosignal-box">No Signal</span></span>
           </div>
-          <div class="welcome-base"></div>
+          <div class="nosignal-neck"></div>
+          <div class="nosignal-foot"></div>
         </div>
-        <h2 class="welcome-title">Your computers, one click away.</h2>
-        <p class="welcome-body">Add a computer that's sharing with Sunna. All you need is its address and key.</p>
+        <h2 class="welcome-title">No computers yet</h2>
+        <p class="welcome-body">Add a computer that's sharing with Sunna. On that computer, run <code>scripts/dogfood.sh host</code>, then paste the link it shows.</p>
         <div class="welcome-actions">
-          <button class="button primary large" id="welcome-add">
-            <svg class="icon"><use href="#i-plus"/></svg>Add a Computer
-          </button>
-          <button class="button secondary large" id="welcome-find">
+          <button class="button primary" id="welcome-add">Add a Computer…</button>
+          <button class="button secondary" id="welcome-find">
             <svg class="icon"><use href="#i-dots"/></svg>Find on Tailscale
           </button>
         </div>
-        <p class="welcome-note">Sharing a computer? Run <code>scripts/dogfood.sh host</code> on it. It prints the address and key.</p>
       </section>
     </main>
   </div>
 
-  <!-- Connecting: the machine's screen grows to fill the window. -->
+  <!-- Connecting: the machine's screen grows to fill the window and boots. -->
   <div class="launch" id="launch" hidden>
     <div class="launch-screen" id="launch-screen">
       <span class="wallpaper"><span class="wall"></span></span>
@@ -96,9 +96,10 @@
       <span class="launch-shade"></span>
     </div>
     <div class="launch-content">
+      <svg class="launch-mark icon"><use href="#os-screen"/></svg>
       <div class="launch-name" id="launch-name"></div>
-      <div class="launch-phase" id="launch-phase"></div>
       <div class="launch-progress" id="launch-progress"><span></span></div>
+      <div class="launch-phase" id="launch-phase"></div>
       <button class="launch-cancel" id="launch-cancel">Cancel</button>
     </div>
   </div>
@@ -124,8 +125,13 @@
                 <span class="wallpaper"><span class="wall"></span></span>
                 <span class="desk"><i></i><i></i><i></i></span>
                 <span class="scan"></span>
-                <span class="badge"><svg class="icon"><use href="#i-lock"/></svg><span class="badge-text"></span></span>
-                <span class="cta"><span>Connect</span><svg class="icon"><use href="#i-arrow"/></svg></span>
+                <span class="state-glyph"><svg class="icon"><use href="#i-lock"/></svg><i></i></span>
+                <span class="live"></span>
+                <span class="boot">
+                  <svg class="boot-mark icon"><use href="#os-screen"/></svg>
+                  <span class="boot-name"></span>
+                  <span class="boot-bar"><i></i></span>
+                </span>
                 <span class="glass"></span>
               </span>
             </span>
@@ -134,7 +140,14 @@
         </span>
         <span class="label">
           <span class="name"></span>
-          <span class="status"><span class="dot"></span><span class="status-text"></span></span>
+          <span class="status">
+            <span class="status-now"><span class="dot"></span><span class="status-text"></span></span>
+            <span class="status-hover">Connect<svg class="icon"><use href="#i-arrow"/></svg></span>
+          </span>
+          <span class="system">
+            <span class="os-badge"><svg class="icon"><use href="#os-screen"/></svg></span>
+            <span class="system-text"></span>
+          </span>
         </span>
       </button>
       <button class="tile-more" type="button" aria-label="More" title="More">
@@ -156,8 +169,8 @@
           </span>
         </span>
         <span class="label">
-          <span class="name">Add a computer</span>
-          <span class="status"><span class="status-text">By address and key</span></span>
+          <span class="name">Add a Computer</span>
+          <span class="status"><span class="status-now"><span class="status-text">By address and key</span></span></span>
         </span>
       </button>
     </div>
@@ -169,19 +182,19 @@
       <div class="pages">
         <form class="page form-page" autocomplete="off" novalidate>
           <header class="sheet-header">
-            <h2 id="machine-sheet-title">Add a computer</h2>
+            <h2 id="machine-sheet-title">Add a Computer</h2>
             <button type="button" class="icon-button close" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
           </header>
           <div class="preview-slot"></div>
           <div class="fields">
             <label class="field">
               <span class="field-label">Address</span>
-              <span class="input"><input name="address" spellcheck="false" autocapitalize="off" placeholder="100.101.102.103 or my-mac.local"></span>
+              <span class="input"><input name="address" spellcheck="false" autocapitalize="off" placeholder="100.101.102.103, a name, or a sunna:// link"></span>
             </label>
             <label class="field">
               <span class="field-label">Key</span>
               <span class="input">
-                <input name="key" type="password" spellcheck="false" autocapitalize="off" placeholder="The key it printed when it started sharing">
+                <input name="key" type="password" spellcheck="false" autocapitalize="off" placeholder="The key it shows when it starts sharing">
                 <button type="button" class="icon-button small reveal" title="Show" aria-label="Show key"><svg class="icon"><use href="#i-eye"/></svg></button>
               </span>
             </label>
@@ -203,10 +216,10 @@
         <div class="page find-page" hidden>
           <header class="sheet-header">
             <button type="button" class="icon-button back" aria-label="Back"><svg class="icon"><use href="#i-back"/></svg></button>
-            <h2>On your tailnet</h2>
+            <h2>On Your Tailnet</h2>
             <button type="button" class="icon-button rescan" aria-label="Look again" title="Look again"><svg class="icon"><use href="#i-refresh"/></svg></button>
           </header>
-          <p class="find-intro">Computers on your Tailscale network that are sharing with Sunna. Pick one to fill in its address.</p>
+          <p class="find-intro">Computers on your Tailscale network that are sharing with Sunna. Choose one to fill in its address.</p>
           <div class="find-list" aria-live="polite"></div>
         </div>
       </div>
@@ -287,6 +300,7 @@
           <div class="row"><span class="row-title">Disconnect</span><span class="keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>Q</kbd></span></div>
         </div>
         <p class="about"></p>
+        <p class="about credits">The Linux penguin is drawn after Tux by Larry Ewing (lewing@isc.tamu.edu), made with The GIMP.</p>
       </div>
     </div>
   </template>

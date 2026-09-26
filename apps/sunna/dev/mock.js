@@ -74,7 +74,7 @@ async function check(address, key) {
 }
 
 const commands = {
-  app_info: () => ({ version: "0.0.1", protocol: 3, user: "Sunny", computer: "Sunny's MacBook Air", platform: "macos" }),
+  app_info: () => ({ version: "0.0.1", protocol: 3, computer: "Sunny's MacBook Air", platform: "macos" }),
   get_settings: () => ({ ...settings }),
   set_settings: ({ settings: next }) => {
     settings = { ...next };

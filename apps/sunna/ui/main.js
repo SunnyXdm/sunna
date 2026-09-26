@@ -2,7 +2,6 @@
 // machines, probing, sessions. This draws them and forwards what you do.
 
 import { animate, flip, snapshot, springs, tilt, wait } from "./motion.js";
-import { skyTime, startSky } from "./sky.js";
 
 // Outside the app (a plain browser), stand in for the Rust side.
 if (!window.__TAURI__) await import("../dev/mock.js");
@@ -15,7 +14,7 @@ const POLL_MS = 4000;
 const LIT = new Set(["ready", "busy", "wrong-key", "update-needed"]);
 
 const state = {
-  info: { user: "", computer: "" },
+  info: { computer: "" },
   machines: [],
   /** id → the last check (state, os, rtt...). */
   checks: new Map(),
@@ -42,6 +41,37 @@ function osKind(os = "") {
   if (name.startsWith("pop")) return "pop";
   if (name.includes("linux")) return "linux";
   return "unknown";
+}
+
+/** Our own marks: ⌘ for macOS, the penguin for Linux, a plain window for
+ *  Windows. Never the vendors' logos (their trademark rules don't allow it). */
+function markOf(kind) {
+  if (kind === "macos") return "os-command";
+  if (kind === "windows") return "os-window";
+  if (kind === "unknown") return "os-screen";
+  return "os-tux";
+}
+
+const DEVICES = { laptop: "Laptop", desktop: "Desktop", vm: "VM", server: "Server" };
+
+/** "Arch Linux · Desktop", "macOS 26.0 · MacBook Air"; the address when
+ *  we don't know what it is yet. */
+function systemText(machine, check) {
+  const os = check?.os || machine.os;
+  if (!os) return machine.address ?? "";
+  const model = check?.model || machine.model;
+  return [os, model || DEVICES[check?.device || machine.device]].filter(Boolean).join(" · ");
+}
+
+/** What a Linux boot screen says under the penguin: the distro, no version. */
+function bootName(kind, os = "") {
+  if (["macos", "windows", "unknown"].includes(kind)) return "";
+  return os.replace(/\s*\(.*\)$/, "").replace(/\s+[\d.]+.*$/, "");
+}
+
+function paintMark(badge, kind) {
+  badge.classList.toggle("tux", markOf(kind) === "os-tux");
+  badge.querySelector("use").setAttribute("href", `#${markOf(kind)}`);
 }
 
 function hostOf(address = "") {
@@ -86,12 +116,6 @@ function describe(machine, check) {
   }
 }
 
-const BADGES = {
-  busy: ["i-eye", "In use"],
-  "wrong-key": ["i-lock", "Key doesn't match"],
-  "update-needed": ["i-alert", "Needs an update"],
-};
-
 /** Size the screen to the machine's display shape inside a 16:10 area. */
 function shape(tile, width, height) {
   let ratio = width > 0 && height > 0 ? width / height : 1.6;
@@ -101,17 +125,19 @@ function shape(tile, width, height) {
   tile.style.setProperty("--sh", `${sh.toFixed(2)}%`);
 }
 
-function wake(tile, delay = 0) {
-  tile.classList.remove("sleeping", "waking");
+/** The screen comes on; machines that let us in boot first. */
+function wake(tile, delay = 0, boot = false) {
+  tile.classList.remove("sleeping", "waking", "booting");
   tile.style.setProperty("--wake-delay", `${delay}ms`);
   void tile.offsetWidth;
   tile.classList.add("waking");
+  tile.classList.toggle("booting", boot);
   clearTimeout(tile.wakeTimer);
-  tile.wakeTimer = setTimeout(() => tile.classList.remove("waking"), 1900 + delay);
+  tile.wakeTimer = setTimeout(() => tile.classList.remove("waking", "booting"), 2300 + delay);
 }
 
 function sleep(tile) {
-  tile.classList.remove("waking");
+  tile.classList.remove("waking", "booting");
   tile.classList.add("sleeping");
   clearTimeout(tile.wakeTimer);
   tile.wakeTimer = setTimeout(() => tile.classList.remove("sleeping"), 900);
@@ -122,19 +148,22 @@ function paintTile(tile, machine, check, wakeDelay = 0) {
   const now = check?.state ?? "checking";
   const lit = LIT.has(now);
   const wasLit = tile.hasAttribute("data-lit");
+  const kind = osKind(check?.os || machine.os);
   tile.dataset.state = now;
-  tile.dataset.os = osKind(check?.os || machine.os);
+  tile.dataset.os = kind;
   tile.dataset.device = check?.device || machine.device || "";
   tile.toggleAttribute("data-lit", lit);
-  if (lit && !wasLit) wake(tile, wakeDelay);
+  if (lit && !wasLit) wake(tile, wakeDelay, now === "ready" || now === "busy");
   if (!lit && wasLit) sleep(tile);
   shape(tile, check?.width || machine.width, check?.height || machine.height);
   const status = describe(machine, check);
   tile.querySelector(".name").textContent = machine.name;
   tile.querySelector(".status-text").textContent = status;
-  const [icon, text] = BADGES[now] ?? ["i-lock", ""];
-  tile.querySelector(".badge use").setAttribute("href", `#${icon}`);
-  tile.querySelector(".badge-text").textContent = text;
+  tile.querySelector(".system-text").textContent = systemText(machine, check);
+  paintMark(tile.querySelector(".os-badge"), kind);
+  tile.querySelector(".boot-mark use").setAttribute("href", `#${markOf(kind)}`);
+  tile.querySelector(".boot-name").textContent = bootName(kind, check?.os || machine.os);
+  tile.querySelector(".state-glyph use").setAttribute("href", now === "update-needed" ? "#i-up" : "#i-lock");
   const hit = tile.querySelector(".tile-hit");
   hit.setAttribute("aria-label", `${machine.name}. ${status}`);
   hit.title = [check?.os || machine.os, machine.model, machine.address].filter(Boolean).join(" · ");
@@ -204,29 +233,22 @@ function renderGrid({ stagger = false } = {}) {
   renderHeader();
 }
 
-function greeting(date, name) {
-  const hour = date.getHours();
-  const part = hour < 5 ? "Hello" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  return name ? `${part}, ${name}` : part;
-}
-
 function summary() {
   const machines = state.machines;
   if (!state.loaded) return " ";
-  if (!machines.length) return "Let's add your first computer.";
+  if (!machines.length) return "None added yet";
   if (!state.polled) return "Looking for your computers…";
   const ready = machines.filter((machine) => state.checks.get(machine.id)?.state === "ready");
   if (machines.length === 1) {
     const [machine] = machines;
-    return ready.length ? `${machine.name} is ready.` : `${machine.name} isn't available right now.`;
+    return ready.length ? `${machine.name} is ready` : `${machine.name} isn't available`;
   }
-  if (ready.length === machines.length) return `All ${machines.length} computers are ready.`;
-  if (!ready.length) return "None of your computers are available right now.";
-  return `${ready.length} of ${machines.length} computers ready.`;
+  if (ready.length === machines.length) return `All ${machines.length} ready`;
+  if (!ready.length) return `None of ${machines.length} available`;
+  return `${ready.length} of ${machines.length} ready`;
 }
 
 function renderHeader() {
-  $("greeting").textContent = greeting(skyTime(), state.info.user);
   $("summary").textContent = summary();
 }
 
@@ -328,6 +350,7 @@ const launch = {
     const box = $("launch-screen");
     const from = tile.querySelector(".screen").getBoundingClientRect();
     overlay.dataset.os = tile.dataset.os;
+    overlay.querySelector(".launch-mark use").setAttribute("href", `#${markOf(tile.dataset.os)}`);
     // Start where the tile's wallpaper is in its drift, so the hand-off is seamless.
     box.querySelector(".wall").style.transform = getComputedStyle(tile.querySelector(".wall")).transform;
     $("launch-name").textContent = machine.name;
@@ -549,7 +572,7 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
   const line = sheet.querySelector(".check-line");
   const submit = sheet.querySelector(".submit");
   const editing = Boolean(machine);
-  sheet.querySelector("h2").textContent = editing ? machine.name : "Add a computer";
+  sheet.querySelector("h2").textContent = editing ? machine.name : "Add a Computer";
   submit.textContent = editing ? "Save" : "Add Computer";
   sheet.querySelector(".remove").hidden = !editing;
   sheet.querySelector(".find").hidden = editing;
@@ -745,7 +768,9 @@ function renderFound(list, machines, pick) {
     button.dataset.state = found.state;
     button.style.setProperty("--i", index);
     const already = saved.has(found.ip) || saved.has(found.name) || saved.has(found.dns_name);
-    button.innerHTML = `<span class="find-art" data-os="${osKind(found.os)}"></span><span class="find-text"><span class="find-name"></span><span class="find-meta"></span></span><span class="pill"></span>`;
+    button.dataset.os = osKind(found.os);
+    button.innerHTML = `<span class="os-badge"><svg class="icon"><use href="#os-screen"/></svg></span><span class="find-text"><span class="find-name"></span><span class="find-meta"></span></span><span class="pill"></span>`;
+    paintMark(button.querySelector(".os-badge"), osKind(found.os));
     button.querySelector(".find-name").textContent = found.name;
     button.querySelector(".find-meta").textContent = [found.os, found.ip].filter(Boolean).join(" · ");
     const pill = button.querySelector(".pill");
@@ -1157,8 +1182,11 @@ $("welcome-find").addEventListener("click", (event) =>
 );
 
 async function start() {
-  startSky();
   renderHeader();
+  // The toolbar gets a backing once the computers scroll under it.
+  $("home").addEventListener("scroll", () => {
+    document.querySelector(".toolbar").classList.toggle("scrolled", $("home").scrollTop > 2);
+  });
   const [info, settings, machines] = await Promise.all([
     invoke("app_info").catch(() => ({})),
     invoke("get_settings").catch(() => ({ key: "" })),
@@ -1175,7 +1203,6 @@ async function start() {
   setTimeout(() => $("grid").classList.add("settled"), 1600);
   poll();
   setInterval(poll, POLL_MS);
-  setInterval(renderHeader, 60_000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) poll();
   });

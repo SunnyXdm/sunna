@@ -87,7 +87,6 @@ fn app_info() -> serde_json::Value {
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "protocol": sunna_proto::PROTOCOL_VERSION,
-        "user": first_name(),
         "computer": computer_name(),
         "platform": std::env::consts::OS,
     })
@@ -329,26 +328,6 @@ fn command_output(program: &str, args: &[&str]) -> String {
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .unwrap_or_default()
-}
-
-/// The user's first name, for the greeting; empty when the system
-/// doesn't have a real name.
-fn first_name() -> String {
-    #[cfg(target_os = "macos")]
-    let full = command_output("/usr/bin/id", &["-F"]);
-    #[cfg(not(target_os = "macos"))]
-    let full = {
-        let user = std::env::var("USER").unwrap_or_default();
-        command_output("getent", &["passwd", &user])
-            .split(':')
-            .nth(4)
-            .unwrap_or("")
-            .split(',')
-            .next()
-            .unwrap_or("")
-            .to_string()
-    };
-    full.split_whitespace().next().unwrap_or("").to_string()
 }
 
 fn computer_name() -> String {
