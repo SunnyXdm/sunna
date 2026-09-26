@@ -28,7 +28,8 @@ fn main() {
     tauri::Builder::default()
         .manage(Session::default())
         .invoke_handler(tauri::generate_handler![
-            list_machines,
+            scan,
+            app_info,
             connect,
             get_settings,
             set_settings
@@ -67,8 +68,18 @@ fn run_viewer(args: Vec<String>) -> i32 {
 }
 
 #[tauri::command]
-async fn list_machines() -> Result<Vec<discovery::Machine>, String> {
-    discovery::list(&settings::token()).await
+async fn scan() -> Result<discovery::Scan, String> {
+    discovery::scan(&settings::token()).await
+}
+
+#[tauri::command]
+fn app_info() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": sunna_proto::PROTOCOL_VERSION,
+        // The window is transparent over the system's sidebar material.
+        "vibrancy": cfg!(target_os = "macos"),
+    })
 }
 
 #[tauri::command]

@@ -24,6 +24,24 @@ pub struct Machine {
 struct Status {
     #[serde(default)]
     peer: std::collections::HashMap<String, Peer>,
+    #[serde(rename = "Self")]
+    this: Option<Peer>,
+    current_tailnet: Option<Tailnet>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Tailnet {
+    #[serde(default)]
+    name: String,
+}
+
+/// One look at the tailnet: who we are, and every other device.
+#[derive(Debug, Clone, Serialize)]
+pub struct Scan {
+    pub this_device: String,
+    pub tailnet: String,
+    pub machines: Vec<Machine>,
 }
 
 #[derive(Deserialize)]
@@ -57,7 +75,7 @@ fn tailscale() -> Option<String> {
         .or_else(|| Some("tailscale".into()))
 }
 
-fn peers() -> Result<Vec<Peer>, String> {
+fn status() -> Result<Status, String> {
     let cli = tailscale().ok_or("Tailscale isn't installed")?;
     let output = Command::new(&cli)
         .args(["status", "--json"])
@@ -66,16 +84,25 @@ fn peers() -> Result<Vec<Peer>, String> {
     if !output.status.success() {
         return Err("Tailscale isn't connected. Open Tailscale and sign in.".into());
     }
-    let status: Status = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Unexpected Tailscale output: {error}"))?;
-    Ok(status.peer.into_values().collect())
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Unexpected Tailscale output: {error}"))
 }
 
 /// Every Tailscale peer, probed in parallel for a Sunna host.
-pub async fn list(token: &str) -> Result<Vec<Machine>, String> {
-    let peers = tokio::task::spawn_blocking(peers)
+pub async fn scan(token: &str) -> Result<Scan, String> {
+    let status = tokio::task::spawn_blocking(status)
         .await
         .map_err(|error| error.to_string())??;
+    let this_device = status
+        .this
+        .as_ref()
+        .map(|this| this.host_name.clone())
+        .unwrap_or_default();
+    let tailnet = status
+        .current_tailnet
+        .map(|tailnet| tailnet.name)
+        .unwrap_or_default();
+    let peers: Vec<Peer> = status.peer.into_values().collect();
     let probes = peers.into_iter().map(|peer| {
         let token = token.to_string();
         async move {
@@ -105,7 +132,11 @@ pub async fn list(token: &str) -> Result<Vec<Machine>, String> {
             .cmp(&rank(b.state))
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    Ok(machines)
+    Ok(Scan {
+        this_device,
+        tailnet,
+        machines,
+    })
 }
 
 async fn probe(ip: &str, token: &str) -> &'static str {
