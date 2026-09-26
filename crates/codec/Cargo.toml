@@ -16,4 +16,5 @@ core-foundation.workspace = true
 core-foundation-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.9.0"
 openh264 = "0.9.8"

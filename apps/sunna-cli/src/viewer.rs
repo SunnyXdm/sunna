@@ -10,6 +10,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use sunna_client::LiveStats;
 use sunna_codec::DecodedFrame;
 use sunna_proto::messages::InputEvent;
 use tokio::sync::mpsc::UnboundedSender;
@@ -17,7 +18,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::keymap;
@@ -51,6 +52,47 @@ pub struct SharedFrame {
     pub latest: Mutex<Option<DecodedFrame>>,
     /// Fast-lane tile batches waiting to be drawn (in arrival order).
     pub tiles: Mutex<Vec<sunna_proto::tiles::TileBatch>>,
+    /// Session numbers for the stats bar.
+    pub live: Arc<Mutex<LiveStats>>,
+}
+
+/// One line for the stats bar (⌃⌥S), Parsec-style.
+pub fn stats_text(live: &LiveStats) -> String {
+    if live.codec.is_empty() {
+        return "connecting…".into();
+    }
+    let mut parts = vec![
+        format!("{} {}×{}", live.codec.to_uppercase(), live.width, live.height),
+        format!("{} fps", live.fps),
+    ];
+    match &live.host {
+        Some(host) => parts.push(format!(
+            "{:.1} / {:.0} Mbps",
+            live.mbps,
+            host.target_kbps as f64 / 1000.0
+        )),
+        None => parts.push(format!("{:.1} Mbps", live.mbps)),
+    }
+    if let Some((p50, p95)) = live.latency_ms {
+        parts.push(format!("latency {p50:.0} ms (p95 {p95:.0})"));
+    }
+    if let Some(host) = &live.host {
+        parts.push(format!("encode {:.1} ms", host.encode_us_p50 as f64 / 1000.0));
+    }
+    if let Some(decode) = live.decode_ms_p50 {
+        parts.push(format!("decode {decode:.1} ms"));
+    }
+    if let Some(rtt) = live.rtt_ms {
+        parts.push(format!("rtt {rtt:.0} ms"));
+    }
+    if live.dropped > 0 {
+        parts.push(format!("lost {}", live.dropped));
+    }
+    if live.tile_batches > 0 {
+        parts.push(format!("tiles {}/s", live.tile_batches));
+    }
+    parts.push("⌃⌥S hide".into());
+    parts.join("  ·  ")
 }
 
 /// Wake signal sent by the network thread after storing a frame.
@@ -79,6 +121,10 @@ pub fn run_viewer(
         x_lut: Vec::new(),
         lut_key: (0, 0),
         keys_down: Vec::new(),
+        modifiers: ModifiersState::empty(),
+        stats_visible: std::env::var("SUNNA_STATS").map_or(true, |value| value != "0"),
+        stats_updated: Instant::now() - Duration::from_secs(1),
+        hotkey_down: false,
         #[cfg(target_os = "macos")]
         layer: None,
         presented: 0,
@@ -102,6 +148,12 @@ struct ViewerApp {
     /// Keys we've sent as pressed, released on focus loss: the key-up for,
     /// say, Cmd during Cmd-Tab goes to another app and would leave it stuck.
     keys_down: Vec<u16>,
+    modifiers: ModifiersState,
+    /// Stats bar shown (toggled with ⌃⌥S; `SUNNA_STATS=0` starts hidden).
+    stats_visible: bool,
+    stats_updated: Instant,
+    /// The S of ⌃⌥S is held: its key-up is ours too, not the host's.
+    hotkey_down: bool,
     /// Zero-copy presenter; when set, softbuffer isn't used.
     #[cfg(target_os = "macos")]
     layer: Option<LayerPresenter>,
@@ -110,6 +162,25 @@ struct ViewerApp {
 }
 
 impl ViewerApp {
+    /// Redraw the stats bar, at most twice a second unless `force`d. Frames
+    /// arrive at least every ~100 ms (the host's idle refresh), which drives
+    /// this; only the macOS presenter draws a bar so far.
+    fn refresh_stats(&mut self, force: bool) {
+        if !force && self.stats_updated.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        self.stats_updated = Instant::now();
+        let text = self
+            .stats_visible
+            .then(|| stats_text(&self.shared.live.lock().unwrap()));
+        #[cfg(target_os = "macos")]
+        if let Some(layer) = self.layer.as_mut() {
+            layer.show_stats(text.as_deref());
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = text;
+    }
+
     fn uses_layer(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
@@ -314,6 +385,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     layer.add_tiles(window, batch);
                 }
             }
+            self.refresh_stats(false);
             return;
         }
         if let Some(window) = &self.window {
@@ -408,7 +480,26 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     });
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
+                // ⌃⌥S toggles the stats bar and never reaches the host.
+                if event.physical_key == PhysicalKey::Code(KeyCode::KeyS) {
+                    let pressed = event.state == ElementState::Pressed;
+                    let chord = self.modifiers.control_key()
+                        && self.modifiers.alt_key()
+                        && !self.modifiers.super_key();
+                    if pressed && chord {
+                        if !event.repeat {
+                            self.stats_visible = !self.stats_visible;
+                            self.refresh_stats(true);
+                        }
+                        self.hotkey_down = true;
+                        return;
+                    }
+                    if !pressed && std::mem::take(&mut self.hotkey_down) {
+                        return;
+                    }
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if let Some(scancode) = keymap::mac_keycode(code) {
                         let pressed = event.state == ElementState::Pressed;
@@ -429,5 +520,36 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stats_line() {
+        assert_eq!(stats_text(&LiveStats::default()), "connecting…");
+        let live = LiveStats {
+            codec: "hevc".into(),
+            width: 3360,
+            height: 2100,
+            fps: 60,
+            mbps: 12.34,
+            latency_ms: Some((55.2, 70.9)),
+            decode_ms_p50: Some(7.25),
+            rtt_ms: Some(14.0),
+            host: Some(sunna_proto::messages::HostStats {
+                target_kbps: 20_000,
+                encode_us_p50: 26_100,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            stats_text(&live),
+            "HEVC 3360×2100  ·  60 fps  ·  12.3 / 20 Mbps  ·  latency 55 ms (p95 71)  ·  \
+             encode 26.1 ms  ·  decode 7.2 ms  ·  rtt 14 ms  ·  ⌃⌥S hide"
+        );
     }
 }

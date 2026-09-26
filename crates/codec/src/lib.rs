@@ -8,9 +8,13 @@
 
 pub mod h264;
 #[cfg(target_os = "linux")]
+pub mod nvenc;
+#[cfg(target_os = "linux")]
 pub mod openh264_codec;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
+#[cfg(target_os = "linux")]
+mod yuv;
 
 use bytes::Bytes;
 use sunna_capture::{FrameData, PixelFormat, VideoFrame};
@@ -177,7 +181,12 @@ pub fn default_codec_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "hevc"
     } else if cfg!(target_os = "linux") {
-        "h264" // software (OpenH264) until hardware backends land
+        // HEVC needs NVENC; H.264 falls back to software (OpenH264).
+        #[cfg(target_os = "linux")]
+        if nvenc::available() {
+            return "hevc";
+        }
+        "h264"
     } else {
         "raw"
     }
@@ -200,7 +209,37 @@ pub fn make_encoder(
             Codec::H264, width, height, fps, bitrate_bps,
         )?)),
         #[cfg(target_os = "linux")]
-        "h264" => Ok(Box::new(openh264_codec::OpenH264Encoder::new(fps, bitrate_bps)?)),
+        "h264" | "hevc" => {
+            let selected = if codec == "h264" { Codec::H264 } else { Codec::Hevc };
+            // SUNNA_NVENC=0 forces software H.264.
+            if codec == "hevc" || std::env::var("SUNNA_NVENC").as_deref() != Ok("0") {
+                match nvenc::NvencEncoder::new(selected, width, height, fps, bitrate_bps) {
+                    Ok(encoder) => {
+                        tracing::info!(
+                            codec,
+                            width,
+                            height,
+                            fps,
+                            bitrate_bps,
+                            preset = "P1",
+                            tuning = "ultra_low_latency",
+                            "using NVENC encoder"
+                        );
+                        return Ok(Box::new(encoder));
+                    }
+                    Err(error) if codec == "h264" => {
+                        tracing::warn!(
+                            reason = %format!("{error:#}"),
+                            "NVENC unavailable; falling back to OpenH264"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let encoder = openh264_codec::OpenH264Encoder::new(fps, bitrate_bps)?;
+            tracing::info!(codec, width, height, fps, bitrate_bps, "using OpenH264 encoder");
+            Ok(Box::new(encoder))
+        }
         #[cfg(target_os = "macos")]
         "hevc" => Ok(Box::new(videotoolbox::VtEncoder::new(
             Codec::Hevc, width, height, fps, bitrate_bps,

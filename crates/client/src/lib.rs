@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use sunna_codec::make_decoder;
 use sunna_proto::media::{CompleteFrame, Reassembler};
-use sunna_proto::messages::{ControlMessage, InputEvent};
+use sunna_proto::messages::{ControlMessage, HostStats, InputEvent};
 use sunna_proto::stats::Percentiles;
 use sunna_transport::quinn::Connection;
 use sunna_transport::ControlChannel;
@@ -110,6 +110,28 @@ pub struct ClientOptions {
     pub max_size: Option<(u32, u32)>,
     /// Disconnect after this long; runs until the connection closes if `None`.
     pub duration: Option<Duration>,
+    /// Updated every second with the session's numbers (stats overlay).
+    pub live: Option<Arc<std::sync::Mutex<LiveStats>>>,
+}
+
+/// The session's latest per-second numbers, for a stats overlay.
+#[derive(Debug, Clone, Default)]
+pub struct LiveStats {
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    /// Frames decoded in the last second.
+    pub fps: u32,
+    pub mbps: f64,
+    /// Capture → decoded, p50 and p95, corrected for clock offset.
+    pub latency_ms: Option<(f64, f64)>,
+    pub decode_ms_p50: Option<f64>,
+    pub rtt_ms: Option<f64>,
+    /// Frames lost in the last second.
+    pub dropped: u64,
+    /// Fast-lane tile batches in the last second.
+    pub tile_batches: u32,
+    pub host: Option<HostStats>,
 }
 
 /// Compressed frames in flight between the network task and the decode
@@ -458,6 +480,11 @@ pub async fn run_client(
                                 Some(t_us as i64 - ((peer_t_us + received) / 2) as i64);
                         }
                     }
+                    Some(ControlMessage::HostStats(stats)) => {
+                        if let Some(live) = &options.live {
+                            live.lock().unwrap().host = Some(stats);
+                        }
+                    }
                     Some(other) => tracing::debug!(?other, "unexpected control message"),
                     None => break,
                 }
@@ -490,6 +517,20 @@ pub async fn run_client(
                     chunks_recovered: recovered.min(u32::MAX as u64) as u32,
                     e2e_p95_us: window.as_ref().map_or(0, |stats| stats.p95_us),
                 }).await?;
+                if let Some(live) = &options.live {
+                    let mut live = live.lock().unwrap();
+                    live.codec = info.codec.clone();
+                    (live.width, live.height) = (info.width, info.height);
+                    live.fps = window_frames as u32;
+                    live.mbps = window_bytes as f64 * 8.0 / 1_000_000.0;
+                    live.latency_ms = window
+                        .as_ref()
+                        .map(|w| (w.p50_us as f64 / 1000.0, w.p95_us as f64 / 1000.0));
+                    live.decode_ms_p50 = decode.as_ref().map(|d| d.p50_us as f64 / 1000.0);
+                    live.rtt_ms = rtt_samples.last().map(|&rtt| rtt as f64 / 1000.0);
+                    live.dropped = dropped;
+                    live.tile_batches = window_tile_batches;
+                }
                 tracing::info!(
                     fps = window_frames,
                     dropped,

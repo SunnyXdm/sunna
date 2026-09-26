@@ -154,6 +154,7 @@ fn view(addr: SocketAddr, server_name: String, token: String) -> anyhow::Result<
     let connection = client.connection.clone();
 
     let network_shared = Arc::clone(&shared);
+    let live = Arc::clone(&shared.live);
     let tile_shared = Arc::clone(&shared);
     let tile_proxy = event_loop.create_proxy();
     let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -166,6 +167,7 @@ fn view(addr: SocketAddr, server_name: String, token: String) -> anyhow::Result<
             token,
             max_size: viewer_max_size(),
             duration: None,
+            live: Some(live),
         };
         let result = runtime.block_on(run_client(
             connection,
@@ -228,6 +230,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 token,
                 max_size: None,
                 duration: seconds.map(Duration::from_secs),
+                live: None,
             };
             let report = run_client(client.connection, options, |_| {}, |_| {}, input_rx).await?;
             println!("{report}");
@@ -273,6 +276,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 token: String::new(),
                 max_size: None,
                 duration: Some(Duration::from_secs(seconds)),
+                live: None,
             };
             let report = run_client(client.connection, options, |_| {}, |_| {}, input_rx).await?;
             host_task.abort();

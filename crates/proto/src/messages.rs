@@ -42,7 +42,22 @@ pub enum ControlMessage {
         /// 0 when no samples this window.
         e2e_p95_us: u64,
     },
+    /// Per-second host stats, for the viewer's stats overlay.
+    HostStats(HostStats),
     Bye,
+}
+
+/// What the host did in the last second.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostStats {
+    /// Frames encoded and sent.
+    pub fps: u32,
+    pub sent_kbps: u32,
+    /// Where the host's congestion control has the encoder aimed.
+    pub target_kbps: u32,
+    pub encode_us_p50: u32,
+    pub encode_us_p95: u32,
+    pub keyframes: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

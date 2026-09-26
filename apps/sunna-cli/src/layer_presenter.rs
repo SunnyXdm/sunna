@@ -116,6 +116,40 @@ pub struct LayerPresenter {
     debug_tiles: bool,
     /// Tiles placed so far (the first few are logged with their geometry).
     placed: u64,
+    /// The stats bar, while shown.
+    stats: Option<StatsBar>,
+}
+
+/// A rounded translucent bar with one line of text, over the video.
+struct StatsBar {
+    background: Retained<AnyObject>,
+    text: Retained<AnyObject>,
+}
+
+impl StatsBar {
+    fn new(root: &AnyObject, backing_scale: f64) -> Self {
+        unsafe {
+            let background: Retained<AnyObject> = msg_send![class!(CALayer), new];
+            let color = CGColorCreateSRGB(0.0, 0.0, 0.0, 0.65);
+            let _: () = msg_send![&*background, setBackgroundColor: color as *mut AnyObject];
+            CGColorRelease(color);
+            let _: () = msg_send![&*background, setCornerRadius: 8.0f64];
+            // Above the video and any fast-lane tiles.
+            let _: () = msg_send![&*background, setZPosition: 1000.0f64];
+
+            let text: Retained<AnyObject> = msg_send![class!(CATextLayer), new];
+            let font = ns_string("Menlo");
+            let _: () = msg_send![&*text, setFont: &*font];
+            let _: () = msg_send![&*text, setFontSize: 12.0f64];
+            let color = CGColorCreateSRGB(1.0, 1.0, 1.0, 0.95);
+            let _: () = msg_send![&*text, setForegroundColor: color as *mut AnyObject];
+            CGColorRelease(color);
+            let _: () = msg_send![&*text, setContentsScale: backing_scale];
+            let _: () = msg_send![&*background, addSublayer: &*text];
+            let _: () = msg_send![root, addSublayer: &*background];
+            Self { background, text }
+        }
+    }
 }
 
 fn ns_string(text: &str) -> Retained<AnyObject> {
@@ -152,6 +186,7 @@ impl LayerPresenter {
             },
             debug_tiles: std::env::var("SUNNA_TILE_DEBUG").is_ok_and(|value| value == "1"),
             placed: 0,
+            stats: None,
         };
         let size = window.inner_size();
         presenter.fit(window, (size.width, size.height));
@@ -187,6 +222,45 @@ impl LayerPresenter {
             window = format!("{}x{}", window_px.0, window_px.1),
             "viewer scaling"
         );
+    }
+
+    /// Show `text` in the stats bar at the top centre, or hide the bar.
+    pub fn show_stats(&mut self, text: Option<&str>) {
+        unsafe {
+            let _: () = msg_send![class!(CATransaction), begin];
+            let _: () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
+            match text {
+                None => {
+                    if let Some(bar) = self.stats.take() {
+                        let _: () = msg_send![&*bar.background, removeFromSuperlayer];
+                    }
+                }
+                Some(text) => {
+                    let bar = self
+                        .stats
+                        .get_or_insert_with(|| StatsBar::new(&self.layer, self.backing_scale));
+                    let string = ns_string(text);
+                    let _: () = msg_send![&*bar.text, setString: &*string];
+                    let size: CGSize = msg_send![&*bar.text, preferredFrameSize];
+                    let bounds: CGRect = msg_send![&*self.layer, bounds];
+                    let flipped: bool = msg_send![&*self.layer, isGeometryFlipped];
+                    let (pad_x, pad_y, margin) = (12.0, 6.0, 8.0);
+                    let (width, height) = (size.width + 2.0 * pad_x, size.height + 2.0 * pad_y);
+                    let y = if flipped { margin } else { bounds.size.height - height - margin };
+                    let frame = CGRect {
+                        origin: CGPoint { x: ((bounds.size.width - width) / 2.0).max(0.0), y },
+                        size: CGSize { width, height },
+                    };
+                    let _: () = msg_send![&*bar.background, setFrame: frame];
+                    let inner = CGRect {
+                        origin: CGPoint { x: pad_x, y: pad_y },
+                        size,
+                    };
+                    let _: () = msg_send![&*bar.text, setFrame: inner];
+                }
+            }
+            let _: () = msg_send![class!(CATransaction), commit];
+        }
     }
 
     /// Show `frame` (captured at `capture_ts_us`) now, retiring tiles it

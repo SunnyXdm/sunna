@@ -13,6 +13,7 @@ use openh264::formats::{YUVSlices, YUVSource};
 use openh264::OpenH264API;
 use sunna_capture::{FrameData, PixelFormat, VideoFrame};
 
+use crate::yuv::bgra_to_i420;
 use crate::{Codec, DecodedFrame, Decoder, EncodedFrame, Encoder};
 
 pub struct OpenH264Encoder {
@@ -82,7 +83,7 @@ impl Encoder for OpenH264Encoder {
         self.planes.resize(luma + 2 * chroma, 0);
         let (y, uv) = self.planes.split_at_mut(luma);
         let (u, v) = uv.split_at_mut(chroma);
-        bgra_to_i420(&bytes[..width * height * 4], width, height, y, u, v);
+        bgra_to_i420(&bytes[..width * height * 4], width, height, width, y, u, v);
         let yuv = YUVSlices::new((y, u, v), (width, height), (width, width / 2, width / 2));
         if std::mem::take(&mut self.force_keyframe) {
             self.encoder.force_intra_frame();
@@ -188,84 +189,9 @@ fn complexity() -> Complexity {
     }
 }
 
-/// BGRA → I420, BT.709 matrix, video (limited) range, 2×2 averaged chroma.
-/// Split across cores by row bands: at 1080p this is a few milliseconds
-/// instead of the ~15 ms a per-pixel float conversion takes.
-pub fn bgra_to_i420(
-    src: &[u8],
-    width: usize,
-    height: usize,
-    y: &mut [u8],
-    u: &mut [u8],
-    v: &mut [u8],
-) {
-    assert!(width % 2 == 0 && height % 2 == 0);
-    let threads = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(8);
-    let band_rows = (height / threads).max(2) & !1;
-    std::thread::scope(|scope| {
-        let bands = src
-            .chunks(width * 4 * band_rows)
-            .zip(y.chunks_mut(width * band_rows))
-            .zip(u.chunks_mut(width / 2 * band_rows / 2))
-            .zip(v.chunks_mut(width / 2 * band_rows / 2));
-        for (((src, y), u), v) in bands {
-            scope.spawn(move || convert_band(src, width, y, u, v));
-        }
-    });
-}
-
-fn convert_band(src: &[u8], width: usize, y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
-    // 16.16 fixed point; see BT.709: Kr 0.2126, Kb 0.0722, scaled to 16..235
-    // (luma) and 16..240 (chroma).
-    const Y: [i32; 3] = [11966, 40254, 4064];
-    const U: [i32; 3] = [-6596, -22188, 28784];
-    const V: [i32; 3] = [28784, -26145, -2639];
-    let luma = |r: i32, g: i32, b: i32| ((Y[0] * r + Y[1] * g + Y[2] * b + 32768) >> 16) + 16;
-    let rows = y.len() / width;
-    for pair in 0..rows / 2 {
-        let top = &src[pair * 2 * width * 4..][..width * 4];
-        let bottom = &src[(pair * 2 + 1) * width * 4..][..width * 4];
-        for x in 0..width / 2 {
-            let mut sum = [0i32; 3];
-            for (row, line) in [top, bottom].into_iter().enumerate() {
-                for dx in 0..2 {
-                    let px = &line[(x * 2 + dx) * 4..][..3];
-                    let (b, g, r) = (px[0] as i32, px[1] as i32, px[2] as i32);
-                    y[(pair * 2 + row) * width + x * 2 + dx] = luma(r, g, b) as u8;
-                    sum[0] += r;
-                    sum[1] += g;
-                    sum[2] += b;
-                }
-            }
-            // Sums of four pixels: shift by 2 more bits to average.
-            let cb = ((U[0] * sum[0] + U[1] * sum[1] + U[2] * sum[2] + (1 << 17)) >> 18) + 128;
-            let cr = ((V[0] * sum[0] + V[1] * sum[1] + V[2] * sum[2] + (1 << 17)) >> 18) + 128;
-            u[pair * (width / 2) + x] = cb.clamp(16, 240) as u8;
-            v[pair * (width / 2) + x] = cr.clamp(16, 240) as u8;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn convert(bgra: [u8; 4]) -> (u8, u8, u8) {
-        let src: Vec<u8> = bgra.repeat(4);
-        let (mut y, mut u, mut v) = ([0u8; 4], [0u8; 1], [0u8; 1]);
-        bgra_to_i420(&src, 2, 2, &mut y, &mut u, &mut v);
-        (y[0], u[0], v[0])
-    }
-
-    #[test]
-    fn bt709_video_range() {
-        assert_eq!(convert([0, 0, 0, 255]), (16, 128, 128));
-        assert_eq!(convert([255, 255, 255, 255]), (235, 128, 128));
-        // Pure red, BT.709: Y 63, Cb 102, Cr 240.
-        assert_eq!(convert([0, 0, 255, 255]), (63, 102, 240));
-    }
 
     /// `cargo test --release -p sunna-codec openh264 -- --ignored --nocapture`
     #[test]
@@ -304,7 +230,7 @@ mod tests {
             };
             let (mut yb, mut ub, mut vb) = (vec![0; w * h], vec![0; w * h / 4], vec![0; w * h / 4]);
             let t = std::time::Instant::now();
-            bgra_to_i420(&data, w, h, &mut yb, &mut ub, &mut vb);
+            bgra_to_i420(&data, w, h, w, &mut yb, &mut ub, &mut vb);
             total.0 += t.elapsed().as_micros();
             let t = std::time::Instant::now();
             encoder.encode(&frame).unwrap();

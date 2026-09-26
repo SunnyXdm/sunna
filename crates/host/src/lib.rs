@@ -16,7 +16,7 @@ use sunna_capture::FrameSource;
 use sunna_codec::Encoder;
 use sunna_input::InputInjector;
 use sunna_proto::media::packetize;
-use sunna_proto::messages::ControlMessage;
+use sunna_proto::messages::{ControlMessage, HostStats};
 use sunna_transport::quinn::{Connection, SendDatagramError};
 use sunna_transport::{ControlChannel, Server};
 
@@ -53,6 +53,8 @@ struct SessionSignals {
     target_bitrate_bps: AtomicU32,
     /// Input events injected since the last host window (stats only).
     input_events: AtomicU32,
+    /// The last host window's stats, waiting to go to the viewer.
+    stats: std::sync::Mutex<Option<HostStats>>,
 }
 
 /// Accept-and-serve loop. Returns when the endpoint is closed.
@@ -165,6 +167,7 @@ async fn serve(
         // constrained paths for seconds before adaptation can react.
         target_bitrate_bps: AtomicU32::new(config.max_bitrate_bps.min(15_000_000)),
         input_events: AtomicU32::new(0),
+        stats: std::sync::Mutex::new(None),
     });
     let media_thread = {
         let connection = connection.clone();
@@ -186,7 +189,7 @@ async fn serve(
 
     let mut injector = new_injector();
     let result = control_loop(
-        &mut control,
+        control,
         injector.as_mut(),
         &signals,
         config.max_bitrate_bps,
@@ -558,7 +561,7 @@ fn send_loop(
         window.maybe_report(
             signals.target_bitrate_bps.load(Ordering::Relaxed),
             send_backlog(&connection),
-            &signals.input_events,
+            &signals,
         );
     }
 }
@@ -598,7 +601,7 @@ impl HostWindow {
         }
     }
 
-    fn maybe_report(&mut self, bitrate_bps: u32, backlog_bytes: usize, input_events: &AtomicU32) {
+    fn maybe_report(&mut self, bitrate_bps: u32, backlog_bytes: usize, signals: &SessionSignals) {
         let elapsed = self.started.elapsed();
         if elapsed < Duration::from_secs(1) {
             return;
@@ -610,6 +613,17 @@ impl HostWindow {
             samples.sort_unstable();
             samples[(samples.len() - 1) * p / 100] as f64 / 1000.0
         };
+        let sent_kbps = (self.sent_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1000.0) as u32;
+        let encode_p50 = pct(&mut self.encode_us, 50);
+        let encode_p95 = pct(&mut self.encode_us, 95);
+        *signals.stats.lock().unwrap() = Some(HostStats {
+            fps: self.sent_frames as u32,
+            sent_kbps,
+            target_kbps: bitrate_bps / 1000,
+            encode_us_p50: (encode_p50 * 1000.0) as u32,
+            encode_us_p95: (encode_p95 * 1000.0) as u32,
+            keyframes: self.keyframes as u32,
+        });
         tracing::info!(
             fps = self.sent_frames,
             mbps = format!("{:.1}", self.sent_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6),
@@ -618,11 +632,11 @@ impl HostWindow {
             encoder_drops = self.encoder_drops,
             sender_drops = self.sender_drops,
             backlog_kb = backlog_bytes / 1024,
-            encode_ms_p50 = pct(&mut self.encode_us, 50),
-            encode_ms_p95 = pct(&mut self.encode_us, 95),
+            encode_ms_p50 = encode_p50,
+            encode_ms_p95 = encode_p95,
             capture_to_encoded_ms_p50 = pct(&mut self.capture_to_encoded_us, 50),
             capture_to_encoded_ms_p95 = pct(&mut self.capture_to_encoded_us, 95),
-            input_events = input_events.swap(0, Ordering::Relaxed),
+            input_events = signals.input_events.swap(0, Ordering::Relaxed),
             "host window"
         );
         *self = Self::new();
@@ -630,7 +644,32 @@ impl HostWindow {
 }
 
 async fn control_loop(
-    control: &mut ControlChannel,
+    control: ControlChannel,
+    injector: &mut dyn InputInjector,
+    signals: &SessionSignals,
+    max_bitrate_bps: u32,
+) -> anyhow::Result<()> {
+    // `recv` isn't cancellation-safe, so it gets its own task (as in the
+    // client) and the loop below can also wake up to send stats.
+    let (mut control, mut control_rx) = control.into_split();
+    let (message_tx, mut messages) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        loop {
+            let message = control_rx.recv().await;
+            let closed = message.is_err();
+            if message_tx.send(message).is_err() || closed {
+                break;
+            }
+        }
+    });
+    let result = handle_control(&mut control, &mut messages, injector, signals, max_bitrate_bps).await;
+    reader.abort();
+    result
+}
+
+async fn handle_control(
+    control: &mut sunna_transport::ControlSender,
+    messages: &mut tokio::sync::mpsc::UnboundedReceiver<sunna_transport::Result<ControlMessage>>,
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
     max_bitrate_bps: u32,
@@ -642,8 +681,22 @@ async fn control_loop(
     // delay-based CC (research/08 §5.7).
     let min_bitrate_bps = min_bitrate(max_bitrate_bps);
     let mut p95_baseline_us: Option<u64> = None;
+    let mut stats_interval = tokio::time::interval(Duration::from_secs(1));
     loop {
-        match control.recv().await {
+        let message = tokio::select! {
+            message = messages.recv() => match message {
+                Some(message) => message,
+                None => return Ok(()),
+            },
+            _ = stats_interval.tick() => {
+                let stats = signals.stats.lock().unwrap().take();
+                if let Some(stats) = stats {
+                    control.send(&ControlMessage::HostStats(stats)).await?;
+                }
+                continue;
+            }
+        };
+        match message {
             Ok(ControlMessage::Input(event)) => {
                 injector.inject(&event)?;
                 signals.input_events.fetch_add(1, Ordering::Relaxed);
