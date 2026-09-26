@@ -365,6 +365,21 @@ impl VtEncoder {
                 transfer.as_CFTypeRef(),
                 "TransferFunction",
             );
+            // Quality floor for text: never quantize a frame coarser than
+            // this (lower = sharper, more bits; the encoder may drop frames
+            // rather than exceed it). SUNNA_MAX_QP, e.g. 28-34; unset = the
+            // encoder's own choice.
+            if let Some(max_qp) = std::env::var("SUNNA_MAX_QP")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+            {
+                set(
+                    kVTCompressionPropertyKey_MaxAllowedFrameQP,
+                    CFNumber::from(max_qp.clamp(1, 51)).as_CFTypeRef(),
+                    "MaxAllowedFrameQP",
+                );
+                tracing::info!(max_qp, "encoder quality floor");
+            }
             set(
                 kVTCompressionPropertyKey_YCbCrMatrix,
                 kCVImageBufferYCbCrMatrix_ITU_R_709_2 as _,
