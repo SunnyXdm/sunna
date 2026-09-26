@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build and run Sunna between two Macs on the same tailnet, shipping logs to
-# the dogfood collector (tools/logd).
+# Build and run Sunna between two machines on the same tailnet, shipping
+# logs to the dogfood collector (tools/logd).
 #
-#   scripts/dogfood.sh host           # on the Mac to control
+#   scripts/dogfood.sh host           # on the Mac or Linux box to control
 #   scripts/dogfood.sh view <host>    # on the Mac you sit at; <host> is the
 #                                     # host's Tailscale name or 100.x address
 #
@@ -71,6 +71,12 @@ case "${1:-}" in
     IP="$(tailscale_cli ip -4 | head -1)"
     [ -n "$IP" ] || { echo "no Tailscale IPv4 address; is Tailscale connected?" >&2; exit 1; }
     NAME="$(scutil --get ComputerName 2>/dev/null || hostname)"
+    if [ "$(uname)" = Linux ]; then
+      # X11 host. Without a real screen (servers, the dev VM) this starts a
+      # virtual XFCE desktop; SUNNA_DISPLAY=:0 hosts an existing session.
+      export DISPLAY="${SUNNA_DISPLAY:-:40}"
+      scripts/linux-desktop.sh "$DISPLAY"
+    fi
     echo "Hosting on $IP:$PORT (tailnet only). Ctrl-C to stop."
     ./target/release/sunnad --source screen --listen "$IP:$PORT" --name "$NAME"
     ;;

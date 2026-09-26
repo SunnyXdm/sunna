@@ -1,9 +1,9 @@
 //! sunnad — the headless Sunna host daemon.
 //!
-//! `--source screen` streams the real display (macOS only for now; requires
-//! the Screen Recording permission for the process that launches sunnad).
-//! `--source synthetic` streams a test pattern. Input is injected on macOS
-//! (Accessibility permission), logged elsewhere.
+//! `--source screen` streams the real display: on macOS (requires the Screen
+//! Recording permission for the process that launches sunnad) or an X11
+//! display on Linux (`DISPLAY`). `--source synthetic` streams a test pattern.
+//! Input is injected on macOS (Accessibility permission) and X11 (XTEST).
 //!
 //! Access control is a shared session token (`--token` / `SUNNA_TOKEN`; one
 //! is generated and printed if missing when listening beyond loopback). TLS is
@@ -92,9 +92,17 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
                     args.height.unwrap_or(native_h).max(2) & !1,
                 ))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             {
-                anyhow::bail!("--source screen is only supported on macOS so far (research/06 M0c)")
+                let (native_w, native_h) = sunna_capture::linux::main_display_pixel_size()?;
+                Ok((
+                    args.width.unwrap_or(native_w).max(2) & !1,
+                    args.height.unwrap_or(native_h).max(2) & !1,
+                ))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                anyhow::bail!("--source screen is only supported on macOS and Linux (X11) so far")
             }
         }
     }
@@ -117,7 +125,17 @@ fn make_source_factory(source: Source, fps: u32) -> sunna_host::SourceFactory {
                     )?) as Box<dyn FrameSource>)
                 })
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
+            {
+                Box::new(move |width, height| {
+                    Ok(Box::new(sunna_capture::linux::ScreenSource::new(
+                        Some(width),
+                        Some(height),
+                        fps,
+                    )?) as Box<dyn FrameSource>)
+                })
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
                 unreachable!("rejected in resolve_dimensions")
             }

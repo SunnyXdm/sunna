@@ -21,6 +21,8 @@ use sunna_proto::tiles::TileBatch;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
+use crate::viewer::stream_scale;
+
 /// Frames kept alive after being shown. Core Animation may still be reading
 /// a surface for a frame or two after it's replaced; holding it (and its use
 /// count) stops the decoder's pool from overwriting it on screen.
@@ -166,7 +168,8 @@ impl LayerPresenter {
             self.clear_overlays();
             self.window_px = window_px;
         }
-        let fits = self.stream_size.0 <= window_px.0 && self.stream_size.1 <= window_px.1;
+        let stream = (self.stream_size.0 as f64, self.stream_size.1 as f64);
+        let fits = stream_scale(stream, (window_px.0 as f64, window_px.1 as f64)) == 1.0;
         if self.one_to_one == Some(fits) {
             return;
         }
@@ -259,12 +262,8 @@ impl LayerPresenter {
         // Everything below in backing pixels, top-left origin.
         let (layer_w, layer_h) = (bounds.size.width * points, bounds.size.height * points);
         let (stream_w, stream_h) = (self.stream_size.0 as f64, self.stream_size.1 as f64);
-        // Same rule as the contents gravity: 1:1 when it fits, else aspect-fit.
-        let scale = if stream_w <= layer_w && stream_h <= layer_h {
-            1.0
-        } else {
-            (layer_w / stream_w).min(layer_h / stream_h)
-        };
+        // Same rule as the contents gravity.
+        let scale = stream_scale((stream_w, stream_h), (layer_w, layer_h));
         let origin_x = (layer_w - stream_w * scale) / 2.0;
         let origin_y = (layer_h - stream_h * scale) / 2.0;
         let px_x = origin_x + x as f64 * scale;

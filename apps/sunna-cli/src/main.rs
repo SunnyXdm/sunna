@@ -63,7 +63,7 @@ enum Command {
         height: u32,
         #[arg(long, default_value_t = 60)]
         fps: u32,
-        /// Codec for the in-process host ("h264" on macOS, "raw" fallback).
+        /// Codec for the in-process host ("h264": VideoToolbox on macOS, OpenH264 on Linux; or "raw").
         #[arg(long, default_value = default_codec_name())]
         codec: String,
         /// Encoder target bitrate in kilobits per second.

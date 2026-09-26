@@ -9,6 +9,8 @@
 
 use sunna_proto::messages::InputEvent;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
@@ -27,7 +29,17 @@ pub fn make_injector() -> Box<dyn InputInjector> {
     {
         Box::new(macos::MacInjector::new())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        match linux::X11Injector::new() {
+            Ok(injector) => Box::new(injector),
+            Err(error) => {
+                tracing::warn!("{error:#}; input will be logged, not injected");
+                Box::new(LogInjector)
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Box::new(LogInjector)
     }

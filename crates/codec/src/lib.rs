@@ -7,6 +7,8 @@
 //! `EnableLowLatencyRateControl`. Codec ladder: AV1 > HEVC > H.264.
 
 pub mod h264;
+#[cfg(target_os = "linux")]
+pub mod openh264_codec;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
@@ -174,6 +176,8 @@ pub fn default_codec_name() -> &'static str {
     // Sharing streams HEVC too.
     if cfg!(target_os = "macos") {
         "hevc"
+    } else if cfg!(target_os = "linux") {
+        "h264" // software (OpenH264) until hardware backends land
     } else {
         "raw"
     }
@@ -195,6 +199,8 @@ pub fn make_encoder(
         "h264" => Ok(Box::new(videotoolbox::VtEncoder::new(
             Codec::H264, width, height, fps, bitrate_bps,
         )?)),
+        #[cfg(target_os = "linux")]
+        "h264" => Ok(Box::new(openh264_codec::OpenH264Encoder::new(fps, bitrate_bps)?)),
         #[cfg(target_os = "macos")]
         "hevc" => Ok(Box::new(videotoolbox::VtEncoder::new(
             Codec::Hevc, width, height, fps, bitrate_bps,
@@ -211,6 +217,8 @@ pub fn make_decoder(codec: &str, width: u32, height: u32) -> anyhow::Result<Box<
         "h264" => Ok(Box::new(videotoolbox::VtDecoder::new(Codec::H264))),
         #[cfg(target_os = "macos")]
         "hevc" => Ok(Box::new(videotoolbox::VtDecoder::new(Codec::Hevc))),
+        #[cfg(target_os = "linux")]
+        "h264" => Ok(Box::new(openh264_codec::OpenH264Decoder::new()?)),
         other => anyhow::bail!("no decoder for codec {other:?} on this platform"),
     }
 }
