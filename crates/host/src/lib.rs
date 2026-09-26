@@ -219,12 +219,29 @@ async fn tile_writer(
         return;
     }
     let mut report = tokio::time::interval(Duration::from_secs(1));
-    let (mut batch_count, mut tile_count, mut bytes) = (0u32, 0u32, 0usize);
+    let (mut batch_count, mut tile_count, mut bytes, mut skipped) = (0u32, 0u32, 0usize, 0u32);
+    // Token bucket: tiles only accelerate what the video will show a moment
+    // later, so skipping a batch is always safe. Cap them so they never
+    // compete with the video on slower links (a dogfood session peaked at
+    // ~1.8 MB/s of tiles).
+    const BUDGET_BYTES_PER_SEC: f64 = 500_000.0; // ~4 Mbit/s
+    const BURST_BYTES: f64 = 256.0 * 1024.0;
+    let mut tokens = BURST_BYTES;
+    let mut refilled = Instant::now();
     loop {
         tokio::select! {
             batch = batches.recv() => {
                 let Some(batch) = batch else { return };
                 let Ok(encoded) = sunna_proto::tiles::encode(&batch) else { continue };
+                let now = Instant::now();
+                tokens = (tokens + now.duration_since(refilled).as_secs_f64() * BUDGET_BYTES_PER_SEC)
+                    .min(BURST_BYTES);
+                refilled = now;
+                if encoded.len() as f64 > tokens {
+                    skipped += 1;
+                    continue;
+                }
+                tokens -= encoded.len() as f64;
                 let mut framed = Vec::with_capacity(4 + encoded.len());
                 framed.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
                 framed.extend_from_slice(&encoded);
@@ -237,17 +254,19 @@ async fn tile_writer(
                 bytes += framed.len();
             }
             _ = report.tick() => {
-                if batch_count > 0 {
+                if batch_count > 0 || skipped > 0 {
                     tracing::info!(
                         batches = batch_count,
                         tiles = tile_count,
                         kb = bytes / 1024,
+                        over_budget = skipped,
                         "fast lane window"
                     );
                 }
                 batch_count = 0;
                 tile_count = 0;
                 bytes = 0;
+                skipped = 0;
             }
         }
     }
