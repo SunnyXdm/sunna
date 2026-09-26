@@ -204,6 +204,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 simulate_loss,
                 token: String::new(),
                 clipboard: false,
+                about: Default::default(),
             };
             make_encoder(&codec, width, height, fps, bitrate_bps)?;
             let host_task = tokio::spawn(run_host(

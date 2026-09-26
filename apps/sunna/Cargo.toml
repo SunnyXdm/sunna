@@ -15,6 +15,6 @@ sunna-client.workspace = true
 sunna-proto.workspace = true
 sunna-telemetry.workspace = true
 sunna-viewer.workspace = true
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = [] }
 tokio.workspace = true
 tracing.workspace = true

@@ -25,7 +25,9 @@ pub enum ControlMessage {
         stream: StreamSettings,
     },
     /// Host refusal (bad token, busy...), sent instead of `HelloAck`.
-    Refused { reason: String },
+    Refused {
+        reason: String,
+    },
     /// Host reply describing the stream it is about to send.
     HelloAck {
         version: u16,
@@ -45,8 +47,12 @@ pub enum ControlMessage {
         codec: String,
         fast_lane: bool,
     },
-    SetStreamFailed { reason: String },
-    Probe { token: String },
+    SetStreamFailed {
+        reason: String,
+    },
+    Probe {
+        token: String,
+    },
     ProbeAck {
         name: String,
         version: u16,
@@ -54,9 +60,16 @@ pub enum ControlMessage {
         token_ok: bool,
     },
     /// RTT probe. `t_us` is the sender's clock at send time.
-    Ping { seq: u32, t_us: u64 },
+    Ping {
+        seq: u32,
+        t_us: u64,
+    },
     /// Reply to `Ping`: `peer_t_us` echoes the ping's `t_us`.
-    Pong { seq: u32, t_us: u64, peer_t_us: u64 },
+    Pong {
+        seq: u32,
+        t_us: u64,
+        peer_t_us: u64,
+    },
     Input(InputEvent),
     /// Client lost a frame (or can't decode): the next frame must be an IDR.
     /// The codec-level recovery backstop (research/03 §4) until LTR/RFI lands.
@@ -72,6 +85,24 @@ pub enum ControlMessage {
     /// Per-second host stats, for the viewer's stats overlay.
     HostStats(HostStats),
     Bye,
+    /// Follows `ProbeAck` when the token matched, so launchers can show the
+    /// machine properly. Last in the enum and sent after the ack: older
+    /// launchers stop reading at the ack, and older hosts never send it.
+    HostInfo(HostAbout),
+}
+
+/// What a host is, for display.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAbout {
+    /// "macOS 26.0", "Arch Linux", "Ubuntu 22.04.5 LTS".
+    pub os: String,
+    /// "laptop", "desktop", "vm", "server", or empty when unknown.
+    pub device: String,
+    /// "MacBook Air", "Mac mini"; empty when unknown.
+    pub model: String,
+    /// The shared display in pixels.
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,10 +179,19 @@ pub enum InputEvent {
         repeat: bool,
     },
     /// Relative mouse motion (FPS games, pointer-lock mode).
-    MouseMoveRel { dx: f32, dy: f32 },
+    MouseMoveRel {
+        dx: f32,
+        dy: f32,
+    },
     /// Absolute mouse position, normalized to 0..1 of the host stream area.
-    MouseMoveAbs { x: f32, y: f32 },
-    MouseButton { button: MouseButton, pressed: bool },
+    MouseMoveAbs {
+        x: f32,
+        y: f32,
+    },
+    MouseButton {
+        button: MouseButton,
+        pressed: bool,
+    },
     /// Scroll with trackpad phase information so hosts can replay native
     /// momentum scrolling (research/05 §4: the one high-fidelity mapping).
     Scroll {
@@ -241,14 +281,25 @@ mod tests {
                 codec: "h264".into(),
                 fast_lane: true,
             },
-            ControlMessage::SetStreamFailed { reason: "unsupported codec".into() },
-            ControlMessage::Probe { token: "secret".into() },
+            ControlMessage::SetStreamFailed {
+                reason: "unsupported codec".into(),
+            },
+            ControlMessage::Probe {
+                token: "secret".into(),
+            },
             ControlMessage::ProbeAck {
                 name: "host".into(),
                 version: 3,
                 busy: true,
                 token_ok: true,
             },
+            ControlMessage::HostInfo(HostAbout {
+                os: "Arch Linux".into(),
+                device: "desktop".into(),
+                model: String::new(),
+                width: 2560,
+                height: 1440,
+            }),
             ControlMessage::HelloAck {
                 version: 3,
                 name: "host".into(),

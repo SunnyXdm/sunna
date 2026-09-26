@@ -1,6 +1,6 @@
-//! Launcher settings. The session token and log collector live in
-//! ~/.sunna/dogfood.env, shared with `scripts/dogfood.sh`; viewer
-//! preferences live in ~/.sunna/config.json.
+//! Launcher settings. This computer's key (SUNNA_TOKEN) and the log
+//! collector live in ~/.sunna/dogfood.env, shared with
+//! `scripts/dogfood.sh`; viewer preferences live in ~/.sunna/config.json.
 
 use std::path::PathBuf;
 
@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    pub token: String,
+    /// This computer's key: what `dogfood.sh host` shares it with, and the
+    /// key the Add Computer form starts with.
+    pub key: String,
     pub windowed: bool,
     pub stats: bool,
     pub menu_button: bool,
@@ -32,7 +34,7 @@ impl Default for Prefs {
     }
 }
 
-fn dir() -> PathBuf {
+pub fn dir() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
@@ -79,7 +81,7 @@ pub fn load() -> Settings {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
     Settings {
-        token: token(),
+        key: token(),
         windowed: prefs.windowed,
         stats: prefs.stats,
         menu_button: prefs.menu_button,
@@ -88,7 +90,7 @@ pub fn load() -> Settings {
 
 pub fn save(settings: &Settings) -> Result<(), String> {
     std::fs::create_dir_all(dir()).map_err(|error| error.to_string())?;
-    write_token(&settings.token)?;
+    write_token(settings.key.trim())?;
     let prefs = Prefs {
         windowed: settings.windowed,
         stats: settings.stats,
@@ -102,7 +104,7 @@ pub fn save(settings: &Settings) -> Result<(), String> {
 /// file as it was; owner-only permissions, as it's a secret.
 fn write_token(token: &str) -> Result<(), String> {
     if token.contains(['\n', '\r', '=']) {
-        return Err("The token can't contain line breaks or '='".into());
+        return Err("The key can't contain line breaks or '='.".into());
     }
     let path = env_path();
     let existing = std::fs::read_to_string(&path).unwrap_or_default();

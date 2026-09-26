@@ -11,6 +11,7 @@ sunna-capture.workspace = true
 sunna-codec.workspace = true
 sunna-host.workspace = true
 sunna-input.workspace = true
+sunna-proto.workspace = true
 sunna-telemetry.workspace = true
 sunna-transport.workspace = true
 tokio.workspace = true

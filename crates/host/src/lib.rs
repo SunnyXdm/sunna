@@ -88,6 +88,8 @@ pub struct HostConfig {
     /// Dev-only: drop this fraction of outgoing media datagrams (0.0..1.0)
     /// to exercise FEC and keyframe recovery.
     pub simulate_loss: f64,
+    /// OS and device, told to launchers that probe with the right token.
+    pub about: sunna_proto::messages::HostAbout,
 }
 
 /// Signals from the control loop into the media thread. This is the seam where
@@ -188,6 +190,12 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
                     token_ok,
                 })
                 .await?;
+            if token_ok {
+                let mut about = config.about.clone();
+                about.width = config.width;
+                about.height = config.height;
+                control.send(&ControlMessage::HostInfo(about)).await?;
+            }
             control.finish().await?;
             return Ok(());
         }
@@ -336,7 +344,11 @@ async fn tile_writer(
             return;
         }
     };
-    if stream.write_all(&sunna_proto::tiles::TILE_STREAM_MAGIC).await.is_err() {
+    if stream
+        .write_all(&sunna_proto::tiles::TILE_STREAM_MAGIC)
+        .await
+        .is_err()
+    {
         return;
     }
     let mut report = tokio::time::interval(Duration::from_secs(1));
@@ -455,7 +467,8 @@ impl LocalCut {
         if last.elapsed() > Duration::from_millis(500) {
             *last = Instant::now();
             let current = signals.target_bitrate_bps.load(Ordering::Relaxed);
-            let next = (current / 4 * 3).max(min_bitrate(signals.max_bitrate_bps.load(Ordering::Relaxed)));
+            let next =
+                (current / 4 * 3).max(min_bitrate(signals.max_bitrate_bps.load(Ordering::Relaxed)));
             signals.target_bitrate_bps.store(next, Ordering::Relaxed);
             tracing::debug!(backlog, bitrate = next, reason, "cutting bitrate");
         }
@@ -463,7 +476,8 @@ impl LocalCut {
 }
 
 fn send_backlog(connection: &Connection) -> usize {
-    sunna_transport::DATAGRAM_SEND_BUFFER_SIZE.saturating_sub(connection.datagram_send_buffer_space())
+    sunna_transport::DATAGRAM_SEND_BUFFER_SIZE
+        .saturating_sub(connection.datagram_send_buffer_space())
 }
 
 /// Capture → encoder (this thread) and encoder output → wire (a send thread),
@@ -608,7 +622,9 @@ fn submit_loop(
 ) -> Option<StreamSettings> {
     // The encoder factory configured the ceiling; align it with the actual
     // starting target before the first frame.
-    let mut applied_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed)
+    let mut applied_bitrate = signals
+        .target_bitrate_bps
+        .load(Ordering::Relaxed)
         .min(signals.max_bitrate_bps.load(Ordering::Relaxed));
     encoder.set_target_bitrate(applied_bitrate);
     let mut consecutive_failures: u32 = 0;
@@ -622,7 +638,9 @@ fn submit_loop(
         if signals.force_keyframe.swap(false, Ordering::Relaxed) {
             encoder.request_keyframe();
         }
-        let target_bitrate = signals.target_bitrate_bps.load(Ordering::Relaxed)
+        let target_bitrate = signals
+            .target_bitrate_bps
+            .load(Ordering::Relaxed)
             .min(signals.max_bitrate_bps.load(Ordering::Relaxed));
         if target_bitrate != applied_bitrate {
             encoder.set_target_bitrate(target_bitrate);
@@ -733,7 +751,8 @@ fn send_loop(
                 consecutive_failures = 0;
                 window.encoded(&encoded);
                 let datagrams = packetize(
-                    epoch,                    wire_frame_id,
+                    epoch,
+                    wire_frame_id,
                     encoded.capture_ts_us,
                     encoded.keyframe,
                     &encoded.data,
@@ -750,7 +769,11 @@ fn send_loop(
                     window.sender_drops += 1;
                     wire_frame_id += 1;
                     signals.force_keyframe.store(true, Ordering::Relaxed);
-                    cuts.cut(&signals, "frame larger than send buffer space", send_backlog(&connection));
+                    cuts.cut(
+                        &signals,
+                        "frame larger than send buffer space",
+                        send_backlog(&connection),
+                    );
                 } else {
                     wire_frame_id += 1;
                     for datagram in datagrams {
@@ -845,7 +868,10 @@ impl HostWindow {
         });
         tracing::info!(
             fps = self.sent_frames,
-            mbps = format!("{:.1}", self.sent_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6),
+            mbps = format!(
+                "{:.1}",
+                self.sent_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6
+            ),
             target_mbps = format!("{:.1}", bitrate_bps as f64 / 1e6),
             keyframes = self.keyframes,
             encoder_drops = self.encoder_drops,
@@ -1029,8 +1055,7 @@ async fn handle_control(
                 // the path's edge — stop growing before we build a standing
                 // queue, cut only on real inflation (> baseline + 100ms).
                 let holding = if e2e_p95_us > 0 {
-                    p95_baseline_us
-                        .map_or(false, |baseline| e2e_p95_us > baseline + 40_000)
+                    p95_baseline_us.map_or(false, |baseline| e2e_p95_us > baseline + 40_000)
                 } else {
                     false
                 };

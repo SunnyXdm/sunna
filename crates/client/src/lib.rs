@@ -14,9 +14,9 @@
 //! the lowest observed RTT, so cross-machine numbers are meaningful to within
 //! path asymmetry. Same-machine, the offset converges near zero.
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use sunna_codec::make_decoder;
@@ -160,6 +160,10 @@ pub struct ProbeResult {
     pub version: u16,
     pub busy: bool,
     pub token_ok: bool,
+    /// Sent by newer hosts when the token matched.
+    pub about: Option<sunna_proto::messages::HostAbout>,
+    /// Round trip to the host, as the connection measured it.
+    pub rtt: Duration,
 }
 
 /// Query a peer without starting capture or taking its viewer slot.
@@ -177,22 +181,33 @@ pub async fn probe(
                 token: token.into(),
             })
             .await?;
-        let result = match control.recv().await? {
+        let mut result = match control.recv().await? {
             ControlMessage::ProbeAck {
                 name,
                 version,
                 busy,
                 token_ok,
-            } => Ok(ProbeResult {
+            } => ProbeResult {
                 name,
                 version,
                 busy,
                 token_ok,
-            }),
+                about: None,
+                rtt: Duration::ZERO,
+            },
             other => anyhow::bail!("expected ProbeAck, got {other:?}"),
         };
+        // Newer hosts follow a matching token with HostInfo; older ones have
+        // already finished the stream, so this returns at once.
+        if result.token_ok {
+            let next = tokio::time::timeout(Duration::from_millis(500), control.recv()).await;
+            if let Ok(Ok(ControlMessage::HostInfo(about))) = next {
+                result.about = Some(about);
+            }
+        }
+        result.rtt = client.connection.rtt();
         client.connection.close(0u32.into(), b"probe complete");
-        result
+        Ok(result)
     })
     .await?
 }
@@ -229,7 +244,9 @@ enum DecodeEvent {
         assembly_us: u64,
     },
     /// A frame can't be decoded until the next keyframe (gap or decode error).
-    NeedKeyframe { epoch: u8 },
+    NeedKeyframe {
+        epoch: u8,
+    },
     Failed(String),
 }
 
@@ -248,71 +265,87 @@ fn spawn_decoder(
     counters: Arc<DecodeCounters>,
     mut on_frame: impl FnMut(sunna_codec::DecodedFrame) + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new().name("sunna-decode".into()).spawn(move || {
-        let mut epoch = 0u8;
-        let mut awaiting_keyframe = true; // nothing decodable before the first IDR
-        let mut last_frame: Option<u64> = None;
-        while let Some(item) = frames.blocking_recv() {
-            let frame = match item {
-                DecodeItem::Frame(frame) => frame,
-                DecodeItem::Reconfigure { codec, width, height } => {
-                    match make_decoder(&codec, width, height) {
-                        Ok(next) => decoder = next,
-                        Err(error) => {
-                            let _ = events.send(DecodeEvent::Failed(error.to_string()));
-                            return;
+    std::thread::Builder::new()
+        .name("sunna-decode".into())
+        .spawn(move || {
+            let mut epoch = 0u8;
+            let mut awaiting_keyframe = true; // nothing decodable before the first IDR
+            let mut last_frame: Option<u64> = None;
+            while let Some(item) = frames.blocking_recv() {
+                let frame = match item {
+                    DecodeItem::Frame(frame) => frame,
+                    DecodeItem::Reconfigure {
+                        codec,
+                        width,
+                        height,
+                    } => {
+                        match make_decoder(&codec, width, height) {
+                            Ok(next) => decoder = next,
+                            Err(error) => {
+                                let _ = events.send(DecodeEvent::Failed(error.to_string()));
+                                return;
+                            }
+                        }
+                        epoch = epoch.wrapping_add(1);
+                        awaiting_keyframe = true;
+                        last_frame = None;
+                        continue;
+                    }
+                };
+                // A gap in frame ids is a frame lost in the network (or dropped
+                // here); later P-frames reference it.
+                if let Some(last) = last_frame {
+                    if frame.frame_id > last + 1 {
+                        counters
+                            .gap_lost
+                            .fetch_add(frame.frame_id - last - 1, Ordering::Relaxed);
+                        if !frame.keyframe && !awaiting_keyframe {
+                            awaiting_keyframe = true;
+                            let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
                         }
                     }
-                    epoch = epoch.wrapping_add(1);
-                    awaiting_keyframe = true;
-                    last_frame = None;
+                }
+                last_frame =
+                    Some(last_frame.map_or(frame.frame_id, |last| last.max(frame.frame_id)));
+                if awaiting_keyframe && !frame.keyframe {
+                    counters
+                        .skipped_awaiting_keyframe
+                        .fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-            };
-            // A gap in frame ids is a frame lost in the network (or dropped
-            // here); later P-frames reference it.
-            if let Some(last) = last_frame {
-                if frame.frame_id > last + 1 {
-                    counters.gap_lost.fetch_add(frame.frame_id - last - 1, Ordering::Relaxed);
-                    if !frame.keyframe && !awaiting_keyframe {
-                        awaiting_keyframe = true;
-                        let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
+                let started = Instant::now();
+                match decoder.decode(
+                    frame.frame_id,
+                    frame.capture_ts_us,
+                    frame.keyframe,
+                    &frame.data,
+                ) {
+                    Ok(decoded) => {
+                        awaiting_keyframe = false;
+                        counters.decoded.fetch_add(1, Ordering::Relaxed);
+                        let age_us = sunna_proto::now_us() as i64 - decoded.capture_ts_us as i64;
+                        let _ = events.send(DecodeEvent::Decoded {
+                            epoch,
+                            frame_id: frame.frame_id,
+                            keyframe: frame.keyframe,
+                            age_us,
+                            decode_us: started.elapsed().as_micros() as u64,
+                            bytes: frame.data.len(),
+                            assembly_us: frame.assembly_us,
+                        });
+                        on_frame(decoded);
+                    }
+                    Err(error) => {
+                        counters.decode_errors.fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
+                        if !awaiting_keyframe {
+                            awaiting_keyframe = true;
+                            let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
+                        }
                     }
                 }
             }
-            last_frame = Some(last_frame.map_or(frame.frame_id, |last| last.max(frame.frame_id)));
-            if awaiting_keyframe && !frame.keyframe {
-                counters.skipped_awaiting_keyframe.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            let started = Instant::now();
-            match decoder.decode(frame.frame_id, frame.capture_ts_us, frame.keyframe, &frame.data) {
-                Ok(decoded) => {
-                    awaiting_keyframe = false;
-                    counters.decoded.fetch_add(1, Ordering::Relaxed);
-                    let age_us = sunna_proto::now_us() as i64 - decoded.capture_ts_us as i64;
-                    let _ = events.send(DecodeEvent::Decoded {
-                        epoch,
-                        frame_id: frame.frame_id,
-                        keyframe: frame.keyframe,
-                        age_us,
-                        decode_us: started.elapsed().as_micros() as u64,
-                        bytes: frame.data.len(),
-                        assembly_us: frame.assembly_us,
-                    });
-                    on_frame(decoded);
-                }
-                Err(error) => {
-                    counters.decode_errors.fetch_add(1, Ordering::Relaxed);
-                    tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
-                    if !awaiting_keyframe {
-                        awaiting_keyframe = true;
-                        let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
-                    }
-                }
-            }
-        }
-    })
+        })
 }
 
 /// Run a receive session until the connection closes or `options.duration`
@@ -410,7 +443,8 @@ pub async fn run_client(
     let counters = Arc::new(DecodeCounters::default());
     let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodeItem>(DECODE_QUEUE);
     let (event_tx, mut decode_events) = tokio::sync::mpsc::unbounded_channel();
-    let decode_thread = spawn_decoder(decoder, frame_rx, event_tx, Arc::clone(&counters), on_frame)?;
+    let decode_thread =
+        spawn_decoder(decoder, frame_rx, event_tx, Arc::clone(&counters), on_frame)?;
     let mut frame_tx = Some(frame_tx);
 
     let mut reassembler = Reassembler::new();
@@ -456,7 +490,9 @@ pub async fn run_client(
         Duration::from_secs(1),
     );
     let deadline_sleep = tokio::time::sleep(
-        options.duration.unwrap_or(Duration::from_secs(60 * 60 * 24 * 365)),
+        options
+            .duration
+            .unwrap_or(Duration::from_secs(60 * 60 * 24 * 365)),
     );
     tokio::pin!(deadline_sleep);
     let mut input_open = true;
@@ -758,7 +794,9 @@ pub async fn run_client(
         frames_completed: reassembler.completed_frames,
         decode_errors: counters.decode_errors.load(Ordering::Relaxed),
         frames_dropped: counters.gap_lost.load(Ordering::Relaxed),
-        frames_skipped_awaiting_keyframe: counters.skipped_awaiting_keyframe.load(Ordering::Relaxed),
+        frames_skipped_awaiting_keyframe: counters
+            .skipped_awaiting_keyframe
+            .load(Ordering::Relaxed),
         keyframes_requested,
         chunks_recovered: reassembler.recovered_chunks,
         stale_datagrams: reassembler.stale_datagrams,

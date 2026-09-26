@@ -82,11 +82,22 @@ case "${1:-}" in
       export DISPLAY="${SUNNA_DISPLAY:-:40}"
       scripts/linux-desktop.sh "$DISPLAY"
     fi
-    echo "Hosting on $IP:$PORT (tailnet only). Ctrl-C to stop."
+    # What another computer needs to add this one in the Sunna app.
+    cat <<EOF
+
+  Sharing $NAME with Sunna (tailnet only). Ctrl-C to stop.
+
+    Address   $IP
+    Key       $SUNNA_TOKEN
+
+  In the Sunna app on the other computer, choose Add Computer and paste:
+    sunna://$IP?key=$SUNNA_TOKEN
+
+EOF
     ./target/release/sunnad --source screen --listen "$IP:$PORT" --name "$NAME"
     ;;
   app)
-    echo "Opening Sunna. Machines on your tailnet that are hosting show up in the list."
+    echo "Opening Sunna."
     ./target/release/sunna
     ;;
   view)

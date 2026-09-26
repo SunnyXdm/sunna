@@ -37,6 +37,7 @@ impl Host {
                 max_bitrate_bps: 2_000_000,
                 fast_lane: false,
                 simulate_loss: 0.0,
+                about: Default::default(),
             },
             Box::new(move |config| {
                 // Exercise a source failure after validation has succeeded.
@@ -284,10 +285,14 @@ async fn probe_auth_busy_refusal_and_slot_release() {
     assert!(!idle.busy);
     assert_eq!(idle.name, "test-host");
     assert_eq!(idle.version, sunna_proto::PROTOCOL_VERSION);
+    // The right token also learns what the host is.
+    let about = idle.about.expect("host info after a good probe");
+    assert_eq!((about.width, about.height), (320, 180));
     let wrong = probe(host.addr, "sunna", "wrong!", TIMEOUT).await.unwrap();
     assert!(!wrong.token_ok);
     assert!(wrong.name.is_empty());
     assert!(!wrong.busy);
+    assert!(wrong.about.is_none());
     assert!(host.builds.lock().unwrap().is_empty());
 
     let (_client, mut control, ack) = hello(host.addr).await;
@@ -300,8 +305,12 @@ async fn probe_auth_busy_refusal_and_slot_release() {
     ));
     let busy = probe(host.addr, "sunna", "secret", TIMEOUT).await.unwrap();
     assert!(busy.busy && busy.token_ok);
+    // A wrong token learns nothing more while a session runs.
     let wrong_busy = probe(host.addr, "sunna", "wrong!", TIMEOUT).await.unwrap();
-    assert_eq!(wrong_busy, wrong);
+    assert_eq!(
+        (wrong_busy.name, wrong_busy.busy, wrong_busy.token_ok, wrong_busy.about),
+        (wrong.name.clone(), wrong.busy, wrong.token_ok, wrong.about.clone())
+    );
     let (_second, _second_control, refused) = hello(host.addr).await;
     assert_eq!(
         refused,

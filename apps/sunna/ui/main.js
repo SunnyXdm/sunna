@@ -1,344 +1,1185 @@
-// Sunna launcher. Everything real happens in Rust commands (src/main.rs);
-// this draws the views and forwards what the user does.
+// Sunna launcher. The Rust side (src/main.rs) does the real work: saved
+// machines, probing, sessions. This draws them and forwards what you do.
+
+import { animate, flip, snapshot, springs, tilt, wait } from "./motion.js";
+import { skyTime, startSky } from "./sky.js";
+
+// Outside the app (a plain browser), stand in for the Rust side.
+if (!window.__TAURI__) await import("../dev/mock.js");
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
-const REFRESH_MS = 5000;
-
-// Machines running a Sunna host; the rest of the tailnet (phones, servers
-// that don't host) is listed quietly below.
-const HOSTING = new Set(["ready", "busy", "wrong-token", "update-needed"]);
-
-const PILL = {
-  ready: "Ready",
-  busy: "In use",
-  "wrong-token": "Token mismatch",
-  "update-needed": "Update needed",
-};
-const OTHER = {
-  "not-hosting": "Not sharing",
-  offline: "Offline",
-};
+const POLL_MS = 4000;
+/** States in which a machine's screen is lit: something answered. */
+const LIT = new Set(["ready", "busy", "wrong-key", "update-needed"]);
 
 const state = {
-  scan: null, // { this_device, tailnet, running, machines }
-  scanning: false,
-  error: null,
-  connecting: null, // ip
-  query: "",
+  info: { user: "", computer: "" },
+  machines: [],
+  /** id → the last check (state, os, rtt...). */
+  checks: new Map(),
+  loaded: false,
+  polled: false,
+  /** { id, phase } while connecting or in a session. */
+  session: null,
+  /** New computers start with this computer's key. */
+  defaultKey: "",
 };
 
-// ───────── Views ─────────
+const tiles = new Map();
+let addTile = null;
 
-function show(view) {
-  for (const item of document.querySelectorAll(".nav-item")) {
-    if (item.dataset.view === view) item.setAttribute("aria-current", "page");
-    else item.removeAttribute("aria-current");
-  }
-  $("view-computers").hidden = view !== "computers";
-  $("view-settings").hidden = view !== "settings";
-  if (view === "settings") loadSettings();
-}
+// ───────────── Machines on screen ─────────────
 
-for (const item of document.querySelectorAll(".nav-item")) {
-  item.addEventListener("click", () => show(item.dataset.view));
-}
-
-// ───────── Computers ─────────
-
-function osKind(os) {
-  const name = (os || "").toLowerCase();
+function osKind(os = "") {
+  const name = os.toLowerCase();
   if (name.includes("mac")) return "macos";
-  if (name.includes("linux")) return "linux";
   if (name.includes("windows")) return "windows";
-  return "other";
-}
-
-function card(machine) {
-  const node = $("card-template").content.firstElementChild.cloneNode(true);
-  const kind = osKind(machine.os);
-  node.dataset.state = machine.state;
-  node.dataset.os = kind;
-  node.dataset.ip = machine.ip;
-  node.querySelector(".device use").setAttribute("href", kind === "macos" ? "#i-laptop" : "#i-desktop");
-  node.querySelector(".card-name").textContent = machine.name;
-  node.querySelector(".card-os").textContent = machine.os || "";
-  const pill = node.querySelector(".pill");
-  pill.textContent = PILL[machine.state] ?? machine.state;
-  pill.classList.add(machine.state);
-  node.classList.toggle("connecting", state.connecting === machine.ip);
-
-  if (machine.state === "ready") {
-    node.setAttribute("aria-label", `Connect to ${machine.name}`);
-    node.addEventListener("click", () => connect(machine));
-  } else if (machine.state === "wrong-token") {
-    node.setAttribute("aria-label", `${machine.name}: uses a different session token. Open settings.`);
-    node.addEventListener("click", () => {
-      show("settings");
-      $("token").focus();
-      toast("That computer uses a different session token. Paste the same token here as on that computer.", "info");
-    });
-  } else if (machine.state === "busy") {
-    node.addEventListener("click", () => toast(`Someone is already connected to ${machine.name}.`, "info"));
-  } else {
-    node.addEventListener("click", () =>
-      toast(`${machine.name} runs a different version of Sunna. Update both computers.`, "info"),
-    );
+  for (const distro of ["arch", "ubuntu", "fedora", "debian", "mint", "manjaro", "nixos"]) {
+    if (name.includes(distro)) return distro;
   }
-  return node;
+  if (name.startsWith("pop")) return "pop";
+  if (name.includes("linux")) return "linux";
+  return "unknown";
 }
 
-function skeletons(count) {
-  return Array.from({ length: count }, () => {
-    const node = document.createElement("div");
-    node.className = "card skeleton";
-    node.innerHTML =
-      '<span class="card-art"></span><span class="card-body"><span class="skeleton-line long"></span><span class="skeleton-line short"></span></span>';
-    return node;
+function hostOf(address = "") {
+  const text = address.trim().replace(/^sunna:\/\//, "").split(/[?/#]/)[0];
+  if (text.startsWith("[")) return text.slice(1, text.indexOf("]"));
+  return (text.match(/:/g) || []).length === 1 ? text.split(":")[0] : text;
+}
+
+function ms(value) {
+  return value < 1 ? "<1 ms" : `${Math.round(value)} ms`;
+}
+
+function ago(seconds) {
+  const diff = Date.now() / 1000 - seconds;
+  if (diff < 90) return "just now";
+  if (diff < 3600) return `${Math.round(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.round(diff / 3600)} h ago`;
+  const days = Math.round(diff / 86400);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+function describe(machine, check) {
+  switch (check?.state ?? "checking") {
+    case "idle":
+      return "Enter its address";
+    case "checking":
+      return "Looking…";
+    case "ready":
+      return check.rtt_ms != null ? `Ready · ${ms(check.rtt_ms)}` : "Ready";
+    case "busy":
+      return "In use";
+    case "wrong-key":
+      return "Key doesn't match";
+    case "update-needed":
+      return "Needs an update";
+    case "not-found":
+      return "Address not found";
+    case "invalid":
+      return "Address isn't valid";
+    default:
+      return machine.last_seen ? `Offline · seen ${ago(machine.last_seen)}` : "Not responding";
+  }
+}
+
+const BADGES = {
+  busy: ["i-eye", "In use"],
+  "wrong-key": ["i-lock", "Key doesn't match"],
+  "update-needed": ["i-alert", "Needs an update"],
+};
+
+/** Size the screen to the machine's display shape inside a 16:10 area. */
+function shape(tile, width, height) {
+  let ratio = width > 0 && height > 0 ? width / height : 1.6;
+  ratio = Math.min(2.4, Math.max(1.25, ratio));
+  const [sw, sh] = ratio >= 1.6 ? [100, (1.6 / ratio) * 100] : [(ratio / 1.6) * 100, 100];
+  tile.style.setProperty("--sw", `${sw.toFixed(2)}%`);
+  tile.style.setProperty("--sh", `${sh.toFixed(2)}%`);
+}
+
+function wake(tile, delay = 0) {
+  tile.classList.remove("sleeping", "waking");
+  tile.style.setProperty("--wake-delay", `${delay}ms`);
+  void tile.offsetWidth;
+  tile.classList.add("waking");
+  clearTimeout(tile.wakeTimer);
+  tile.wakeTimer = setTimeout(() => tile.classList.remove("waking"), 1900 + delay);
+}
+
+function sleep(tile) {
+  tile.classList.remove("waking");
+  tile.classList.add("sleeping");
+  clearTimeout(tile.wakeTimer);
+  tile.wakeTimer = setTimeout(() => tile.classList.remove("sleeping"), 900);
+}
+
+/** Draw a machine and its state onto a tile (grid or preview). */
+function paintTile(tile, machine, check, wakeDelay = 0) {
+  const now = check?.state ?? "checking";
+  const lit = LIT.has(now);
+  const wasLit = tile.hasAttribute("data-lit");
+  tile.dataset.state = now;
+  tile.dataset.os = osKind(check?.os || machine.os);
+  tile.dataset.device = check?.device || machine.device || "";
+  tile.toggleAttribute("data-lit", lit);
+  if (lit && !wasLit) wake(tile, wakeDelay);
+  if (!lit && wasLit) sleep(tile);
+  shape(tile, check?.width || machine.width, check?.height || machine.height);
+  const status = describe(machine, check);
+  tile.querySelector(".name").textContent = machine.name;
+  tile.querySelector(".status-text").textContent = status;
+  const [icon, text] = BADGES[now] ?? ["i-lock", ""];
+  tile.querySelector(".badge use").setAttribute("href", `#${icon}`);
+  tile.querySelector(".badge-text").textContent = text;
+  const hit = tile.querySelector(".tile-hit");
+  hit.setAttribute("aria-label", `${machine.name}. ${status}`);
+  hit.title = [check?.os || machine.os, machine.model, machine.address].filter(Boolean).join(" · ");
+}
+
+function createTile(id) {
+  const tile = $("tile-template").content.firstElementChild.cloneNode(true);
+  tile.dataset.id = id;
+  const hit = tile.querySelector(".tile-hit");
+  tilt(tile, hit);
+  hit.addEventListener("click", () => activate(id));
+  hit.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openMenu(id, { x: event.clientX, y: event.clientY });
+  });
+  const more = tile.querySelector(".tile-more");
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openMenu(id, { anchor: more });
+  });
+  return tile;
+}
+
+function createPreviewTile() {
+  const tile = $("tile-template").content.firstElementChild.cloneNode(true);
+  tile.querySelector(".tile-more").remove();
+  tile.removeAttribute("role");
+  tile.querySelector(".tile-hit").tabIndex = -1;
+  return tile;
+}
+
+function createAddTile() {
+  const tile = $("add-tile-template").content.firstElementChild.cloneNode(true);
+  const hit = tile.querySelector(".tile-hit");
+  hit.addEventListener("click", () => openMachineSheet({ opener: hit }));
+  return tile;
+}
+
+function renderGrid({ stagger = false } = {}) {
+  const grid = $("grid");
+  const ids = new Set(state.machines.map((machine) => machine.id));
+  for (const [id, tile] of tiles) {
+    if (!ids.has(id)) {
+      tile.remove();
+      tiles.delete(id);
+    }
+  }
+  state.machines.forEach((machine, index) => {
+    let tile = tiles.get(machine.id);
+    if (!tile) {
+      tile = createTile(machine.id);
+      tile.style.setProperty("--i", index);
+      tiles.set(machine.id, tile);
+    }
+    paintTile(tile, machine, state.checks.get(machine.id), stagger ? 120 + index * 110 : 0);
+    const at = grid.children[index];
+    if (at !== tile) grid.insertBefore(tile, at ?? null);
+  });
+  addTile ??= createAddTile();
+  addTile.style.setProperty("--i", state.machines.length);
+  if (grid.lastElementChild !== addTile) grid.appendChild(addTile);
+  const count = state.machines.length + 1;
+  grid.dataset.count = count <= 3 ? "few" : count <= 6 ? "some" : "many";
+  const empty = state.loaded && state.machines.length === 0;
+  grid.hidden = empty;
+  $("welcome").hidden = !empty;
+  renderHeader();
+}
+
+function greeting(date, name) {
+  const hour = date.getHours();
+  const part = hour < 5 ? "Hello" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  return name ? `${part}, ${name}` : part;
+}
+
+function summary() {
+  const machines = state.machines;
+  if (!state.loaded) return " ";
+  if (!machines.length) return "Let's add your first computer.";
+  if (!state.polled) return "Looking for your computers…";
+  const ready = machines.filter((machine) => state.checks.get(machine.id)?.state === "ready");
+  if (machines.length === 1) {
+    const [machine] = machines;
+    return ready.length ? `${machine.name} is ready.` : `${machine.name} isn't available right now.`;
+  }
+  if (ready.length === machines.length) return `All ${machines.length} computers are ready.`;
+  if (!ready.length) return "None of your computers are available right now.";
+  return `${ready.length} of ${machines.length} computers ready.`;
+}
+
+function renderHeader() {
+  $("greeting").textContent = greeting(skyTime(), state.info.user);
+  $("summary").textContent = summary();
+}
+
+const byId = (id) => state.machines.find((machine) => machine.id === id);
+
+let polling = false;
+async function poll() {
+  if (polling || state.session || document.hidden || !state.machines.length) return;
+  polling = true;
+  try {
+    const checks = await invoke("machine_statuses");
+    const first = !state.polled;
+    for (const [id, check] of Object.entries(checks)) state.checks.set(id, check);
+    state.polled = true;
+    renderGrid({ stagger: first });
+  } catch (error) {
+    console.warn("status check failed", error);
+  } finally {
+    polling = false;
+  }
+}
+
+/** A click on a machine: connect, or say why not. */
+function activate(id) {
+  const machine = byId(id);
+  if (!machine) return;
+  const check = state.checks.get(id);
+  switch (check?.state) {
+    case "ready":
+      return connect(machine);
+    case "wrong-key":
+      return openMachineSheet({ machine, opener: tiles.get(id), focus: "key" });
+    case "busy":
+      return toast(`Someone is connected to ${machine.name} right now.`, "info");
+    case "update-needed":
+      return toast(check.detail || `${machine.name} runs a different version of Sunna.`, "info");
+    case undefined:
+    case "checking":
+      return toast(`Still looking for ${machine.name}…`, "info");
+    default:
+      return toast(check.detail || `${machine.name} isn't responding.`, "info", {
+        label: "Edit",
+        run: () => openMachineSheet({ machine, opener: tiles.get(id) }),
+      });
+  }
+}
+
+// ───────────── Connecting ─────────────
+
+const PHASES = {
+  reaching: (name) => `Reaching ${name}…`,
+  video: () => "Starting video…",
+  open: () => "Connected",
+  ended: () => "Disconnected",
+};
+
+function setPhase(phase, name) {
+  const line = $("launch-phase");
+  line.textContent = PHASES[phase]?.(name) ?? "";
+  line.classList.remove("swap");
+  void line.offsetWidth;
+  line.classList.add("swap");
+  $("launch-progress").dataset.phase = phase;
+  // Only a connection still on its way can be cancelled.
+  $("launch-cancel").hidden = phase === "open" || phase === "ended";
+}
+
+const px = (rect, radius) => ({
+  left: `${rect.left}px`,
+  top: `${rect.top}px`,
+  width: `${rect.width}px`,
+  height: `${rect.height}px`,
+  borderRadius: `${radius}px`,
+});
+
+/** Where an element in the app sits once the app is at rest, undoing the
+ *  app's current scale (receded behind a sheet, or zoomed while launching). */
+function restingRect(element) {
+  const rect = element.getBoundingClientRect();
+  const transform = getComputedStyle($("app")).transform;
+  const scale = transform && transform !== "none" ? new DOMMatrixReadOnly(transform).a : 1;
+  if (Math.abs(scale - 1) < 0.0005) return rect;
+  // .app scales around 50% 40% (style.css).
+  const [ox, oy] = [innerWidth * 0.5, innerHeight * 0.4];
+  return {
+    left: ox + (rect.left - ox) / scale,
+    top: oy + (rect.top - oy) / scale,
+    width: rect.width / scale,
+    height: rect.height / scale,
+  };
+}
+
+const launch = {
+  timer: 0,
+
+  async open(machine) {
+    const tile = tiles.get(machine.id);
+    const overlay = $("launch");
+    const box = $("launch-screen");
+    const from = tile.querySelector(".screen").getBoundingClientRect();
+    overlay.dataset.os = tile.dataset.os;
+    // Start where the tile's wallpaper is in its drift, so the hand-off is seamless.
+    box.querySelector(".wall").style.transform = getComputedStyle(tile.querySelector(".wall")).transform;
+    $("launch-name").textContent = machine.name;
+    setPhase("reaching", machine.name);
+    overlay.classList.remove("expanded");
+    overlay.hidden = false;
+    tile.classList.add("launch-source");
+    $("app").classList.add("launching");
+    const full = { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    Object.assign(box.style, px(full, 0));
+    this.timer = setTimeout(() => overlay.classList.add("expanded"), 160);
+    await animate(box, [px(from, 12), px(full, 0)], springs.zoom);
+  },
+
+  async close(id) {
+    const overlay = $("launch");
+    const box = $("launch-screen");
+    const tile = tiles.get(id);
+    clearTimeout(this.timer);
+    overlay.classList.remove("expanded");
+    if (tile?.isConnected) {
+      const to = restingRect(tile.querySelector(".screen"));
+      $("app").classList.remove("launching");
+      tile.classList.remove("launch-source");
+      const full = box.getBoundingClientRect();
+      const move = animate(box, [px(full, 0), px(to, 12)], springs.zoom, { fill: "forwards" });
+      // Hand back to the tile's own screen as it lands.
+      const fade = box.animate([{ opacity: 1 }, { opacity: 0 }], {
+        duration: springs.zoom.duration * 0.35,
+        delay: springs.zoom.duration * 0.5,
+        fill: "forwards",
+      }).finished.catch(() => {});
+      await Promise.all([move, fade]);
+    } else {
+      $("app").classList.remove("launching");
+    }
+    overlay.hidden = true;
+    for (const animation of box.getAnimations()) animation.cancel();
+    tile?.classList.remove("launch-source");
+  },
+};
+
+async function connect(machine) {
+  if (state.session) return;
+  hideMenu();
+  hideToast();
+  state.session = { id: machine.id, phase: "reaching" };
+  const opening = launch.open(machine);
+  try {
+    await invoke("connect", { id: machine.id });
+  } catch (error) {
+    await opening;
+    await wait(250);
+    await launch.close(machine.id);
+    state.session = null;
+    toast(String(error));
+  }
+}
+
+listen("session-progress", ({ payload }) => {
+  if (state.session?.id !== payload.id) return;
+  state.session.phase = payload.phase;
+  setPhase(payload.phase, byId(payload.id)?.name ?? "");
+});
+
+listen("session-ended", async ({ payload }) => {
+  if (state.session?.id !== payload.id) return;
+  if (payload.opened) {
+    setPhase("ended", "");
+    await wait(500);
+  } else {
+    await wait(150);
+  }
+  await launch.close(payload.id);
+  state.session = null;
+  if (payload.reason) toast(payload.reason);
+  // Give the host a moment to free its viewer slot before looking again.
+  setTimeout(poll, 1500);
+});
+
+$("launch-cancel").addEventListener("click", () => invoke("cancel_connect"));
+
+// ───────────── Sheets ─────────────
+
+const sheets = [];
+
+function showScrim() {
+  const scrim = $("scrim");
+  scrim.hidden = false;
+  requestAnimationFrame(() => scrim.classList.add("shown"));
+  $("app").classList.add("receded");
+}
+
+function hideScrim() {
+  const scrim = $("scrim");
+  scrim.classList.remove("shown");
+  $("app").classList.remove("receded");
+  setTimeout(() => {
+    if (!sheets.length) scrim.hidden = true;
+  }, 320);
+}
+
+/** Open a sheet from a template, growing out of `opener`. */
+function openSheet(templateId, opener) {
+  const sheet = $(templateId).content.firstElementChild.cloneNode(true);
+  $("sheets").appendChild(sheet);
+  if (!sheets.length) showScrim();
+  sheets.push({ sheet, restore: document.activeElement });
+  const rect = sheet.getBoundingClientRect();
+  const from = opener?.getBoundingClientRect?.();
+  sheet.style.transformOrigin = from
+    ? `${from.left + from.width / 2 - rect.left}px ${from.top + from.height / 2 - rect.top}px`
+    : "50% 50%";
+  animate(sheet, [{ transform: "scale(0.86)", opacity: 0 }, { transform: "none", opacity: 1 }], springs.bouncy);
+  return sheet;
+}
+
+async function closeSheet(sheet) {
+  const index = sheets.findIndex((entry) => entry.sheet === sheet);
+  if (index < 0) return;
+  const [entry] = sheets.splice(index, 1);
+  if (!sheets.length) hideScrim();
+  sheet.style.pointerEvents = "none";
+  await sheet
+    .animate([{ transform: "none", opacity: 1 }, { transform: "scale(0.94)", opacity: 0 }], {
+      duration: 170,
+      easing: "cubic-bezier(0.4, 0, 1, 1)",
+      fill: "forwards",
+    })
+    .finished.catch(() => {});
+  sheet.remove();
+  if (entry.restore?.isConnected) entry.restore.focus({ preventScroll: true });
+}
+
+const topSheet = () => sheets.at(-1)?.sheet;
+
+$("scrim").addEventListener("click", () => {
+  const sheet = topSheet();
+  if (sheet) closeSheet(sheet);
+});
+
+function focusables(root) {
+  return [...root.querySelectorAll("button, input, [tabindex]")].filter(
+    (element) => !element.disabled && element.tabIndex >= 0 && element.offsetParent !== null,
+  );
+}
+
+async function switchPage(sheet, from, to, forward) {
+  const before = sheet.getBoundingClientRect().height;
+  from.hidden = true;
+  to.hidden = false;
+  const after = sheet.getBoundingClientRect().height;
+  animate(sheet, [{ height: `${before}px` }, { height: `${after}px` }], springs.snappy);
+  await animate(
+    to,
+    [{ opacity: 0, transform: `translateX(${forward ? 28 : -28}px)` }, { opacity: 1, transform: "none" }],
+    springs.snappy,
+  );
+}
+
+function parseLink(text) {
+  const match = /^sunna:\/\/([^/?#]+)[^?#]*(?:\?([^#]*))?/i.exec(text.trim());
+  if (!match) return null;
+  const params = new URLSearchParams(match[2] ?? "");
+  return { address: decodeURIComponent(match[1]), key: params.get("key") ?? "" };
+}
+
+function iconSvg(name) {
+  return `<svg class="icon"><use href="#${name}"/></svg>`;
+}
+
+function setCheckLine(line, kind, text) {
+  const tone = {
+    ready: "good",
+    busy: "good",
+    "wrong-key": "bad",
+    "update-needed": "warn",
+    unreachable: "warn",
+    "not-found": "bad",
+    invalid: "bad",
+    error: "bad",
+  }[kind];
+  line.dataset.tone = tone ?? "";
+  const icon = line.querySelector(".check-icon");
+  icon.innerHTML =
+    kind === "checking"
+      ? '<span class="spinner"></span>'
+      : tone
+        ? iconSvg(tone === "good" ? "i-check" : tone === "warn" ? "i-alert" : "i-alert")
+        : "";
+  const span = document.createElement("span");
+  span.className = "check-text";
+  span.textContent = text;
+  line.querySelector(".check-text").replaceWith(span);
+}
+
+function checkMessage(check, address) {
+  switch (check.state) {
+    case "checking":
+      return `Looking for Sunna at ${hostOf(address)}…`;
+    case "ready":
+      return ["Found " + (check.name || hostOf(address)), check.os, check.rtt_ms != null ? ms(check.rtt_ms) : ""]
+        .filter(Boolean)
+        .join(" · ");
+    case "busy":
+      return `Found ${check.name || hostOf(address)}. Someone is connected to it right now.`;
+    case "unreachable":
+      return `${check.detail} You can add it anyway.`;
+    default:
+      return check.detail || "";
+  }
+}
+
+/** Add a computer, or edit one (`machine`). */
+function openMachineSheet({ machine = null, opener = null, focus = "address", find = false } = {}) {
+  const sheet = openSheet("machine-sheet-template", opener);
+  const form = sheet.querySelector("form");
+  const fields = { address: form.elements.address, key: form.elements.key, name: form.elements.name };
+  const line = sheet.querySelector(".check-line");
+  const submit = sheet.querySelector(".submit");
+  const editing = Boolean(machine);
+  sheet.querySelector("h2").textContent = editing ? machine.name : "Add a computer";
+  submit.textContent = editing ? "Save" : "Add Computer";
+  sheet.querySelector(".remove").hidden = !editing;
+  sheet.querySelector(".find").hidden = editing;
+  fields.address.value = machine?.address ?? "";
+  fields.key.value = machine?.key ?? state.defaultKey;
+  fields.name.value = machine?.name ?? "";
+
+  const preview = createPreviewTile();
+  sheet.querySelector(".preview-slot").appendChild(preview);
+  let latest = editing ? (state.checks.get(machine.id) ?? null) : null;
+  let sequence = 0;
+  let timer = 0;
+
+  const paintPreview = () => {
+    const address = fields.address.value.trim();
+    const draft = {
+      name: fields.name.value.trim() || latest?.name || hostOf(address) || "New computer",
+      os: latest?.os || (editing ? machine.os : ""),
+      device: latest?.device || (editing ? machine.device : ""),
+      width: latest?.width || (editing ? machine.width : 0),
+      height: latest?.height || (editing ? machine.height : 0),
+      last_seen: editing ? machine.last_seen : 0,
+      address,
+    };
+    paintTile(preview, draft, address ? (latest ?? { state: "checking" }) : { state: "idle" });
+    fields.name.placeholder = latest?.name || "Optional";
+  };
+
+  const runCheck = async () => {
+    const address = fields.address.value.trim();
+    fields.key.closest(".input").classList.remove("error");
+    if (!address) {
+      latest = null;
+      setCheckLine(line, "", "When a computer starts sharing, it shows its address and key.");
+      paintPreview();
+      return;
+    }
+    const mine = ++sequence;
+    latest = { state: "checking" };
+    setCheckLine(line, "checking", checkMessage(latest, address));
+    paintPreview();
+    let check;
+    try {
+      check = await invoke("check_machine", { address, key: fields.key.value.trim() });
+    } catch (error) {
+      check = { state: "invalid", detail: String(error) };
+    }
+    if (mine !== sequence) return;
+    latest = check;
+    setCheckLine(line, check.state, checkMessage(check, address));
+    paintPreview();
+    fields.key.closest(".input").classList.toggle("error", check.state === "wrong-key");
+  };
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(runCheck, 420);
+  };
+
+  fields.address.addEventListener("input", () => {
+    const link = parseLink(fields.address.value);
+    if (link) {
+      fields.address.value = link.address;
+      if (link.key) fields.key.value = link.key;
+      clearTimeout(timer);
+      runCheck();
+      return;
+    }
+    schedule();
+  });
+  fields.key.addEventListener("input", schedule);
+  fields.name.addEventListener("input", paintPreview);
+  sheet.querySelector(".reveal").addEventListener("click", (event) => {
+    const hidden = fields.key.type === "password";
+    fields.key.type = hidden ? "text" : "password";
+    event.currentTarget.title = hidden ? "Hide" : "Show";
+  });
+  sheet.querySelector(".close").addEventListener("click", () => closeSheet(sheet));
+  sheet.querySelector(".cancel").addEventListener("click", () => closeSheet(sheet));
+  sheet.querySelector(".remove").addEventListener("click", async (event) => {
+    if (await confirmRemove(machine, event.currentTarget)) closeSheet(sheet);
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const address = fields.address.value.trim();
+    if (!address) {
+      const box = fields.address.closest(".input");
+      box.classList.remove("shake");
+      void box.offsetWidth;
+      box.classList.add("shake");
+      fields.address.focus();
+      return;
+    }
+    submit.classList.add("busy");
+    const about = latest && latest.state !== "checking" ? latest : null;
+    const draft = { name: fields.name.value.trim(), address, key: fields.key.value.trim(), about };
+    try {
+      const saved = editing
+        ? await invoke("update_machine", { id: machine.id, draft })
+        : await invoke("add_machine", { draft });
+      if (about) state.checks.set(saved.id, about);
+      if (editing) {
+        state.machines = state.machines.map((entry) => (entry.id === saved.id ? saved : entry));
+        renderGrid();
+        closeSheet(sheet);
+      } else {
+        state.machines.push(saved);
+        await flyIn(saved, preview, sheet);
+      }
+      setTimeout(poll, 300);
+    } catch (error) {
+      setCheckLine(line, "error", String(error));
+    } finally {
+      submit.classList.remove("busy");
+    }
+  });
+
+  // Find on Tailscale: a second page in the same sheet.
+  const formPage = sheet.querySelector(".form-page");
+  const findPage = sheet.querySelector(".find-page");
+  const list = sheet.querySelector(".find-list");
+  const rescan = sheet.querySelector(".rescan");
+
+  const scan = async () => {
+    rescan.classList.add("spinning");
+    list.replaceChildren(findMessage('<span class="spinner"></span>', "Looking on your tailnet…"));
+    try {
+      const result = await invoke("scan_tailscale", { key: fields.key.value.trim() || state.defaultKey });
+      renderFound(list, result.machines, (found) => {
+        fields.address.value = found.ip;
+        if (!fields.name.value.trim()) fields.name.value = found.name;
+        switchPage(sheet, findPage, formPage, false);
+        runCheck();
+        fields.key.focus();
+      });
+    } catch (error) {
+      list.replaceChildren(findMessage(iconSvg("i-alert"), String(error)));
+    } finally {
+      setTimeout(() => rescan.classList.remove("spinning"), 400);
+    }
+  };
+  const showFind = async () => {
+    await switchPage(sheet, formPage, findPage, true);
+    scan();
+  };
+  sheet.querySelector(".find").addEventListener("click", showFind);
+  sheet.querySelector(".back").addEventListener("click", () => {
+    switchPage(sheet, findPage, formPage, false);
+    fields.address.focus();
+  });
+  rescan.addEventListener("click", scan);
+
+  sheet.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !findPage.hidden) {
+      event.stopPropagation();
+      switchPage(sheet, findPage, formPage, false);
+    }
+  });
+
+  if (fields.address.value) runCheck();
+  else setCheckLine(line, "", "When a computer starts sharing, it shows its address and key.");
+  paintPreview();
+  if (find) showFind();
+  else fields[focus]?.focus();
+  return sheet;
+}
+
+function findMessage(iconHtml, text) {
+  const message = document.createElement("div");
+  message.className = "find-message";
+  message.innerHTML = iconHtml;
+  const span = document.createElement("span");
+  span.textContent = text;
+  message.appendChild(span);
+  return message;
+}
+
+const FOUND_PILL = {
+  ready: "Sharing",
+  busy: "In use",
+  "wrong-key": "Other key",
+  "update-needed": "Update",
+};
+
+function renderFound(list, machines, pick) {
+  const saved = new Set(state.machines.map((machine) => hostOf(machine.address)));
+  const sharing = machines.filter((machine) => FOUND_PILL[machine.state]);
+  const others = machines.filter((machine) => !FOUND_PILL[machine.state]);
+  const item = (found, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "find-item";
+    button.dataset.state = found.state;
+    button.style.setProperty("--i", index);
+    const already = saved.has(found.ip) || saved.has(found.name) || saved.has(found.dns_name);
+    button.innerHTML = `<span class="find-art" data-os="${osKind(found.os)}"></span><span class="find-text"><span class="find-name"></span><span class="find-meta"></span></span><span class="pill"></span>`;
+    button.querySelector(".find-name").textContent = found.name;
+    button.querySelector(".find-meta").textContent = [found.os, found.ip].filter(Boolean).join(" · ");
+    const pill = button.querySelector(".pill");
+    if (already) {
+      pill.textContent = "Added";
+      pill.classList.add("saved");
+      button.disabled = true;
+    } else if (FOUND_PILL[found.state]) {
+      pill.textContent = FOUND_PILL[found.state];
+      pill.classList.add(found.state);
+      button.addEventListener("click", () => pick(found));
+    } else {
+      pill.textContent = found.state === "offline" ? "Offline" : "Not sharing";
+      button.disabled = true;
+    }
+    return button;
+  };
+  const children = sharing.length
+    ? sharing.map(item)
+    : [findMessage(iconSvg("i-dots"), "No computers on your tailnet are sharing with Sunna yet.")];
+  if (others.length) {
+    const group = document.createElement("div");
+    group.className = "find-group";
+    group.textContent = `Not sharing · ${others.length}`;
+    children.push(group, ...others.map((found, index) => item(found, sharing.length + index)));
+  }
+  list.replaceChildren(...children);
+}
+
+/** A new machine's preview flies from the sheet into its place. */
+async function flyIn(machine, preview, sheet) {
+  renderGrid();
+  const tile = tiles.get(machine.id);
+  const stage = preview.querySelector(".stage");
+  const from = stage.getBoundingClientRect();
+  // A copy of the preview's device, outside the sheet, flies over.
+  const ghost = document.createElement("div");
+  ghost.className = "tile ghost";
+  for (const key of ["state", "os", "device"]) ghost.dataset[key] = preview.dataset[key] ?? "";
+  ghost.toggleAttribute("data-lit", preview.hasAttribute("data-lit"));
+  ghost.style.cssText = preview.style.cssText;
+  ghost.appendChild(stage.cloneNode(true));
+  const frame = (rect) => ({ left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px` });
+  Object.assign(ghost.style, frame(from));
+  document.body.appendChild(ghost);
+  tile.classList.add("arriving");
+  tile.scrollIntoView({ block: "nearest" });
+  closeSheet(sheet);
+  const to = restingRect(tile.querySelector(".stage"));
+  await animate(ghost, [frame(from), frame(to)], springs.gentle, { fill: "forwards" });
+  tile.classList.remove("arriving");
+  ghost.remove();
+}
+
+/** Ask, then remove: the tile fades away and the rest close the gap. */
+async function confirmRemove(machine, opener) {
+  const sheet = openSheet("confirm-template", opener);
+  sheet.querySelector("h2").textContent = `Remove ${machine.name}?`;
+  sheet.querySelector(".confirm-body").textContent =
+    "It leaves this list. You can add it again any time with its address and key.";
+  sheet.querySelector(".cancel").focus();
+  return new Promise((resolve) => {
+    sheet.querySelector(".cancel").addEventListener("click", async () => {
+      await closeSheet(sheet);
+      resolve(false);
+    });
+    sheet.querySelector(".confirm").addEventListener("click", async () => {
+      await closeSheet(sheet);
+      resolve(true);
+      await removeMachine(machine);
+    });
+    sheet.addEventListener("cancel-sheet", () => resolve(false), { once: true });
   });
 }
 
-function otherRow(machine) {
-  const row = document.createElement("li");
-  row.className = "other";
-  row.title = [machine.dns_name, machine.ip].filter(Boolean).join(" · ");
-  const kind = osKind(machine.os);
-  row.innerHTML = `<svg class="icon"><use href="${kind === "macos" ? "#i-laptop" : "#i-computers"}"/></svg><span class="other-text"><span class="other-name"></span><span class="other-state"></span></span>`;
-  row.querySelector(".other-name").textContent = machine.name;
-  row.querySelector(".other-state").textContent = [OTHER[machine.state] ?? machine.state, machine.os]
-    .filter(Boolean)
-    .join(" · ");
-  return row;
-}
-
-function matches(machine) {
-  const query = state.query.trim().toLowerCase();
-  return !query || `${machine.name} ${machine.os} ${machine.ip}`.toLowerCase().includes(query);
-}
-
-function render() {
-  const scan = state.scan;
-  const grid = $("grid");
-  if (!scan) {
-    grid.replaceChildren(...(state.error ? [] : skeletons(3)));
-    $("empty").hidden = true;
-    $("others").hidden = true;
-    $("subtitle").textContent = state.error ? "Couldn't look on your tailnet" : "Looking on your tailnet…";
-    renderTailnet();
-    return;
-  }
-  const machines = scan.machines.filter(matches);
-  const hosting = machines.filter((machine) => HOSTING.has(machine.state));
-  const others = machines.filter((machine) => !HOSTING.has(machine.state));
-  const focused = document.activeElement?.dataset?.ip;
-  grid.replaceChildren(...hosting.map(card));
-  if (focused) grid.querySelector(`[data-ip="${CSS.escape(focused)}"]`)?.focus();
-
-  const ready = scan.machines.filter((machine) => machine.state === "ready").length;
-  const sharing = scan.machines.filter((machine) => HOSTING.has(machine.state)).length;
-  $("subtitle").textContent =
-    sharing === 0
-      ? "Nothing is sharing yet"
-      : `${ready} ready${sharing > ready ? ` · ${sharing - ready} unavailable` : ""}`;
-  $("nav-count").hidden = ready === 0;
-  $("nav-count").textContent = ready;
-  $("empty").hidden = sharing > 0 || state.query !== "";
-  $("search-box").hidden = scan.machines.length < 5 && state.query === "";
-
-  $("others").hidden = others.length === 0;
-  $("others-summary").textContent =
-    `${others.length} other ${others.length === 1 ? "device" : "devices"} on your tailnet`;
-  $("others-list").replaceChildren(...others.map(otherRow));
-  renderTailnet();
-}
-
-function renderTailnet() {
-  const dot = $("tailnet-dot");
-  if (state.error) {
-    dot.className = "status-dot off";
-    $("tailnet-name").textContent = "Tailscale";
-    $("tailnet-detail").textContent = "Not connected";
-    return;
-  }
-  if (!state.scan) return;
-  dot.className = "status-dot on";
-  $("tailnet-name").textContent = "Tailscale connected";
-  $("tailnet-detail").textContent = state.scan.this_device ? `This computer: ${state.scan.this_device}` : "";
-}
-
-async function refresh() {
-  if (state.scanning) return;
-  state.scanning = true;
-  $("refresh").classList.add("spinning");
+async function removeMachine(machine) {
   try {
-    state.scan = await invoke("scan");
-    state.error = null;
+    await invoke("remove_machine", { id: machine.id });
   } catch (error) {
-    state.error = String(error);
-    if (!state.scan) toast(state.error);
-  } finally {
-    state.scanning = false;
-    // Let the spin finish a turn; a flicker reads as a glitch.
-    setTimeout(() => $("refresh").classList.remove("spinning"), 400);
-    render();
-  }
-}
-
-async function connect(machine) {
-  if (state.connecting) return;
-  state.connecting = machine.ip;
-  hideToast();
-  render();
-  try {
-    await invoke("connect", { ip: machine.ip, name: machine.name });
-  } catch (error) {
-    state.connecting = null;
     toast(String(error));
-    render();
+    return;
   }
+  const tile = tiles.get(machine.id);
+  if (tile) {
+    tile.classList.add("leaving");
+    await wait(380);
+  }
+  const grid = $("grid");
+  const before = snapshot([...grid.children].filter((element) => element !== tile));
+  state.machines = state.machines.filter((entry) => entry.id !== machine.id);
+  state.checks.delete(machine.id);
+  renderGrid();
+  flip(before);
+  toast(`Removed ${machine.name}.`, "good");
 }
 
-// The session runs in its own window; the app hides until it ends.
-listen("session-ended", (event) => {
-  state.connecting = null;
-  const reason = event.payload?.reason;
-  if (reason) toast(reason);
-  refresh();
-});
+// ───────────── Settings ─────────────
 
-$("refresh").addEventListener("click", refresh);
-$("search").addEventListener("input", (event) => {
-  state.query = event.target.value;
-  render();
-});
-$("copy-command").addEventListener("click", (event) => copy("scripts/dogfood.sh host", event.currentTarget));
-
-// Arrow keys move between cards; Enter/Space activate (they're buttons).
-$("grid").addEventListener("keydown", (event) => {
-  const cards = [...$("grid").querySelectorAll(".card:not(.skeleton)")];
-  const index = cards.indexOf(document.activeElement);
-  if (index < 0) return;
-  const columns = getComputedStyle($("grid")).gridTemplateColumns.split(" ").length;
-  const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns }[event.key];
-  if (!step) return;
-  event.preventDefault();
-  cards[Math.max(0, Math.min(cards.length - 1, index + step))].focus();
-});
-
-// ───────── Settings ─────────
-
-let settings = null;
-let saveTimer = null;
-
-async function loadSettings() {
-  settings = await invoke("get_settings");
-  $("token").value = settings.token ?? "";
-  $("stats").checked = settings.stats;
-  $("menu-button").checked = settings.menu_button;
-  for (const button of $("display-mode").querySelectorAll("button")) {
-    const window = button.dataset.value === "window";
-    button.setAttribute("aria-checked", String(window === settings.windowed));
+async function openSettings(opener) {
+  if (sheets.some((entry) => entry.sheet.classList.contains("settings-sheet"))) return;
+  const sheet = openSheet("settings-sheet-template", opener);
+  sheet.querySelector(".close").addEventListener("click", () => closeSheet(sheet));
+  let settings;
+  try {
+    settings = await invoke("get_settings");
+  } catch (error) {
+    toast(String(error));
+    return;
   }
-}
+  const key = sheet.querySelector('input[name="key"]');
+  key.value = settings.key;
+  let saveTimer = 0;
+  const save = (delay = 0) => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try {
+        await invoke("set_settings", { settings });
+        state.defaultKey = settings.key;
+      } catch (error) {
+        toast(String(error));
+      }
+    }, delay);
+  };
+  key.addEventListener("input", () => {
+    settings.key = key.value.trim();
+    save(500);
+  });
+  sheet.querySelector(".reveal").addEventListener("click", () => {
+    key.type = key.type === "password" ? "text" : "password";
+  });
+  sheet.querySelector(".copy-key").addEventListener("click", (event) => copy(key.value, event.currentTarget));
 
-function save(delay = 0) {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try {
-      await invoke("set_settings", { settings });
-    } catch (error) {
-      toast(String(error));
+  const stats = sheet.querySelector('input[name="stats"]');
+  const menuButton = sheet.querySelector('input[name="menu_button"]');
+  stats.checked = settings.stats;
+  menuButton.checked = settings.menu_button;
+  stats.addEventListener("change", () => {
+    settings.stats = stats.checked;
+    save();
+  });
+  menuButton.addEventListener("change", () => {
+    settings.menu_button = menuButton.checked;
+    save();
+  });
+  const segments = sheet.querySelectorAll(".segmented button");
+  const paintSegments = () => {
+    for (const button of segments) {
+      button.setAttribute("aria-checked", String((button.dataset.value === "window") === settings.windowed));
     }
-  }, delay);
-}
-
-$("token").addEventListener("input", (event) => {
-  settings.token = event.target.value.trim();
-  save(500);
-});
-$("stats").addEventListener("change", (event) => {
-  settings.stats = event.target.checked;
-  save();
-});
-$("menu-button").addEventListener("change", (event) => {
-  settings.menu_button = event.target.checked;
-  save();
-});
-$("display-mode").addEventListener("click", (event) => {
-  const button = event.target.closest("button");
-  if (!button) return;
-  settings.windowed = button.dataset.value === "window";
-  for (const other of $("display-mode").querySelectorAll("button")) {
-    other.setAttribute("aria-checked", String(other === button));
+  };
+  paintSegments();
+  for (const button of segments) {
+    button.addEventListener("click", () => {
+      settings.windowed = button.dataset.value === "window";
+      paintSegments();
+      save();
+    });
   }
-  save();
-});
-$("reveal-token").addEventListener("click", () => {
-  const hidden = $("token").type === "password";
-  $("token").type = hidden ? "text" : "password";
-  $("reveal-token").title = hidden ? "Hide" : "Show";
-});
-$("copy-token").addEventListener("click", (event) => copy($("token").value, event.currentTarget));
 
-// ───────── Bits ─────────
+  const info = await invoke("app_info").catch(() => ({}));
+  sheet.querySelector(".about").textContent = `Sunna ${info.version ?? ""} · protocol ${info.protocol ?? ""}`;
+  sheet.querySelector(".this-name").textContent = info.computer || "This computer";
+  const me = await invoke("this_computer").catch(() => null);
+  if (!me || !sheet.isConnected) return;
+  const sharing = sheet.querySelector(".this-sharing");
+  sharing.dataset.state = me.sharing;
+  sheet.querySelector(".this-sharing-text").textContent =
+    {
+      ready: `Sharing at ${me.address}`,
+      busy: `Sharing at ${me.address} · in a session`,
+      "wrong-key": "Sharing, but with a different key than the one below",
+      unknown: "Not on a Tailscale network",
+    }[me.sharing] ?? "Not sharing. Run scripts/dogfood.sh host to share it.";
+  if (me.address && me.key) {
+    const link = `sunna://${me.address}?key=${me.key}`;
+    const row = sheet.querySelector(".link-row");
+    row.hidden = false;
+    row.querySelector(".link-text").textContent = `sunna://${me.address}?key=••••`;
+    row.querySelector(".copy-link").addEventListener("click", (event) => copy(link, event.currentTarget));
+  }
+}
 
-let toastTimer = null;
-function toast(text, kind = "error") {
+// ───────────── Menu ─────────────
+
+let menuAnchor = null;
+
+function openMenu(id, { x, y, anchor }) {
+  const machine = byId(id);
+  if (!machine || state.session) return;
+  hideMenu();
+  const ready = state.checks.get(id)?.state === "ready";
+  const menu = $("menu");
+  const item = (label, icon, shortcut, run, { disabled = false, danger = false } = {}) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `menu-item${danger ? " danger" : ""}`;
+    button.setAttribute("role", "menuitem");
+    button.disabled = disabled;
+    button.innerHTML = `${iconSvg(icon)}<span></span><span class="menu-shortcut">${shortcut}</span>`;
+    button.querySelector("span").textContent = label;
+    button.addEventListener("click", () => {
+      hideMenu();
+      run();
+    });
+    return button;
+  };
+  const separator = document.createElement("div");
+  separator.className = "menu-separator";
+  const tile = tiles.get(id);
+  menu.replaceChildren(
+    item("Connect", "i-arrow", "↵", () => connect(machine), { disabled: !ready }),
+    item("Edit…", "i-edit", "⌘E", () => openMachineSheet({ machine, opener: tile })),
+    item("Copy Address", "i-copy", "", () => copy(machine.address)),
+    separator,
+    item("Remove…", "i-trash", "⌫", () => confirmRemove(machine, tile), { danger: true }),
+  );
+  menu.hidden = false;
+  const size = menu.getBoundingClientRect();
+  let left = x;
+  let top = y;
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    left = rect.right - size.width;
+    top = rect.bottom + 6;
+    menuAnchor = anchor;
+    anchor.setAttribute("aria-expanded", "true");
+  }
+  left = Math.max(8, Math.min(left, innerWidth - size.width - 8));
+  top = Math.max(8, Math.min(top, innerHeight - size.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  const originX = anchor ? size.width - 14 : 0;
+  menu.style.transformOrigin = `${originX}px 0`;
+  animate(menu, [{ opacity: 0, transform: "scale(0.9)" }, { opacity: 1, transform: "none" }], springs.bouncy);
+  menu.querySelector(".menu-item:not(:disabled)")?.focus({ preventScroll: true });
+}
+
+function hideMenu() {
+  const menu = $("menu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  menuAnchor?.setAttribute("aria-expanded", "false");
+  menuAnchor = null;
+}
+
+document.addEventListener("pointerdown", (event) => {
+  if (!$("menu").hidden && !$("menu").contains(event.target)) hideMenu();
+});
+addEventListener("blur", hideMenu);
+addEventListener("resize", hideMenu);
+
+// ───────────── Toast, copy ─────────────
+
+let toastTimer = 0;
+function toast(text, kind = "error", action = null) {
+  const element = $("toast");
   $("toast-text").textContent = text;
-  $("toast").className = `toast ${kind}`;
-  $("toast").hidden = false;
+  element.className = `toast ${kind}`;
+  element.querySelector(".toast-icon use").setAttribute("href", kind === "good" ? "#i-check" : "#i-alert");
+  const button = $("toast-action");
+  button.hidden = !action;
+  button.textContent = action?.label ?? "";
+  button.onclick = action
+    ? () => {
+        hideToast();
+        action.run();
+      }
+    : null;
+  const wasHidden = element.hidden;
+  element.hidden = false;
+  if (wasHidden) {
+    animate(
+      element,
+      [{ opacity: 0, transform: "translateY(14px) scale(0.96)" }, { opacity: 1, transform: "none" }],
+      springs.bouncy,
+    );
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(hideToast, kind === "error" ? 9000 : 5000);
+  toastTimer = setTimeout(hideToast, kind === "error" ? 8000 : 4500);
 }
-function hideToast() {
-  $("toast").hidden = true;
-}
-$("toast").addEventListener("click", hideToast);
 
-async function copy(text, button) {
+async function hideToast() {
+  const element = $("toast");
+  if (element.hidden) return;
+  clearTimeout(toastTimer);
+  await element
+    .animate([{ opacity: 1 }, { opacity: 0, transform: "translateY(8px)" }], { duration: 160, fill: "forwards" })
+    .finished.catch(() => {});
+  element.hidden = true;
+  for (const animation of element.getAnimations()) animation.cancel();
+}
+
+async function copy(text, button = null) {
   try {
     await navigator.clipboard.writeText(text);
-    const use = button.querySelector("use");
-    const before = use.getAttribute("href");
-    use.setAttribute("href", "#i-check");
-    button.classList.add("done");
-    setTimeout(() => {
-      use.setAttribute("href", before);
-      button.classList.remove("done");
-    }, 1200);
   } catch {
     toast("Couldn't copy. Select the text and press ⌘C.", "info");
+    return;
   }
+  if (!button) {
+    toast("Copied.", "good");
+    return;
+  }
+  const use = button.querySelector("use");
+  const before = use.getAttribute("href");
+  use.setAttribute("href", "#i-check");
+  button.classList.add("done");
+  animate(button, [{ transform: "scale(0.8)" }, { transform: "none" }], springs.bouncy);
+  setTimeout(() => {
+    use.setAttribute("href", before);
+    button.classList.remove("done");
+  }, 1300);
+}
+
+// ───────────── Keyboard ─────────────
+
+function focusedMachine() {
+  const tile = document.activeElement?.closest?.(".tile[data-id]");
+  return tile ? byId(tile.dataset.id) : null;
 }
 
 document.addEventListener("keydown", (event) => {
   const command = event.metaKey || event.ctrlKey;
-  if (command && event.key === "r") {
+  const sheet = topSheet();
+
+  if (!$("menu").hidden) {
+    const items = [...$("menu").querySelectorAll(".menu-item:not(:disabled)")];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      hideMenu();
+      event.preventDefault();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+      event.preventDefault();
+    }
+    return;
+  }
+
+  if (state.session) {
+    if (event.key === "Escape") invoke("cancel_connect");
+    return;
+  }
+
+  if (sheet) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      sheet.dispatchEvent(new Event("cancel-sheet"));
+      closeSheet(sheet);
+    } else if (event.key === "Tab") {
+      const items = focusables(sheet);
+      if (!items.length) return;
+      const index = items.indexOf(document.activeElement);
+      const next = event.shiftKey ? (index <= 0 ? items.length - 1 : index - 1) : (index + 1) % items.length;
+      items[next].focus();
+      event.preventDefault();
+    }
+    return;
+  }
+
+  if (command && event.key.toLowerCase() === "n") {
     event.preventDefault();
-    refresh();
-  } else if (command && (event.key === "," || event.key === "2")) {
+    openMachineSheet({ opener: $("add-button") });
+  } else if (command && event.key === ",") {
     event.preventDefault();
-    show("settings");
-  } else if (command && event.key === "1") {
+    openSettings($("settings-button"));
+  } else if (command && event.key.toLowerCase() === "r") {
     event.preventDefault();
-    show("computers");
-  } else if (command && event.key === "f" && !$("search-box").hidden) {
+    poll();
+  } else if (command && /^[1-9]$/.test(event.key)) {
+    const machine = state.machines[Number(event.key) - 1];
+    if (machine) {
+      event.preventDefault();
+      activate(machine.id);
+    }
+  } else if (command && event.key.toLowerCase() === "e" && focusedMachine()) {
     event.preventDefault();
-    $("search").focus();
-  } else if (event.key === "Escape") {
-    hideToast();
-    if (document.activeElement === $("search")) $("search").blur();
+    const machine = focusedMachine();
+    openMachineSheet({ machine, opener: tiles.get(machine.id) });
+  } else if ((event.key === "Backspace" || event.key === "Delete") && focusedMachine()) {
+    event.preventDefault();
+    const machine = focusedMachine();
+    confirmRemove(machine, tiles.get(machine.id));
+  } else if (event.key.startsWith("Arrow") && document.activeElement?.closest?.("#grid")) {
+    const hits = [...$("grid").querySelectorAll(".tile-hit")];
+    const index = hits.indexOf(document.activeElement);
+    if (index < 0) return;
+    const columns = getComputedStyle($("grid")).gridTemplateColumns.split(" ").length;
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns }[event.key];
+    const next = hits[index + step];
+    if (next) {
+      event.preventDefault();
+      next.focus();
+    }
+  } else if ((event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) && focusedMachine()) {
+    event.preventDefault();
+    const machine = focusedMachine();
+    openMenu(machine.id, { anchor: tiles.get(machine.id).querySelector(".tile-more") });
   }
 });
 
-(async function start() {
-  try {
-    const info = await invoke("app_info");
-    if (info.vibrancy) document.documentElement.classList.add("vibrancy");
-    $("about").textContent = `Sunna ${info.version} · protocol ${info.protocol}`;
-  } catch {}
-  render();
-  refresh();
-  setInterval(refresh, REFRESH_MS);
-})();
+// ───────────── Start ─────────────
+
+$("add-button").addEventListener("click", (event) => openMachineSheet({ opener: event.currentTarget }));
+$("settings-button").addEventListener("click", (event) => openSettings(event.currentTarget));
+$("welcome-add").addEventListener("click", (event) => openMachineSheet({ opener: event.currentTarget }));
+$("welcome-find").addEventListener("click", (event) =>
+  openMachineSheet({ opener: event.currentTarget, find: true }),
+);
+
+async function start() {
+  startSky();
+  renderHeader();
+  const [info, settings, machines] = await Promise.all([
+    invoke("app_info").catch(() => ({})),
+    invoke("get_settings").catch(() => ({ key: "" })),
+    invoke("list_machines").catch((error) => {
+      toast(String(error));
+      return [];
+    }),
+  ]);
+  state.info = info;
+  state.defaultKey = settings.key ?? "";
+  state.machines = machines;
+  state.loaded = true;
+  renderGrid();
+  setTimeout(() => $("grid").classList.add("settled"), 1600);
+  poll();
+  setInterval(poll, POLL_MS);
+  setInterval(renderHeader, 60_000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) poll();
+  });
+  addEventListener("focus", poll);
+}
+
+start();

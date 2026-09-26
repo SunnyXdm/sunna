@@ -10,12 +10,14 @@
 //! still dev-grade (self-signed, unverified by the client): bind to a private
 //! network such as your tailnet, never the open internet.
 
+mod about;
+
 use std::net::SocketAddr;
 
 use clap::{Parser, ValueEnum};
 use sunna_capture::{FrameSource, SyntheticSource};
 use sunna_codec::{default_codec_name, make_encoder};
-use sunna_host::{HostConfig, run_host};
+use sunna_host::{run_host, HostConfig};
 use sunna_input::make_injector;
 use sunna_transport::Server;
 
@@ -114,7 +116,11 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
 fn make_source_factory(source: Source) -> sunna_host::SourceFactory {
     match source {
         Source::Synthetic => Box::new(move |stream| {
-            Ok(Box::new(SyntheticSource::new(stream.width, stream.height, stream.fps)) as Box<dyn FrameSource>)
+            Ok(Box::new(SyntheticSource::new(
+                stream.width,
+                stream.height,
+                stream.fps,
+            )) as Box<dyn FrameSource>)
         }),
         Source::Screen => {
             #[cfg(target_os = "macos")]
@@ -159,7 +165,9 @@ fn generate_token() -> anyhow::Result<String> {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let _telemetry = sunna_telemetry::init("host", sunna_telemetry::Remote::from_env());
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     let result = runtime.block_on(run(args));
     if let Err(error) = &result {
         tracing::error!("{error:#}");
@@ -170,7 +178,10 @@ fn main() -> anyhow::Result<()> {
 async fn run(mut args: Args) -> anyhow::Result<()> {
     if args.token.is_empty() && !args.listen.ip().is_loopback() {
         args.token = generate_token()?;
-        println!("\nsession token (pass to the viewer with --token): {}\n", args.token);
+        println!(
+            "\nsession token (pass to the viewer with --token): {}\n",
+            args.token
+        );
     }
 
     let (width, height) = resolve_dimensions(&args)?;
@@ -202,6 +213,7 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
         fast_lane: sunna_capture::fast_lane_enabled(),
         simulate_loss: args.simulate_loss,
         token: args.token.clone(),
+        about: about::detect(),
     };
     let fps = args.fps;
     let codec = args.codec.clone();
