@@ -64,6 +64,80 @@ const UPDATE_REDUCED_DIRTY_RECTS: i32 = 3;
 const TILE_MAX_AREA_FRACTION: f64 = 0.04;
 const TILE_MAX_RECTS: usize = 32;
 
+/// Why captures did or didn't take the fast lane, logged every 2 s so the
+/// thresholds can be tuned from real sessions.
+#[derive(Default)]
+struct TileDecisions {
+    since: Option<std::time::Instant>,
+    captures: u32,
+    sent: u32,
+    no_rects: u32,
+    too_many_rects: u32,
+    too_large: u32,
+    /// Changed-area fractions (percent) and rect counts seen, for the log.
+    area_pct: Vec<f64>,
+    rect_counts: Vec<usize>,
+}
+
+impl TileDecisions {
+    fn note(&mut self, outcome: TileOutcome, area_pct: f64, rects: usize) {
+        let now = std::time::Instant::now();
+        let since = *self.since.get_or_insert(now);
+        self.captures += 1;
+        match outcome {
+            TileOutcome::Sent => self.sent += 1,
+            TileOutcome::NoRects => self.no_rects += 1,
+            TileOutcome::TooManyRects => self.too_many_rects += 1,
+            TileOutcome::TooLarge => self.too_large += 1,
+        }
+        if rects > 0 {
+            self.area_pct.push(area_pct);
+            self.rect_counts.push(rects);
+        }
+        if now.duration_since(since) >= Duration::from_secs(2) {
+            let median = |values: &mut Vec<f64>| -> f64 {
+                if values.is_empty() {
+                    return 0.0;
+                }
+                values.sort_by(|a, b| a.total_cmp(b));
+                values[values.len() / 2]
+            };
+            let mut counts: Vec<f64> = self.rect_counts.iter().map(|&count| count as f64).collect();
+            tracing::info!(
+                captures = self.captures,
+                sent = self.sent,
+                no_rects = self.no_rects,
+                too_many_rects = self.too_many_rects,
+                too_large = self.too_large,
+                area_pct_median = format!("{:.2}", median(&mut self.area_pct)),
+                area_pct_max = format!("{:.2}", self.area_pct.iter().cloned().fold(0.0, f64::max)),
+                rects_median = median(&mut counts),
+                rects_max = self.rect_counts.iter().copied().max().unwrap_or(0),
+                "fast lane decisions"
+            );
+            *self = TileDecisions::default();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TileOutcome {
+    Sent,
+    NoRects,
+    TooManyRects,
+    TooLarge,
+}
+
+static TILE_DECISIONS: Mutex<Option<TileDecisions>> = Mutex::new(None);
+
+fn note_tile_decision(outcome: TileOutcome, area_pct: f64, rects: usize) {
+    TILE_DECISIONS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(TileDecisions::default)
+        .note(outcome, area_pct, rects);
+}
+
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGMainDisplayID() -> u32;
@@ -603,7 +677,8 @@ fn extract_tiles(
     let (width, height) = unsafe { (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface)) };
     let mut count = 0usize;
     let rects = unsafe { CGDisplayStreamUpdateGetRects(update, UPDATE_REDUCED_DIRTY_RECTS, &mut count) };
-    if rects.is_null() || count == 0 || count > TILE_MAX_RECTS {
+    if rects.is_null() || count == 0 {
+        note_tile_decision(TileOutcome::NoRects, 0.0, 0);
         return None;
     }
     let rects = unsafe { std::slice::from_raw_parts(rects, count) };
@@ -626,11 +701,20 @@ fn extract_tiles(
         area += (x1 - x0) * (y1 - y0);
         pixel_rects.push((x0, y0, x1 - x0, y1 - y0));
     }
-    if pixel_rects.is_empty()
-        || area as f64 > (width * height) as f64 * TILE_MAX_AREA_FRACTION
-    {
+    let area_pct = area as f64 * 100.0 / (width * height).max(1) as f64;
+    if pixel_rects.is_empty() {
+        note_tile_decision(TileOutcome::NoRects, 0.0, 0);
         return None;
     }
+    if count > TILE_MAX_RECTS {
+        note_tile_decision(TileOutcome::TooManyRects, area_pct, count);
+        return None;
+    }
+    if area_pct > TILE_MAX_AREA_FRACTION * 100.0 {
+        note_tile_decision(TileOutcome::TooLarge, area_pct, count);
+        return None;
+    }
+    note_tile_decision(TileOutcome::Sent, area_pct, count);
     let mut tiles = Vec::with_capacity(pixel_rects.len());
     unsafe {
         if IOSurfaceLock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut()) != 0 {
