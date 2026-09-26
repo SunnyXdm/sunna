@@ -69,6 +69,16 @@ const TILE_MAX_RECTS: usize = 32;
 /// far too coarse for this (typing in VS Code reported 50-100% of the screen
 /// changed), so the tile worker diffs frames itself in blocks this size.
 const TILE_BLOCK: usize = 32;
+/// A block that keeps changing is animation (video, spinners), which the
+/// video encoder handles far better than lossless tiles: a small YouTube
+/// window was costing up to ~800 KB/s of tiles on top of the video stream.
+/// Each block keeps an exponentially decaying change count (half-life
+/// below); above the threshold it's animated and left to the video.
+/// Steady-state counts: typing at 10 keys/s ~4, 15 keys/s ~6, 30 fps ~11.
+const TILE_HEAT_HALF_LIFE_SECS: f32 = 0.25;
+const TILE_ANIMATED_HEAT: f32 = 7.0;
+/// Compressed bytes allowed per batch; beyond this the video is cheaper.
+const TILE_MAX_BATCH_BYTES: usize = 256 * 1024;
 
 /// Why captures did or didn't take the fast lane, logged every 2 s so the
 /// thresholds can be tuned from real sessions.
@@ -80,6 +90,7 @@ struct TileDecisions {
     no_rects: u32,
     no_change: u32,
     too_large: u32,
+    animated: u32,
     diff_us: Vec<u64>,
     /// Changed-area fractions (percent) and rect counts seen, for the log.
     area_pct: Vec<f64>,
@@ -96,6 +107,7 @@ impl TileDecisions {
             TileOutcome::NoRects => self.no_rects += 1,
             TileOutcome::NoChange => self.no_change += 1,
             TileOutcome::TooLarge => self.too_large += 1,
+            TileOutcome::Animated => self.animated += 1,
         }
         if diff_us > 0 {
             self.diff_us.push(diff_us);
@@ -120,6 +132,7 @@ impl TileDecisions {
                 no_rects = self.no_rects,
                 no_change = self.no_change,
                 too_large = self.too_large,
+                animated = self.animated,
                 diff_ms_median = format!("{:.2}", median(&mut diff_ms)),
                 area_pct_median = format!("{:.2}", median(&mut self.area_pct)),
                 area_pct_max = format!("{:.2}", self.area_pct.iter().cloned().fold(0.0, f64::max)),
@@ -140,6 +153,8 @@ enum TileOutcome {
     /// macOS reported a change, but the pixels are identical.
     NoChange,
     TooLarge,
+    /// Everything that changed is animating; left to the video.
+    Animated,
 }
 
 static TILE_DECISIONS: Mutex<Option<TileDecisions>> = Mutex::new(None);
@@ -761,6 +776,8 @@ impl TileQueue {
 fn run_tile_worker(queue: Arc<TileQueue>, sink: crate::TileSink) {
     let mut previous: Vec<u8> = Vec::new();
     let mut size = (0usize, 0usize);
+    // Per block: decaying change count and when it was last updated.
+    let mut heat: Vec<(f32, std::time::Instant)> = Vec::new();
     loop {
         let job = {
             let mut slot = queue.job.lock().unwrap();
@@ -792,6 +809,10 @@ fn run_tile_worker(queue: Arc<TileQueue>, sink: crate::TileSink) {
                 // First frame (or a size change): take a full copy, send nothing.
                 size = (width, height);
                 previous = vec![0u8; row_bytes * height];
+                heat = vec![
+                    (0.0, std::time::Instant::now());
+                    width.div_ceil(TILE_BLOCK) * height.div_ceil(TILE_BLOCK)
+                ];
                 for row in 0..height {
                     let src = std::slice::from_raw_parts(base.add(row * stride), row_bytes);
                     previous[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(src);
@@ -838,12 +859,34 @@ fn run_tile_worker(queue: Arc<TileQueue>, sink: crate::TileSink) {
             IOSurfaceUnlock(surface, IOSURFACE_LOCK_READ_ONLY, std::ptr::null_mut());
             let diff_us = started.elapsed().as_micros() as u64;
 
-            let area = changed_count * TILE_BLOCK * TILE_BLOCK;
-            let area_pct = area as f64 * 100.0 / (width * height).max(1) as f64;
             if changed_count == 0 {
                 note_tile_decision(TileOutcome::NoChange, 0.0, 0, diff_us);
                 continue;
             }
+            // Update each changed block's heat; drop animated blocks from the
+            // tile set (they stay with the video).
+            let now = std::time::Instant::now();
+            let mut animated = 0usize;
+            for (index, block_changed) in changed.iter_mut().enumerate() {
+                if !*block_changed {
+                    continue;
+                }
+                let (count, last) = heat[index];
+                let elapsed = now.duration_since(last).as_secs_f32();
+                let decayed = count * 0.5f32.powf(elapsed / TILE_HEAT_HALF_LIFE_SECS);
+                heat[index] = (decayed + 1.0, now);
+                if decayed + 1.0 > TILE_ANIMATED_HEAT {
+                    *block_changed = false;
+                    animated += 1;
+                }
+            }
+            let changed_count = changed_count - animated;
+            if changed_count == 0 {
+                note_tile_decision(TileOutcome::Animated, 0.0, 0, diff_us);
+                continue;
+            }
+            let area = changed_count * TILE_BLOCK * TILE_BLOCK;
+            let area_pct = area as f64 * 100.0 / (width * height).max(1) as f64;
             if area_pct > TILE_MAX_AREA_FRACTION * 100.0 {
                 note_tile_decision(TileOutcome::TooLarge, area_pct, changed_count, diff_us);
                 continue;
@@ -912,6 +955,10 @@ fn run_tile_worker(queue: Arc<TileQueue>, sink: crate::TileSink) {
                         qoi,
                     });
                 }
+            }
+            if tiles.iter().map(|tile| tile.qoi.len()).sum::<usize>() > TILE_MAX_BATCH_BYTES {
+                note_tile_decision(TileOutcome::TooLarge, area_pct, tiles.len(), diff_us);
+                continue;
             }
             note_tile_decision(TileOutcome::Sent, area_pct, tiles.len(), diff_us);
             sink(sunna_proto::tiles::TileBatch {
