@@ -107,6 +107,39 @@ pub enum ControlMessage {
     /// `chunks` are data chunk indexes; empty means all of the frame's data
     /// (nothing of it arrived, so the viewer doesn't know its size).
     Resend { epoch: u8, frame_id: u64, chunks: Vec<u16> },
+    /// Host: the pointer's shape changed.
+    Cursor(CursorShape),
+}
+
+/// The host's pointer shape. The viewer shows its own pointer (it moves with
+/// no delay) and gives it this shape: resize arrows, the text beam, a hand.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CursorShape {
+    /// Same id, same shape: the pixels are only sent the first time.
+    pub id: u64,
+    pub width: u16,
+    pub height: u16,
+    /// The point that clicks, from the image's top left.
+    pub hot_x: u16,
+    pub hot_y: u16,
+    /// The host's screen width in the image's pixels, to size the pointer
+    /// like the rest of the picture.
+    pub screen_width: u32,
+    /// Premultiplied RGBA, `width * height * 4` bytes; empty for a shape
+    /// sent before.
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for CursorShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CursorShape")
+            .field("id", &self.id)
+            .field("size", &(self.width, self.height))
+            .field("hot", &(self.hot_x, self.hot_y))
+            .field("screen_width", &self.screen_width)
+            .field("bytes", &self.rgba.len())
+            .finish()
+    }
 }
 
 /// What a host is, for display.
@@ -277,6 +310,15 @@ mod tests {
                 viewer: "Sunny's MacBook Air".into(),
                 device: "0123abcd".into(),
             },
+            ControlMessage::Cursor(CursorShape {
+                id: 7,
+                width: 2,
+                height: 1,
+                hot_x: 1,
+                hot_y: 0,
+                screen_width: 1710,
+                rgba: vec![0, 0, 0, 255, 255, 255, 255, 255],
+            }),
             ControlMessage::Input(InputEvent::Gesture {
                 kind: GestureKind::Swipe,
                 phase: GesturePhase::Update,

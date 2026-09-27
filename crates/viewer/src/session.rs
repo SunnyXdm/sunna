@@ -88,6 +88,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let live = Arc::clone(&shared.live);
     let tile_shared = Arc::clone(&shared);
     let tile_proxy = event_loop.create_proxy();
+    let cursor_proxy = event_loop.create_proxy();
     let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     // The in-session menu's Video choices, sent to the host as SetStream.
@@ -104,6 +105,10 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             name: std::env::var("SUNNA_VIEWER_NAME").unwrap_or_else(|_| "Sunna viewer".into()),
             device: sunna_client::device_id(),
             leave: Some(leave_rx),
+            // A new pointer shape: wake the window to put it on.
+            wake: Some(sunna_client::Wake(Arc::new(move || {
+                let _ = cursor_proxy.send_event(viewer::FrameReady);
+            }))),
             token,
             stream: sunna_proto::messages::StreamSettings {
                 max_size,

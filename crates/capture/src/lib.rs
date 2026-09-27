@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
+pub mod cursor;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod tiles;
 

@@ -185,6 +185,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let options = ClientOptions {
                 device: sunna_client::device_id(),
                 leave: None,
+                wake: None,
                 name: "sunna-cli".into(),
                 clipboard,
                 token,
@@ -239,6 +240,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let options = ClientOptions {
                 device: sunna_client::device_id(),
                 leave: None,
+                wake: None,
                 name: "bench-client".into(),
                 clipboard: false,
                 token: String::new(),

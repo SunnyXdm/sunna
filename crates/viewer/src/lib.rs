@@ -11,6 +11,8 @@ mod layer_presenter;
 mod mac_keyboard;
 #[cfg(target_os = "macos")]
 mod menu;
+#[cfg(target_os = "macos")]
+mod remote_cursor;
 mod send_keys;
 mod session;
 mod viewer;

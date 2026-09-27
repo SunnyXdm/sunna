@@ -13,9 +13,10 @@ tracing.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
+objc2.workspace = true
 core-foundation.workspace = true
 core-foundation-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.189"
-x11rb = { version = "0.13", features = ["shm"] }
+x11rb = { version = "0.13", features = ["shm", "xfixes"] }

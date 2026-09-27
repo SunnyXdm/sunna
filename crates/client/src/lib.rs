@@ -103,9 +103,22 @@ impl std::fmt::Display for BenchReport {
     }
 }
 
+/// Called when the session has something new for the window that isn't a
+/// frame (the pointer's shape), so it can wake up and show it.
+#[derive(Clone)]
+pub struct Wake(pub Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for Wake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Wake")
+    }
+}
+
 /// Connection options for [`run_client`].
 #[derive(Debug, Clone, Default)]
 pub struct ClientOptions {
+    /// See [`Wake`].
+    pub wake: Option<Wake>,
     /// Share text and images with the host during this session.
     pub clipboard: bool,
     /// Name the host logs for this client.
@@ -154,6 +167,10 @@ pub struct LiveStats {
     /// Sound is playing (the host sends it and the viewer wants it).
     pub audio_on: bool,
     pub audio: Option<sunna_audio::PlayerStats>,
+    /// The host's pointer shape, for the window's own pointer, and a count
+    /// that moves on with every change.
+    pub cursor: Option<Arc<sunna_proto::messages::CursorShape>>,
+    pub cursor_changes: u64,
 }
 
 impl LiveStats {
@@ -526,6 +543,10 @@ pub async fn run_client(
     let mut last_keyframe_request = Instant::now() - Duration::from_secs(1);
     let mut keyframes_requested: u64 = 0;
     let mut poll_due = false;
+    let (mut cursor_changes, mut cursor_shapes) = (0u64, 0u64);
+    // Pointer shapes seen this session, by id.
+    let mut cursors: std::collections::HashMap<u64, Arc<sunna_proto::messages::CursorShape>> =
+        std::collections::HashMap::new();
     let mut queue_full_drops: u64 = 0;
 
     // NTP-style offset (host clock minus client clock) at the lowest RTT seen.
@@ -782,6 +803,29 @@ pub async fn run_client(
                             live.lock().unwrap().host = Some(stats);
                         }
                     }
+                    Some(ControlMessage::Cursor(shape)) => {
+                        cursor_changes += 1;
+                        if !shape.rgba.is_empty() {
+                            cursor_shapes += 1;
+                        }
+                        // A shape's pixels come once; after that, its id.
+                        let shape = if shape.rgba.is_empty() {
+                            cursors.get(&shape.id).cloned()
+                        } else {
+                            let shape = Arc::new(shape);
+                            cursors.insert(shape.id, Arc::clone(&shape));
+                            Some(shape)
+                        };
+                        if let (Some(shape), Some(live)) = (shape, &options.live) {
+                            let mut live = live.lock().unwrap();
+                            live.cursor = Some(shape);
+                            live.cursor_changes += 1;
+                            drop(live);
+                            if let Some(wake) = &options.wake {
+                                (wake.0)();
+                            }
+                        }
+                    }
                     Some(other) => tracing::debug!(?other, "unexpected control message"),
                     None => break,
                 }
@@ -849,6 +893,8 @@ pub async fn run_client(
                     tile_latency = %Percentiles::from_samples(std::mem::take(&mut window_tile_ages))
                         .map(|w| w.to_string())
                         .unwrap_or_else(|| "-".into()),
+                    cursor_changes,
+                    cursor_shapes,
                     resend_asked = reassembler.resend_requested,
                     resend_recovered = reassembler.resend_recovered,
                     frames_given_up = reassembler.dropped_frames,

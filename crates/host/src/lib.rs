@@ -15,7 +15,7 @@ use sunna_capture::FrameSource;
 use sunna_codec::Encoder;
 use sunna_input::InputInjector;
 use sunna_proto::media::packetize;
-use sunna_proto::messages::{ControlMessage, HostStats, StreamSettings};
+use sunna_proto::messages::{ControlMessage, CursorShape, HostStats, StreamSettings};
 use sunna_transport::quinn::{Connection, SendDatagramError};
 use sunna_transport::{ControlChannel, Server};
 
@@ -476,6 +476,29 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         resent: AtomicU32::new(0),
     });
     let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();
+    // The pointer's shape, which the viewer gives its own pointer. A shape's
+    // pixels go once per session; after that its id is enough.
+    // Its own channel: the session ends when `updates` closes (the media
+    // thread is gone), which a watcher holding it would prevent.
+    let (cursor_tx, cursor_rx) = tokio::sync::mpsc::unbounded_channel();
+    let cursor_watch = {
+        let mut sent = std::collections::HashSet::new();
+        sunna_capture::cursor::watch(Arc::clone(&stop), move |image| {
+            let first = sent.insert(image.id);
+            let _ = cursor_tx.send(ControlMessage::Cursor(CursorShape {
+                id: image.id,
+                width: image.width,
+                height: image.height,
+                hot_x: image.hot_x,
+                hot_y: image.hot_y,
+                screen_width: image.screen_width,
+                rgba: if first { image.rgba } else { Vec::new() },
+            }));
+        })
+    };
+    if let Err(error) = &cursor_watch {
+        tracing::info!(%error, "no pointer shapes this session");
+    }
     let media_thread = {
         let connection = connection.clone();
         let stop = Arc::clone(&stop);
@@ -496,6 +519,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         injector.as_mut(),
         &signals,
         updates_rx,
+        cursor_rx,
         config.clipboard,
         &mut audio,
     )
@@ -1139,6 +1163,7 @@ async fn control_loop(
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
     mut updates: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
+    mut cursor: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     clipboard: bool,
     audio: &mut AudioControl,
 ) -> anyhow::Result<()> {
@@ -1165,6 +1190,7 @@ async fn control_loop(
         injector,
         signals,
         &mut updates,
+        &mut cursor,
         &mut clipboard,
         &mut incoming,
         audio,
@@ -1328,6 +1354,7 @@ async fn handle_control(
     injector: &mut dyn InputInjector,
     signals: &SessionSignals,
     updates: &mut tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
+    cursor: &mut tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     clipboard: &mut sunna_clipboard::ClipboardSession,
     incoming_clipboard: &mut tokio::sync::mpsc::Receiver<sunna_proto::messages::ClipboardData>,
     audio: &mut AudioControl,
@@ -1344,6 +1371,10 @@ async fn handle_control(
             update = updates.recv() => {
                 let Some(update) = update else { return Ok(()) };
                 control.send(&update).await?;
+                continue;
+            }
+            Some(shape) = cursor.recv() => {
+                control.send(&shape).await?;
                 continue;
             }
             data = clipboard.next() => {

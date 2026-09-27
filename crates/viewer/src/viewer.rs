@@ -181,6 +181,9 @@ pub fn run_viewer(
         hotkey_down: None,
         button_visible: std::env::var("SUNNA_MENU_BUTTON").map_or(true, |value| value != "0"),
         cursor_pt: (0.0, 0.0),
+        pointer_inside: false,
+        #[cfg(target_os = "macos")]
+        remote_cursor: Default::default(),
         swallow_left_up: false,
         menu_open: false,
         capture_after_menu: None,
@@ -240,6 +243,11 @@ struct ViewerApp {
     button_visible: bool,
     /// Pointer position in points from the window's top-left.
     cursor_pt: (f64, f64),
+    /// The pointer is over the window (its shape is then the host's).
+    pointer_inside: bool,
+    /// The host's pointer shape, worn by this window's pointer.
+    #[cfg(target_os = "macos")]
+    remote_cursor: crate::remote_cursor::RemoteCursor,
     /// The left press opened the menu: its release isn't the host's.
     swallow_left_up: bool,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -647,6 +655,24 @@ impl ViewerApp {
 
     /// Where the stream appears in the window, in physical pixels: the
     /// layer presenter letterboxes (aspect-fit); the CPU blit stretches.
+    /// Give the pointer the host's shape, sized like the rest of the picture.
+    /// Only over the window, with the menu closed: the shape is set for the
+    /// whole screen, and elsewhere it's another app's to choose.
+    #[cfg(target_os = "macos")]
+    fn update_cursor(&mut self) {
+        if !self.pointer_inside || self.menu_open {
+            return;
+        }
+        let Some(window) = &self.window else { return };
+        let shape = self.shared.live.lock().unwrap().cursor.clone();
+        let Some(shape) = shape else { return };
+        let size = window.inner_size();
+        let scale = window.scale_factor();
+        let (_, _, content_width, _) = self.content_rect((size.width as f64, size.height as f64));
+        let points_per_pixel = content_width / scale / shape.screen_width.max(1) as f64;
+        self.remote_cursor.show(&shape, points_per_pixel);
+    }
+
     fn content_rect(&self, window: (f64, f64)) -> (f64, f64, f64, f64) {
         let (win_w, win_h) = window;
         if !self.uses_layer() {
@@ -840,6 +866,8 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             self.handle_menu(event_loop, event);
         }
         #[cfg(target_os = "macos")]
+        self.update_cursor();
+        #[cfg(target_os = "macos")]
         if self.layer.is_some() {
             // Show immediately rather than waiting for the next redraw. Video
             // first: it retires tiles it already contains; tiles newer than it
@@ -908,11 +936,16 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             }
             // Input forwarding: window coordinates → normalized host
             // coordinates; keys → mac virtual keycodes (see keymap.rs).
+            WindowEvent::CursorEntered { .. } => self.pointer_inside = true,
+            WindowEvent::CursorLeft { .. } => self.pointer_inside = false,
             WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_inside = true;
                 if let Some(window) = &self.window {
                     let scale = window.scale_factor();
                     self.cursor_pt = (position.x / scale, position.y / scale);
                 }
+                #[cfg(target_os = "macos")]
+                self.update_cursor();
                 #[cfg(target_os = "macos")]
                 if let Some(layer) = self.layer.as_mut() {
                     let over = layer.button_contains(self.cursor_pt);

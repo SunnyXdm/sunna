@@ -44,6 +44,8 @@ const BUTTON_CENTER: u32 = 2;
 
 const SCROLL_UNIT_PIXEL: u32 = 0;
 const FIELD_CLICK_STATE: u32 = 1; // kCGMouseEventClickState
+const FIELD_MOUSE_DELTA_X: u32 = 4; // kCGMouseEventDeltaX
+const FIELD_MOUSE_DELTA_Y: u32 = 5; // kCGMouseEventDeltaY
 const FIELD_KEYBOARD_AUTOREPEAT: u32 = 8; // kCGKeyboardEventAutorepeat
 const FIELD_SCROLL_IS_CONTINUOUS: u32 = 88; // kCGScrollWheelEventIsContinuous
 
@@ -278,6 +280,13 @@ impl MacInjector {
     }
 
     fn post_mouse(&self, event_type: u32, button: u32, click_state: Option<i64>) {
+        self.post_mouse_moved_by(event_type, button, click_state, (0, 0));
+    }
+
+    /// `delta`: how far the pointer moved. Some of macOS only reacts to a
+    /// move that says it moved (hover controls, like picture in picture's),
+    /// and an event created at a position says zero by itself.
+    fn post_mouse_moved_by(&self, event_type: u32, button: u32, click_state: Option<i64>, delta: (i64, i64)) {
         unsafe {
             let event =
                 CGEventCreateMouseEvent(std::ptr::null(), event_type, self.cursor, button);
@@ -287,6 +296,10 @@ impl MacInjector {
             if let Some(clicks) = click_state {
                 CGEventSetIntegerValueField(event, FIELD_CLICK_STATE, clicks);
             }
+            if delta != (0, 0) {
+                CGEventSetIntegerValueField(event, FIELD_MOUSE_DELTA_X, delta.0);
+                CGEventSetIntegerValueField(event, FIELD_MOUSE_DELTA_Y, delta.1);
+            }
             CGEventSetFlags(event, self.flags());
             CGEventPost(TAP_HID, event);
             CFRelease(event as _);
@@ -294,11 +307,16 @@ impl MacInjector {
     }
 
     fn move_to(&mut self, x: f64, y: f64) {
+        let before = self.cursor;
         self.cursor = CGPoint {
             x: x.clamp(0.0, self.display_size.0 - 1.0),
             y: y.clamp(0.0, self.display_size.1 - 1.0),
         };
-        self.post_mouse(self.move_event_type(), self.drag_button(), None);
+        let delta = (
+            (self.cursor.x - before.x).round() as i64,
+            (self.cursor.y - before.y).round() as i64,
+        );
+        self.post_mouse_moved_by(self.move_event_type(), self.drag_button(), None, delta);
     }
 
     fn button(&mut self, button: MouseButton, pressed: bool) {
