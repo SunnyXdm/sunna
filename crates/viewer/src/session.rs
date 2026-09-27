@@ -60,6 +60,18 @@ fn viewer_max_size() -> Option<(u32, u32)> {
     }
 }
 
+/// Why a session ended that nobody here ended, in words the app shows.
+fn why_it_ended(reason: Option<sunna_transport::quinn::ConnectionError>) -> String {
+    use sunna_transport::quinn::ConnectionError;
+    match reason {
+        Some(ConnectionError::TimedOut) => "lost the connection: nothing came back for 10 seconds".into(),
+        Some(ConnectionError::ApplicationClosed(close)) if close.reason.starts_with(b"replaced") => {
+            "replaced: a newer session from this Mac took over".into()
+        }
+        _ => "the host ended the session".into(),
+    }
+}
+
 /// Connect and run a viewer window until the session ends. Owns the main
 /// thread (winit requires it on macOS); the network session runs on its own
 /// tokio runtime in a background thread and wakes the event loop per frame.
@@ -96,6 +108,9 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     // Set when the window goes (disconnect, ⌘Q, closed): the host is told.
     let (leave_tx, leave_rx) = tokio::sync::watch::channel(false);
     let max_size = viewer_max_size();
+    // To tell a session the user ended from one that ended by itself.
+    let asked_to_leave = leave_rx.clone();
+    let watched = connection.clone();
     std::thread::spawn(move || {
         let endpoint = client.endpoint;
         let mut announced = false;
@@ -136,12 +151,19 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             },
             input_rx,
         ));
-        // A failed session exits non-zero: the app reports the reason.
+        // A failed session exits non-zero: the app reports the reason. So
+        // does one that ended without being asked to: the connection was
+        // lost, or the host ended it.
         let code = match result {
-            Ok(report) => {
+            Ok(report) if *asked_to_leave.borrow() => {
                 tracing::info!(report = %report, "session ended");
                 println!("{report}");
                 0
+            }
+            Ok(report) => {
+                tracing::info!(report = %report, "session ended");
+                tracing::error!("session error: {}", why_it_ended(watched.close_reason()));
+                1
             }
             Err(error) => {
                 tracing::error!("session error: {error:#}");

@@ -285,6 +285,7 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
     };
     *session.viewer.lock().unwrap() = Some(child.id());
     let stderr = child.stderr.take();
+    let mut log = session_log(&machine.name);
     std::thread::spawn(move || {
         let progress = |phase: &str| {
             let _ = app.emit(
@@ -298,6 +299,10 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
         if let Some(stderr) = stderr {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 let line = strip_ansi(&line);
+                if let Some(file) = log.as_mut() {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{line}");
+                }
                 if line.contains("session established") {
                     machines::mark_connected(&id);
                     progress("video");
@@ -328,6 +333,52 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
     Ok(())
 }
 
+/// Each session's log, kept on this computer (the last 30): on macOS in
+/// ~/Library/Logs/Sunna, where Console finds it too.
+fn session_log(name: &str) -> Option<std::fs::File> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    let dir = if cfg!(target_os = "macos") {
+        home.join("Library/Logs/Sunna")
+    } else {
+        home.join(".sunna/logs")
+    };
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut old: Vec<_> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+        .collect();
+    old.sort();
+    for path in old.iter().rev().skip(29) {
+        let _ = std::fs::remove_file(path);
+    }
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    std::fs::File::create(dir.join(format!("{} {safe}.log", utc_stamp()))).ok()
+}
+
+/// "2026-09-27 18.40.05": sorts in time order, fine in a file name.
+fn utc_stamp() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    utc_stamp_at(seconds)
+}
+
+fn utc_stamp_at(seconds: u64) -> String {
+    let (days, rest) = ((seconds / 86_400) as i64, seconds % 86_400);
+    // Civil date from days since 1970 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}.{:02}.{:02}", rest / 3600, rest / 60 % 60, rest % 60)
+}
+
 /// Stop a connection that hasn't opened yet.
 #[tauri::command]
 fn cancel_connect(session: State<'_, Session>) {
@@ -346,7 +397,13 @@ fn failure_reason(line: &str) -> Option<String> {
     }
     let (_, message) = line.split_once("session error: ")?;
     let message = message.trim();
-    let friendly = if message.contains("wrong session token") {
+    let friendly = if message.starts_with("lost the connection") {
+        "Lost the connection: nothing came back from that computer for 10 seconds. Its network dropped, or it went to sleep.".to_string()
+    } else if message.starts_with("the host ended the session") {
+        "That computer ended the session: it restarted, or stopped sharing.".to_string()
+    } else if message.starts_with("replaced") {
+        "This session moved to a newer one from this Mac.".to_string()
+    } else if message.contains("wrong session token") {
         "The key doesn't match. Edit the computer and paste its key.".to_string()
     } else if let Some(who) = message.split_once("busy: ").and_then(|(_, rest)| rest.strip_suffix(" is connected")) {
         format!("{who} is connected to that computer right now.")
@@ -443,5 +500,19 @@ mod tests {
             "The key doesn't match. Edit the computer and paste its key."
         );
         assert!(failure_reason("INFO sunna_client: window fps=60").is_none());
+        let lost = failure_reason("ERROR sunna_viewer: session error: lost the connection: nothing came back for 10 seconds");
+        assert!(lost.unwrap().starts_with("Lost the connection"));
+        let ended = failure_reason("ERROR sunna_viewer: session error: the host ended the session");
+        assert!(ended.unwrap().starts_with("That computer ended the session"));
+        let busy = failure_reason("ERROR x: session error: host refused the session: busy: Priya's Mac is connected");
+        assert_eq!(busy.unwrap(), "Priya's Mac is connected to that computer right now.");
+    }
+
+    #[test]
+    fn log_names_carry_the_utc_time() {
+        assert_eq!(utc_stamp_at(0), "1970-01-01 00.00.00");
+        assert_eq!(utc_stamp_at(951_782_400), "2000-02-29 00.00.00");
+        assert_eq!(utc_stamp_at(1_790_523_869), "2026-09-27 15.44.29");
+        assert_eq!(utc_stamp_at(4_102_444_800), "2100-01-01 00.00.00");
     }
 }

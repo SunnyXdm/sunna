@@ -269,6 +269,73 @@ impl HostState {
     }
 }
 
+/// Keeps this computer from going to sleep while someone's connected. A
+/// desktop suspends after its own idle time (GNOME: about 15-20 minutes),
+/// and a viewer's input, into a virtual desktop especially, isn't the
+/// person at it: without this, the session just drops.
+struct KeepAwake(Option<std::process::Child>);
+
+impl KeepAwake {
+    fn start() -> Self {
+        let host = std::process::id().to_string();
+        // Each holds its lock until killed, or until this host is gone.
+        let wait_for_host = ["tail", "--pid", host.as_str(), "-f", "/dev/null"];
+        #[cfg(target_os = "linux")]
+        let ways: Vec<(&str, Vec<&str>)> = vec![
+            // logind: allowed from inside a desktop session (a host sharing it).
+            (
+                "systemd-inhibit",
+                [&["--what=sleep:idle", "--who=Sunna", "--why=Someone is connected to this computer", "--mode=block"][..], &wait_for_host[..]].concat(),
+            ),
+            // GNOME's own: what its automatic suspend asks, from a service too.
+            (
+                "gnome-session-inhibit",
+                [&["--inhibit", "suspend:idle", "--reason", "Someone is connected to this computer"][..], &wait_for_host[..]].concat(),
+            ),
+        ];
+        #[cfg(target_os = "macos")]
+        let ways: Vec<(&str, Vec<&str>)> = {
+            let _ = wait_for_host; // caffeinate watches the host itself
+            vec![("/usr/bin/caffeinate", vec!["-i", "-w", host.as_str()])]
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let ways: Vec<(&str, Vec<&str>)> = {
+            let _ = wait_for_host;
+            Vec::new()
+        };
+        for (program, args) in ways {
+            let mut command = std::process::Command::new(program);
+            command
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::process_group(&mut command, 0);
+            let Ok(mut child) = command.spawn() else { continue };
+            // Refused (no permission, no GNOME) shows up as a quick exit.
+            std::thread::sleep(Duration::from_millis(300));
+            if matches!(child.try_wait(), Ok(None)) {
+                tracing::info!(how = program, "keeping this computer awake during the session");
+                return Self(Some(child));
+            }
+        }
+        tracing::info!("can't keep this computer awake: it may go to sleep during a long session");
+        Self(None)
+    }
+}
+
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            // The whole group: the lock holder and what it runs.
+            let _ = std::process::Command::new("kill").arg("-TERM").arg(format!("-{}", child.id())).status();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 struct StopOnDrop(Arc<AtomicBool>);
 
 impl Drop for StopOnDrop {
@@ -411,6 +478,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         other => anyhow::bail!("expected Hello or Probe, got {other:?}"),
     };
     let slot = SessionSlot(Arc::clone(&host));
+    let _awake = KeepAwake::start();
     let wants_audio = settings.audio.unwrap_or(true);
     let (width, height) = fit_within((config.width, config.height), None);
     let initial = StreamConfig {
