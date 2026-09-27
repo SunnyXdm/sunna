@@ -49,17 +49,36 @@ device_index() { pactl list short "$1" | awk -v name="$2" '$2 == name { print $1
 # and PipeWire picks the only one there is. Other sessions' sound would then
 # play into this desktop's output and reach its viewer, so point the
 # defaults somewhere else: another output, or a silent one made for this.
+# PipeWire adds a new output a moment after it's asked for.
+wait_for_sink() {
+  for _ in $(seq 30); do
+    [ -n "$(device_index sinks "$1")" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 keep_defaults_elsewhere() {
-  case "$(default_device Sink)" in sunna_desktop_*) ;; *) return 0 ;; esac
+  wait_for_sink "$SINK" || true
+  # auto_null is the sound server's placeholder for "no output": it goes
+  # away now that there is one, and can't be anyone's default.
   local other
-  other="$(pactl list short sinks | awk '$2 !~ /^sunna_desktop_/ { print $2; exit }')"
-  if [ -z "$other" ]; then
+  other="$(pactl list short sinks | awk '$2 !~ /^sunna_desktop_/ && $2 != "auto_null" { print $2; exit }')"
+  if [ -n "$other" ]; then
+    # A real output: leave the default alone unless it moved to this one
+    # (the default's name can be a placeholder while PipeWire settles).
+    case "$(default_device Sink)" in sunna_desktop_* | auto_null | @DEFAULT_SINK@ | "") ;; *) return 0 ;; esac
+  else
     pactl load-module module-null-sink sink_name="$SILENT" \
       sink_properties=device.description=Dummy-Output >"$SILENT_MODULE"
     other="$SILENT"
+    wait_for_sink "$other" || true
   fi
-  pactl set-default-sink "$other"
-  case "$(default_device Source)" in sunna_desktop_*) pactl set-default-source "$other.monitor" ;; esac
+  # Never let this stop the desktop from starting.
+  pactl set-default-sink "$other" >/dev/null 2>&1 || true
+  case "$(default_device Source)" in
+    sunna_desktop_*) pactl set-default-source "$other.monitor" >/dev/null 2>&1 || true ;;
+  esac
   echo "$other"
 }
 
