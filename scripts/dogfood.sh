@@ -94,7 +94,7 @@ case "${1:-}" in
     Address   $IP
     Key       $SUNNA_TOKEN
 
-  In the Sunna app on the other computer, choose Add Computer and paste:
+  In the Sunna app on the other computer, choose Add a Computer and paste:
     sunna://$IP?key=$SUNNA_TOKEN
 
 EOF

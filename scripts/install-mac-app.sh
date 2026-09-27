@@ -10,9 +10,12 @@
 # (xcode-select --install) and Rust (https://rustup.rs).
 #
 # The app is signed ad hoc (no Apple developer account), which is all a
-# Mac needs for an app built on it. A copy downloaded from elsewhere (the
-# DMG) needs right-click → Open the first time. macOS may ask again for
-# Accessibility (to send ⌘Tab and friends to the remote) after an update.
+# Mac needs for an app built on it. It's built for this Mac's chip. A copy
+# downloaded from elsewhere (the DMG) is blocked the first time: open it,
+# then allow it in System Settings → Privacy & Security → Open Anyway (on
+# macOS 14 and earlier, right-click it and choose Open). macOS may ask
+# again for Accessibility (to send ⌘Tab and friends to the remote) after
+# an update.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

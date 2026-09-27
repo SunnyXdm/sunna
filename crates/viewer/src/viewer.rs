@@ -73,7 +73,7 @@ const HOTKEY_HELP: &str =
     "••• (top left) or ⌃⌥M: menu  ·  ⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥Q disconnect";
 
 #[cfg(target_os = "macos")]
-const ACCESSIBILITY_HELP: &str = "To send ⌘Tab, ⌘Space and other shortcuts to the remote, allow your terminal in System Settings → Privacy & Security → Accessibility, then reconnect  ·  ⌃⌥Q disconnect";
+const ACCESSIBILITY_HELP: &str = "To send ⌘Tab, ⌘Space and other shortcuts to the remote, allow Sunna (or the terminal you started it from) in System Settings → Privacy & Security → Accessibility, then reconnect  ·  ⌃⌥Q disconnect";
 
 /// One line for the stats bar (⌃⌥S), Parsec-style.
 pub fn stats_text(live: &LiveStats) -> String {

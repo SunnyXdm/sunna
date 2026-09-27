@@ -11,6 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 command -v dpkg-deb >/dev/null || { echo "dpkg-deb is missing (build this on Debian or Ubuntu)" >&2; exit 1; }
+command -v objdump >/dev/null || { echo "objdump is missing: sudo apt install binutils" >&2; exit 1; }
 . scripts/linux-build-env.sh
 check_build_tools
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -30,6 +31,10 @@ install -m 755 scripts/sunna-host "$ROOT/usr/bin/sunna-host"
 install -m 755 scripts/linux-desktop.sh "$ROOT/usr/share/sunna/linux-desktop.sh"
 install -m 644 README.md "$ROOT/usr/share/doc/sunna-host/README.md"
 SIZE_KB="$(du -sk "$ROOT/usr" | cut -f1)"
+# The newest glibc sunnad was linked against: the package asks for at least
+# that, so it only installs where it can run.
+GLIBC="$(objdump -T target/release/sunnad | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -1)"
+[ -n "$GLIBC" ] || { echo "couldn't read which glibc sunnad needs" >&2; exit 1; }
 
 cat >"$ROOT/DEBIAN/control" <<EOF
 Package: sunna-host
@@ -37,7 +42,7 @@ Version: ${VERSION}-${BUILD}
 Architecture: $ARCH
 Maintainer: Sunna <sunna@localhost>
 Installed-Size: $SIZE_KB
-Depends: libc6 (>= 2.34), libgcc-s1, libstdc++6
+Depends: libc6 (>= $GLIBC), libgcc-s1, libstdc++6
 Recommends: xvfb, x11-utils, dbus-x11, xfce4
 Suggests: tailscale
 Section: net
