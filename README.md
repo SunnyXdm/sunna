@@ -235,7 +235,8 @@ cargo test                         # add --workspace to include the app
 | `crates/viewer` | the session window: presentation, keyboard capture, session menu |
 | `crates/input`, `crates/clipboard` | input injection and clipboard sync |
 | `crates/telemetry` | logging, and shipping logs to a development collector |
-| `scripts/` | installers and packaging (`install-mac-app.sh`, `install-host-linux.sh`, `package-linux-deb.sh`, `sunna-host`), and the developer loop (`run.sh`) |
+| `tools/` | the log collector (`logd`), and `wayland-poc.py`, the proof that Wayland capture and input work through the desktop portals |
+| `scripts/` | installers and packaging (`install-mac-app.sh`, `install-host-linux.sh`, `package-linux-deb.sh`, `sunna-host`), the developer loop (`run.sh`), and `wayland-desktop.sh`, a Wayland desktop without a screen for Wayland work |
 | `docs/` | the website |
 | `research/` | the research and architecture notes behind the design; start at [`00-overview.md`](research/00-overview.md) |
 
