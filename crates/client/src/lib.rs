@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sunna_codec::make_decoder;
-use sunna_proto::media::{parse_audio, CompleteFrame, MediaHeader, Reassembler, FLAG_AUDIO};
+use sunna_proto::media::{parse_audio, CompleteFrame, MediaHeader, Patience, Reassembler, FLAG_AUDIO};
 use sunna_proto::messages::{ControlMessage, HostStats, InputEvent, StreamSettings};
 use sunna_proto::stats::Percentiles;
 use sunna_transport::quinn::Connection;
@@ -476,7 +476,7 @@ pub async fn run_client(
     let mut awaiting_keyframe_since: Option<Instant> = None;
     let mut last_keyframe_request = Instant::now() - Duration::from_secs(1);
     let mut keyframes_requested: u64 = 0;
-    let mut seen_dropped: u64 = 0;
+    let mut poll_due = false;
     let mut queue_full_drops: u64 = 0;
 
     // NTP-style offset (host clock minus client clock) at the lowest RTT seen.
@@ -612,38 +612,13 @@ pub async fn run_client(
                 }
                 bytes_received += datagram.len() as u64;
                 window_bytes += datagram.len() as u64;
-                let completed = reassembler.push(&datagram);
-
-                // Frame loss (a newer frame superseded a partial): ask for a
-                // keyframe now rather than when the gap reaches the decoder.
-                let mut need_keyframe = false;
-                if reassembler.dropped_frames > seen_dropped {
-                    seen_dropped = reassembler.dropped_frames;
-                    need_keyframe = true;
-                }
-                if let (Some(frame), Some(tx)) = (completed, frame_tx.as_ref()) {
-                    match tx.try_send(DecodeItem::Frame(frame)) {
-                        Ok(()) => {}
-                        // Decode has stalled for ~2 s: drop; the id gap makes
-                        // the decode thread wait for a keyframe, which we request.
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            queue_full_drops += 1;
-                            need_keyframe = true;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            frame_tx = None;
-                            tracing::warn!("decode thread exited");
-                        }
-                    }
-                }
-                if need_keyframe {
-                    awaiting_keyframe_since.get_or_insert_with(Instant::now);
-                    if last_keyframe_request.elapsed() > Duration::from_millis(100) {
-                        keyframes_requested += 1;
-                        last_keyframe_request = Instant::now();
-                        control.send(&ControlMessage::RequestKeyframe).await?;
-                    }
-                }
+                reassembler.push(&datagram, now);
+                poll_due = true;
+            }
+            // While frames are held or incomplete, look again even if nothing
+            // arrives: a stall is when datagrams need asking for.
+            _ = tokio::time::sleep(Duration::from_millis(5)), if reassembler.is_waiting() => {
+                poll_due = true;
             }
             event = decode_events.recv() => {
                 match event {
@@ -825,6 +800,9 @@ pub async fn run_client(
                     tile_latency = %Percentiles::from_samples(std::mem::take(&mut window_tile_ages))
                         .map(|w| w.to_string())
                         .unwrap_or_else(|| "-".into()),
+                    resend_asked = reassembler.resend_requested,
+                    resend_recovered = reassembler.resend_recovered,
+                    frames_given_up = reassembler.dropped_frames,
                     audio_packets = sound.as_ref().map(|s| s.packets),
                     audio_recovered = sound.as_ref().map(|s| s.recovered),
                     audio_concealed = sound.as_ref().map(|s| s.concealed),
@@ -846,6 +824,44 @@ pub async fn run_client(
             _ = &mut deadline_sleep, if options.duration.is_some() => {
                 let _ = control.send(&ControlMessage::Bye).await;
                 break;
+            }
+        }
+
+        if std::mem::take(&mut poll_due) {
+            // How long resent datagrams take: a round trip, give or take.
+            let rtt = rtt_samples.last().map_or(Duration::from_millis(30), |&rtt| Duration::from_micros(rtt));
+            let poll = reassembler.poll(Instant::now(), Patience::for_rtt(rtt));
+            for request in poll.resend {
+                control
+                    .send(&ControlMessage::Resend { epoch: info.epoch, frame_id: request.frame_id, chunks: request.chunks })
+                    .await?;
+            }
+            // A frame given up: ask for a keyframe now rather than when the gap
+            // reaches the decoder.
+            let mut need_keyframe = poll.want_keyframe;
+            for frame in poll.frames {
+                let Some(tx) = frame_tx.as_ref() else { break };
+                match tx.try_send(DecodeItem::Frame(frame)) {
+                    Ok(()) => {}
+                    // Decode has stalled for ~2 s: drop; the id gap makes
+                    // the decode thread wait for a keyframe, which we request.
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        queue_full_drops += 1;
+                        need_keyframe = true;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        frame_tx = None;
+                        tracing::warn!("decode thread exited");
+                    }
+                }
+            }
+            if need_keyframe {
+                awaiting_keyframe_since.get_or_insert_with(Instant::now);
+                if last_keyframe_request.elapsed() > Duration::from_millis(100) {
+                    keyframes_requested += 1;
+                    last_keyframe_request = Instant::now();
+                    control.send(&ControlMessage::RequestKeyframe).await?;
+                }
             }
         }
     }

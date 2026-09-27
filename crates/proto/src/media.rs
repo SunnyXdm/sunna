@@ -1,6 +1,7 @@
 //! Media datagram format: packetize an encoded frame into datagrams with
-//! per-frame XOR parity, reassemble on the client with a latest-frame-wins
-//! policy (no jitter buffer) and single-loss-per-group FEC recovery.
+//! per-frame XOR parity; reassemble on the client, in order, with
+//! single-loss-per-group FEC recovery and, for what parity can't rebuild,
+//! datagrams asked for again (see [`Reassembler`]).
 //!
 //! Chunking is *balanced*: every data chunk of a frame has size
 //! `ceil(frame_len / chunk_count)` (the last may be shorter), so a receiver can
@@ -14,8 +15,11 @@
 //! delay, and because consecutive chunks sit in different groups, so is any
 //! burst of up to `G` consecutive losses, which is how Wi-Fi loses packets.
 //! The sender picks `S` per frame (more parity on lossy links, and for
-//! keyframes) and carries it in the header flags. Anything worse falls
-//! through to latest-frame-wins + a keyframe request.
+//! keyframes) and carries it in the header flags. Anything worse is asked
+//! for again, and past a deadline falls through to a keyframe request.
+
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -209,18 +213,69 @@ pub struct CompleteFrame {
     pub assembly_us: u64,
 }
 
+/// A frame whose datagrams are still coming in.
 struct Partial {
-    first_arrival: std::time::Instant,
-    frame_id: u64,
+    first_arrival: Instant,
+    last_arrival: Instant,
     capture_ts_us: u64,
     flags: u8,
     frame_len: usize,
     chunks: Vec<Option<Bytes>>,
     parity: Vec<Option<Bytes>>,
     received: usize,
+    /// When its missing datagrams were last asked for again.
+    asked: Option<Instant>,
 }
 
 impl Partial {
+    fn new(header: &MediaHeader, now: Instant) -> Self {
+        let chunk_count = header.chunk_count as usize;
+        Self {
+            first_arrival: now,
+            last_arrival: now,
+            capture_ts_us: header.capture_ts_us,
+            flags: header.flags & !FLAG_PARITY,
+            frame_len: header.frame_len as usize,
+            chunks: vec![None; chunk_count],
+            parity: vec![None; chunk_count.max(1).div_ceil(group_size_from_flags(header.flags))],
+            received: 0,
+            asked: None,
+        }
+    }
+
+    fn is_keyframe(&self) -> bool {
+        self.flags & FLAG_KEYFRAME != 0
+    }
+
+    fn is_complete(&self) -> bool {
+        self.received == self.chunks.len()
+    }
+
+    /// Data chunks still missing.
+    fn missing(&self) -> Vec<u16> {
+        (0..self.chunks.len()).filter(|&index| self.chunks[index].is_none()).map(|index| index as u16).collect()
+    }
+
+    /// Stores a data or parity datagram; returns whether parity then
+    /// recovered a chunk.
+    fn add(&mut self, header: &MediaHeader, payload: &[u8]) -> bool {
+        let index = header.chunk_index as usize;
+        if header.flags & FLAG_PARITY != 0 {
+            match self.parity.get_mut(index) {
+                Some(slot @ None) => *slot = Some(Bytes::copy_from_slice(payload)),
+                _ => return false, // a duplicate, or malformed
+            }
+            self.try_recover(index)
+        } else {
+            match self.chunks.get_mut(index) {
+                Some(slot @ None) => *slot = Some(Bytes::copy_from_slice(payload)),
+                _ => return false,
+            }
+            self.received += 1;
+            self.try_recover(index % self.parity.len().max(1))
+        }
+    }
+
     /// Chunk indexes in parity group `group` (interleaved: `i % groups`).
     fn group_members(&self, group: usize) -> impl Iterator<Item = usize> + Clone {
         (group..self.chunks.len()).step_by(self.parity.len().max(1))
@@ -235,10 +290,8 @@ impl Partial {
         let range = self.group_members(group);
         let mut missing = None;
         for index in range.clone() {
-            if self.chunks[index].is_none() {
-                if missing.replace(index).is_some() {
-                    return false; // >1 missing: unrecoverable by XOR
-                }
+            if self.chunks[index].is_none() && missing.replace(index).is_some() {
+                return false; // >1 missing: unrecoverable by XOR
             }
         }
         let Some(missing) = missing else { return false };
@@ -262,19 +315,93 @@ impl Partial {
         self.received += 1;
         true
     }
+
+    fn finish(self, frame_id: u64) -> CompleteFrame {
+        let mut data = BytesMut::with_capacity(self.frame_len);
+        for chunk in self.chunks {
+            data.put_slice(&chunk.expect("all chunks received"));
+        }
+        data.truncate(self.frame_len);
+        CompleteFrame {
+            frame_id,
+            capture_ts_us: self.capture_ts_us,
+            keyframe: self.flags & FLAG_KEYFRAME != 0,
+            data: data.freeze(),
+            assembly_us: self.last_arrival.duration_since(self.first_arrival).as_micros() as u64,
+        }
+    }
 }
 
-/// Latest-frame-wins reassembler with XOR-parity recovery: at most one frame in
-/// flight; a datagram from a newer frame abandons the current partial (counted
-/// in `dropped_frames`), stale datagrams are discarded. No queueing, ever.
+/// Video datagrams to send again (see `ControlMessage::Resend`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResendRequest {
+    pub frame_id: u64,
+    /// Missing data chunks; empty when nothing of the frame arrived.
+    pub chunks: Vec<u16>,
+}
+
+/// How long to wait for datagrams asked for again, from the round trip.
+#[derive(Debug, Clone, Copy)]
+pub struct Patience {
+    /// Ask again after this long (and a frame's datagrams have stopped
+    /// arriving after this long without it completing).
+    pub retry: Duration,
+    /// Give a frame up after this long, and wait for a keyframe instead.
+    pub give_up: Duration,
+}
+
+impl Patience {
+    pub fn for_rtt(rtt: Duration) -> Self {
+        Self {
+            retry: (rtt + Duration::from_millis(10)).clamp(Duration::from_millis(15), Duration::from_millis(60)),
+            give_up: (rtt * 2 + Duration::from_millis(30)).clamp(Duration::from_millis(50), Duration::from_millis(150)),
+        }
+    }
+}
+
+/// What `Reassembler::poll` has for the caller.
+#[derive(Debug, Default)]
+pub struct Poll {
+    /// Frames to decode, in order.
+    pub frames: Vec<CompleteFrame>,
+    /// Datagrams to ask the host for again.
+    pub resend: Vec<ResendRequest>,
+    /// A frame was given up: ask the host for a keyframe.
+    pub want_keyframe: bool,
+}
+
+/// Frames held back waiting for a missing one, at most (1 s at 60 fps).
+const MAX_HELD: usize = 60;
+
+/// Puts frames back together and hands them on in order. When one is missing
+/// datagrams that parity can't rebuild, it asks for them again and holds
+/// later frames (which reference it) until they arrive, which takes about a
+/// round trip; waiting for a keyframe instead is what a lost frame used to
+/// cost. Past `Patience::give_up` it gives the frame up and waits for a
+/// keyframe after all, asking for any of the keyframe's datagrams that go
+/// missing too.
 #[derive(Default)]
 pub struct Reassembler {
-    current: Option<Partial>,
-    last_completed: Option<u64>,
+    partial: BTreeMap<u64, Partial>,
+    complete: BTreeMap<u64, CompleteFrame>,
+    /// The next frame to hand on (at the start, the first one seen).
+    next: Option<u64>,
+    newest: Option<u64>,
+    /// Since when `next` has been holding later frames up.
+    blocked_since: Option<Instant>,
+    /// A frame was given up: only a keyframe can be decoded until one comes.
+    awaiting_keyframe: bool,
+    keyframe_asked: Option<Instant>,
+    /// Frames nothing of which arrived, and when they were last asked for.
+    asked_whole: BTreeMap<u64, Instant>,
     pub completed_frames: u64,
     pub dropped_frames: u64,
     pub stale_datagrams: u64,
     pub recovered_chunks: u64,
+    /// Datagrams asked for again (whole frames count once)...
+    pub resend_requested: u64,
+    /// ...and frames that completed after asking.
+    pub resend_recovered: u64,
 }
 
 impl Reassembler {
@@ -282,94 +409,177 @@ impl Reassembler {
         Self::default()
     }
 
-    /// Discard the old epoch's partial frame without recording a loss.
+    /// Discard the old epoch's frames without recording a loss.
     pub fn reset_epoch(&mut self) {
-        self.current = None;
-        self.last_completed = None;
+        let counters = (
+            self.completed_frames,
+            self.dropped_frames,
+            self.stale_datagrams,
+            self.recovered_chunks,
+            self.resend_requested,
+            self.resend_recovered,
+        );
+        *self = Self::default();
+        (
+            self.completed_frames,
+            self.dropped_frames,
+            self.stale_datagrams,
+            self.recovered_chunks,
+            self.resend_requested,
+            self.resend_recovered,
+        ) = counters;
     }
 
-    pub fn push(&mut self, datagram: &[u8]) -> Option<CompleteFrame> {
-        let (header, payload) = MediaHeader::parse(datagram)?;
+    /// Something is held or on its way: poll again soon, even with no
+    /// datagrams arriving, so a stall gets noticed.
+    pub fn is_waiting(&self) -> bool {
+        !self.partial.is_empty() || !self.complete.is_empty()
+    }
 
-        if let Some(done) = self.last_completed {
-            // Datagrams for the just-completed frame (typically parity arriving
-            // after the data completed it) are expected — ignore silently.
-            if header.frame_id == done {
-                return None;
-            }
-            if header.frame_id < done {
+    pub fn push(&mut self, datagram: &[u8], now: Instant) {
+        let Some((header, payload)) = MediaHeader::parse(datagram) else { return };
+        let id = header.frame_id;
+        let next = *self.next.get_or_insert(id);
+        if id < next {
+            // Parity trailing a frame that already went is expected.
+            if id + 1 != next {
                 self.stale_datagrams += 1;
-                return None;
             }
+            return;
         }
-        match &self.current {
-            Some(partial) if header.frame_id < partial.frame_id => {
-                self.stale_datagrams += 1;
-                return None;
-            }
-            Some(partial) if header.frame_id > partial.frame_id => {
-                self.dropped_frames += 1;
-                self.current = None;
-            }
-            _ => {}
+        if self.complete.contains_key(&id) {
+            return;
         }
+        self.newest = Some(self.newest.map_or(id, |newest| newest.max(id)));
+        let partial = self.partial.entry(id).or_insert_with(|| Partial::new(&header, now));
+        partial.last_arrival = now;
+        if partial.add(&header, payload) {
+            self.recovered_chunks += 1;
+        }
+        if partial.is_complete() {
+            let partial = self.partial.remove(&id).expect("just used");
+            if partial.asked.is_some() || self.asked_whole.remove(&id).is_some() {
+                self.resend_recovered += 1;
+            }
+            self.completed_frames += 1;
+            self.complete.insert(id, partial.finish(id));
+        }
+    }
 
-        let chunk_count = header.chunk_count as usize;
-        let partial = self.current.get_or_insert_with(|| Partial {
-            first_arrival: std::time::Instant::now(),
-            frame_id: header.frame_id,
-            capture_ts_us: header.capture_ts_us,
-            flags: header.flags & !FLAG_PARITY,
-            frame_len: header.frame_len as usize,
-            chunks: vec![None; chunk_count],
-            parity: vec![None; chunk_count.max(1).div_ceil(group_size_from_flags(header.flags))],
-            received: 0,
-        });
-
-        let index = header.chunk_index as usize;
-        if header.flags & FLAG_PARITY != 0 {
-            let Some(slot) = partial.parity.get_mut(index) else {
-                return None; // malformed
-            };
-            if slot.is_none() {
-                *slot = Some(Bytes::copy_from_slice(payload));
-                if partial.try_recover(index) {
-                    self.recovered_chunks += 1;
+    pub fn poll(&mut self, now: Instant, patience: Patience) -> Poll {
+        let mut poll = Poll::default();
+        let Some(mut next) = self.next else { return poll };
+        loop {
+            if !self.awaiting_keyframe {
+                if let Some(frame) = self.complete.remove(&next) {
+                    poll.frames.push(frame);
+                    next += 1;
+                    self.blocked_since = None;
+                    continue;
                 }
             }
-        } else {
-            if index >= partial.chunks.len() {
-                return None; // malformed
+            // A complete keyframe needs nothing before it.
+            match self.complete.range(next..).find(|(_, frame)| frame.keyframe).map(|(&id, _)| id) {
+                Some(id) => {
+                    self.forget_before(id);
+                    next = id;
+                    self.awaiting_keyframe = false;
+                    self.blocked_since = None;
+                }
+                None => break,
             }
-            if partial.chunks[index].is_none() {
-                partial.chunks[index] = Some(Bytes::copy_from_slice(payload));
-                partial.received += 1;
-                let group = index % partial.parity.len().max(1);
-                if partial.try_recover(group) {
-                    self.recovered_chunks += 1;
+        }
+        self.next = Some(next);
+        let newest = self.newest.unwrap_or(next);
+
+        if self.awaiting_keyframe {
+            self.ask_for_keyframes(now, newest, patience, &mut poll);
+            return poll;
+        }
+        let stalled = self.partial.get(&next).is_some_and(|partial| now - partial.last_arrival >= patience.retry);
+        if newest <= next && !stalled {
+            self.blocked_since = None;
+            return poll;
+        }
+        let since = *self.blocked_since.get_or_insert(now);
+        if now - since >= patience.give_up || self.partial.len() + self.complete.len() > MAX_HELD {
+            self.dropped_frames += 1;
+            self.awaiting_keyframe = true;
+            self.blocked_since = None;
+            self.partial.remove(&next);
+            self.keyframe_asked = Some(now);
+            poll.want_keyframe = true;
+            self.ask_for_keyframes(now, newest, patience, &mut poll);
+            return poll;
+        }
+        for id in next..=newest.min(next + MAX_HELD as u64) {
+            if self.complete.contains_key(&id) {
+                continue;
+            }
+            match self.partial.get_mut(&id) {
+                Some(partial) => {
+                    let arriving = id == newest && now - partial.last_arrival < patience.retry;
+                    if arriving || partial.asked.is_some_and(|at| now - at < patience.retry) {
+                        continue;
+                    }
+                    partial.asked = Some(now);
+                    let chunks = partial.missing();
+                    self.resend_requested += chunks.len() as u64;
+                    poll.resend.push(ResendRequest { frame_id: id, chunks });
+                }
+                None => {
+                    if self.asked_whole.get(&id).is_some_and(|&at| now - at < patience.retry) {
+                        continue;
+                    }
+                    self.asked_whole.insert(id, now);
+                    self.resend_requested += 1;
+                    poll.resend.push(ResendRequest { frame_id: id, chunks: Vec::new() });
                 }
             }
         }
+        poll
+    }
 
-        if partial.received < partial.chunks.len() {
-            return None;
+    /// While waiting for a keyframe: ask for the missing datagrams of any on
+    /// its way, or for a new one if none is (after `give_up`, since the
+    /// host's answer takes a while).
+    fn ask_for_keyframes(&mut self, now: Instant, newest: u64, patience: Patience, poll: &mut Poll) {
+        // Frames before the newest keyframe on its way can't be decoded.
+        if let Some(id) = self.partial.iter().rev().find(|(_, partial)| partial.is_keyframe()).map(|(&id, _)| id) {
+            self.forget_before(id);
         }
+        let mut coming = false;
+        for (&id, partial) in self.partial.iter_mut().filter(|(_, partial)| partial.is_keyframe()) {
+            coming = true;
+            let arriving = id == newest && now - partial.last_arrival < patience.retry;
+            if arriving || partial.asked.is_some_and(|at| now - at < patience.retry) {
+                continue;
+            }
+            partial.asked = Some(now);
+            let chunks = partial.missing();
+            self.resend_requested += chunks.len() as u64;
+            poll.resend.push(ResendRequest { frame_id: id, chunks });
+        }
+        if !coming && self.keyframe_asked.is_none_or(|at| now - at >= patience.give_up) {
+            self.keyframe_asked = Some(now);
+            poll.want_keyframe = true;
+        }
+        // Bounded, oldest first.
+        while self.partial.len() + self.complete.len() > MAX_HELD {
+            let oldest_partial = self.partial.keys().next().copied().unwrap_or(u64::MAX);
+            let oldest_complete = self.complete.keys().next().copied().unwrap_or(u64::MAX);
+            if oldest_complete < oldest_partial {
+                self.complete.pop_first();
+            } else {
+                self.partial.pop_first();
+            }
+        }
+    }
 
-        let partial = self.current.take().expect("just inserted");
-        let mut data = BytesMut::with_capacity(partial.frame_len);
-        for chunk in partial.chunks.into_iter() {
-            data.put_slice(&chunk.expect("all chunks received"));
-        }
-        data.truncate(partial.frame_len);
-        self.last_completed = Some(partial.frame_id);
-        self.completed_frames += 1;
-        Some(CompleteFrame {
-            frame_id: partial.frame_id,
-            capture_ts_us: partial.capture_ts_us,
-            keyframe: partial.flags & FLAG_KEYFRAME != 0,
-            data: data.freeze(),
-            assembly_us: partial.first_arrival.elapsed().as_micros() as u64,
-        })
+    fn forget_before(&mut self, id: u64) {
+        self.partial = self.partial.split_off(&id);
+        self.complete = self.complete.split_off(&id);
+        self.asked_whole = self.asked_whole.split_off(&id);
     }
 }
 
@@ -414,6 +624,38 @@ mod tests {
         assert_eq!(rest, b"payload");
     }
 
+    fn patience() -> Patience {
+        Patience { retry: Duration::from_millis(20), give_up: Duration::from_millis(60) }
+    }
+
+    /// Pushes datagrams at `now`, then polls.
+    fn feed<'a>(reassembler: &mut Reassembler, datagrams: impl IntoIterator<Item = &'a Bytes>, now: Instant) -> Poll {
+        for datagram in datagrams {
+            reassembler.push(datagram, now);
+        }
+        reassembler.poll(now, patience())
+    }
+
+    fn ids(poll: &Poll) -> Vec<u64> {
+        poll.frames.iter().map(|frame| frame.frame_id).collect()
+    }
+
+    /// Frame `id`'s datagrams, without data chunks `lost` (parity kept).
+    fn without(datagrams: &[Bytes], lost: &[usize]) -> Vec<Bytes> {
+        let mut data_index = 0;
+        datagrams
+            .iter()
+            .filter(|datagram| {
+                if is_parity(datagram) {
+                    return true;
+                }
+                data_index += 1;
+                !lost.contains(&(data_index - 1))
+            })
+            .cloned()
+            .collect()
+    }
+
     #[test]
     fn packetize_reassemble_roundtrip() {
         let payload = payload(10_000);
@@ -424,11 +666,8 @@ mod tests {
         assert_eq!(parity_count, data_count.div_ceil(PARITY_GROUP));
 
         let mut reassembler = Reassembler::new();
-        let mut complete = None;
-        for datagram in &datagrams {
-            complete = reassembler.push(datagram).or(complete);
-        }
-        let frame = complete.expect("frame should complete");
+        let poll = feed(&mut reassembler, &datagrams, Instant::now());
+        let frame = &poll.frames[0];
         assert_eq!(frame.frame_id, 1);
         assert!(frame.keyframe);
         assert_eq!(&frame.data[..], &payload[..]);
@@ -440,43 +679,21 @@ mod tests {
         let payload = payload(9_500); // 9 chunks, 2 interleaved groups
         let datagrams = packetize(0, 7, 0, false, &payload, 1200, PARITY_GROUP);
         let mut reassembler = Reassembler::new();
-        let mut complete = None;
-        // Drop one data datagram in each group: chunks 0 (group 0) and 1 (group 1).
-        let mut data_index = 0usize;
-        for datagram in &datagrams {
-            if !is_parity(datagram) {
-                let drop = data_index < 2;
-                data_index += 1;
-                if drop {
-                    continue;
-                }
-            }
-            complete = reassembler.push(datagram).or(complete);
-        }
-        let frame = complete.expect("FEC should recover every group");
-        assert_eq!(&frame.data[..], &payload[..]);
+        // One data datagram lost in each group: chunks 0 (group 0) and 1 (group 1).
+        let poll = feed(&mut reassembler, &without(&datagrams, &[0, 1]), Instant::now());
+        assert_eq!(&poll.frames[0].data[..], &payload[..], "FEC should recover every group");
         assert_eq!(reassembler.recovered_chunks, 2);
     }
 
     /// Drop `burst` consecutive data datagrams starting at data chunk `at`;
-    /// return whether the frame still completed, intact.
+    /// return whether the frame still completed, intact, without asking.
     fn survives_burst(len: usize, group_size: usize, at: usize, burst: usize) -> bool {
         let payload = payload(len);
         let datagrams = packetize(0, 11, 0, false, &payload, 1200, group_size);
+        let lost: Vec<usize> = (at..at + burst).collect();
         let mut reassembler = Reassembler::new();
-        let mut complete = None;
-        let mut data_index = 0usize;
-        for datagram in &datagrams {
-            if !is_parity(datagram) {
-                let drop = (at..at + burst).contains(&data_index);
-                data_index += 1;
-                if drop {
-                    continue;
-                }
-            }
-            complete = reassembler.push(datagram).or(complete);
-        }
-        complete.is_some_and(|frame| frame.data[..] == payload[..])
+        let poll = feed(&mut reassembler, &without(&datagrams, &lost), Instant::now());
+        poll.frames.first().is_some_and(|frame| frame.data[..] == payload[..])
     }
 
     #[test]
@@ -505,61 +722,122 @@ mod tests {
     fn last_short_chunk_is_recoverable() {
         let payload = payload(2_500); // 3 chunks at 1200 max: sizes 834/834/832
         let datagrams = packetize(0, 9, 0, false, &payload, 1200, PARITY_GROUP);
-        let last_data_index = datagrams
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| !is_parity(d))
-            .map(|(i, _)| i)
-            .last()
-            .unwrap();
         let mut reassembler = Reassembler::new();
-        let mut complete = None;
-        for (index, datagram) in datagrams.iter().enumerate() {
-            if index == last_data_index {
-                continue;
-            }
-            complete = reassembler.push(datagram).or(complete);
-        }
-        let frame = complete.expect("short last chunk should be recovered");
-        assert_eq!(&frame.data[..], &payload[..]);
+        let poll = feed(&mut reassembler, &without(&datagrams, &[2]), Instant::now());
+        assert_eq!(&poll.frames[0].data[..], &payload[..], "short last chunk should be recovered");
         assert_eq!(reassembler.recovered_chunks, 1);
     }
 
     #[test]
-    fn double_loss_in_group_is_not_recovered() {
-        let payload = payload(9_000);
-        let datagrams = packetize(0, 3, 0, false, &payload, 1200, PARITY_GROUP);
+    fn frames_come_out_in_order() {
         let mut reassembler = Reassembler::new();
-        let mut complete = None;
-        let mut data_index = 0usize;
-        for datagram in &datagrams {
-            if !is_parity(datagram) {
-                let drop = data_index < 2; // two losses in group 0
-                data_index += 1;
-                if drop {
-                    continue;
-                }
-            }
-            complete = reassembler.push(datagram).or(complete);
-        }
-        assert!(complete.is_none());
+        let now = Instant::now();
+        let frames: Vec<Vec<Bytes>> =
+            (1..=3).map(|id| packetize(0, id, 0, id == 1, &payload(3000), 1200, PARITY_GROUP)).collect();
+        assert_eq!(ids(&feed(&mut reassembler, frames.iter().flatten(), now)), [1, 2, 3]);
     }
 
     #[test]
-    fn newer_frame_supersedes_partial() {
-        let old = packetize(0, 1, 0, false, &payload(5000), 1200, PARITY_GROUP);
-        let new = packetize(0, 2, 0, false, &payload(3000), 1200, PARITY_GROUP);
+    fn what_parity_cant_rebuild_is_asked_for_and_later_frames_wait() {
+        let now = Instant::now();
+        let first = packetize(0, 1, 0, false, &payload(9_000), 1200, PARITY_GROUP);
+        let second = packetize(0, 2, 0, false, &payload(3000), 1200, PARITY_GROUP);
         let mut reassembler = Reassembler::new();
-        // Only part of frame 1 arrives, then all of frame 2.
-        reassembler.push(&old[0]);
-        let mut complete = None;
-        for datagram in &new {
-            complete = reassembler.push(datagram).or(complete);
-        }
-        assert_eq!(complete.unwrap().frame_id, 2);
+        // Chunks 0 and 2 share a group: parity can't rebuild both.
+        feed(&mut reassembler, &without(&first, &[0, 2]), now);
+        let poll = feed(&mut reassembler, &second, now);
+        assert!(poll.frames.is_empty(), "frame 2 references frame 1, so it waits");
+        assert_eq!(poll.resend, [ResendRequest { frame_id: 1, chunks: vec![0, 2] }]);
+
+        // The host sends them again.
+        let resent: Vec<Bytes> = first.iter().filter(|d| !is_parity(d)).take(3).cloned().collect();
+        let poll = feed(&mut reassembler, &resent, now + Duration::from_millis(15));
+        assert_eq!(ids(&poll), [1, 2]);
+        assert_eq!(reassembler.resend_recovered, 1);
+        assert_eq!(reassembler.dropped_frames, 0);
+    }
+
+    #[test]
+    fn asks_again_after_a_retry_interval() {
+        let now = Instant::now();
+        let first = packetize(0, 1, 0, false, &payload(9_000), 1200, PARITY_GROUP);
+        let second = packetize(0, 2, 0, false, &payload(3000), 1200, PARITY_GROUP);
+        let mut reassembler = Reassembler::new();
+        feed(&mut reassembler, &without(&first, &[0, 2]), now);
+        assert_eq!(feed(&mut reassembler, &second, now).resend.len(), 1);
+        assert!(reassembler.poll(now + Duration::from_millis(10), patience()).resend.is_empty());
+        assert_eq!(reassembler.poll(now + Duration::from_millis(25), patience()).resend.len(), 1);
+    }
+
+    #[test]
+    fn a_frame_that_never_arrived_is_asked_for_whole() {
+        let now = Instant::now();
+        let mut reassembler = Reassembler::new();
+        let one = packetize(0, 1, 0, true, &payload(3000), 1200, PARITY_GROUP);
+        let three = packetize(0, 3, 0, false, &payload(3000), 1200, PARITY_GROUP);
+        let poll = feed(&mut reassembler, one.iter().chain(&three), now);
+        assert_eq!(ids(&poll), [1]);
+        assert_eq!(poll.resend, [ResendRequest { frame_id: 2, chunks: vec![] }]);
+    }
+
+    #[test]
+    fn a_stalled_frame_is_asked_for_even_with_nothing_after_it() {
+        let now = Instant::now();
+        let frame = packetize(0, 1, 0, false, &payload(9_000), 1200, PARITY_GROUP);
+        let mut reassembler = Reassembler::new();
+        let poll = feed(&mut reassembler, &without(&frame, &[0, 2]), now);
+        assert!(poll.resend.is_empty(), "it may still be arriving");
+        assert!(reassembler.is_waiting());
+        let poll = reassembler.poll(now + Duration::from_millis(25), patience());
+        assert_eq!(poll.resend, [ResendRequest { frame_id: 1, chunks: vec![0, 2] }]);
+    }
+
+    #[test]
+    fn gives_up_after_the_deadline_and_waits_for_a_keyframe() {
+        let now = Instant::now();
+        let packet = |id, keyframe| packetize(0, id, 0, keyframe, &payload(3000), 1200, PARITY_GROUP);
+        let first = packetize(0, 1, 0, false, &payload(9_000), 1200, PARITY_GROUP);
+        let mut reassembler = Reassembler::new();
+        feed(&mut reassembler, &without(&first, &[0, 2]), now);
+        feed(&mut reassembler, &packet(2, false), now);
+        let poll = reassembler.poll(now + Duration::from_millis(61), patience());
+        assert!(poll.want_keyframe && poll.frames.is_empty());
         assert_eq!(reassembler.dropped_frames, 1);
-        // Late chunk of frame 1 is stale now.
-        assert!(reassembler.push(&old[1]).is_none());
+
+        let later = now + Duration::from_millis(70);
+        assert!(feed(&mut reassembler, &packet(3, false), later).frames.is_empty(), "nothing to decode it against");
+        assert_eq!(ids(&feed(&mut reassembler, &packet(4, true), later)), [4]);
+        assert_eq!(ids(&feed(&mut reassembler, &packet(5, false), later)), [5]);
+    }
+
+    #[test]
+    fn while_waiting_for_a_keyframe_its_missing_datagrams_are_asked_for() {
+        let now = Instant::now();
+        let first = packetize(0, 1, 0, false, &payload(9_000), 1200, PARITY_GROUP);
+        let second = packetize(0, 2, 0, false, &payload(3000), 1200, PARITY_GROUP);
+        let mut reassembler = Reassembler::new();
+        feed(&mut reassembler, first.iter().chain(&second).skip(1), now);
+        reassembler.poll(now + Duration::from_millis(61), patience()); // gives up on 1
+        let keyframe = packetize(0, 3, 0, true, &payload(9_000), 1200, PARITY_GROUP);
+        let after = packetize(0, 4, 0, false, &payload(3000), 1200, PARITY_GROUP);
+        let later = now + Duration::from_millis(70);
+        feed(&mut reassembler, &without(&keyframe, &[0, 2]), later);
+        let poll = feed(&mut reassembler, &after, later);
+        assert!(!poll.want_keyframe, "one is on its way");
+        assert_eq!(poll.resend, [ResendRequest { frame_id: 3, chunks: vec![0, 2] }]);
+    }
+
+    #[test]
+    fn a_complete_keyframe_doesnt_wait_for_a_missing_frame() {
+        let now = Instant::now();
+        let first = packetize(0, 1, 0, false, &payload(9_000), 1200, PARITY_GROUP);
+        let keyframe = packetize(0, 2, 0, true, &payload(3000), 1200, PARITY_GROUP);
+        let mut reassembler = Reassembler::new();
+        feed(&mut reassembler, &without(&first, &[0, 2]), now);
+        assert_eq!(ids(&feed(&mut reassembler, &keyframe, now)), [2]);
+        // Frame 1 is history now: its late datagrams are stale.
+        reassembler.push(&first[0], now);
         assert_eq!(reassembler.stale_datagrams, 1);
+        assert_eq!(reassembler.dropped_frames, 0);
     }
 }

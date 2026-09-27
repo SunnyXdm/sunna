@@ -134,6 +134,53 @@ struct SessionSignals {
     /// Data chunks per parity datagram for delta frames, chosen from the loss
     /// QUIC measured recently (see `fec_group_for_loss`).
     fec_group: AtomicU32,
+    /// Recently sent video, to send again what the viewer missed.
+    sent: Mutex<SentFrames>,
+    /// Datagrams sent again since the last host window (stats only).
+    resent: AtomicU32,
+}
+
+/// The last second or so of video sent (bounded in bytes too), so the
+/// viewer can ask for datagrams again: that takes a round trip, where
+/// waiting for a keyframe took several and a big frame.
+#[derive(Default)]
+struct SentFrames {
+    frames: std::collections::VecDeque<SentFrame>,
+    bytes: usize,
+}
+
+struct SentFrame {
+    epoch: u8,
+    frame_id: u64,
+    /// `datagrams[..data_count]` are the data chunks, in order; parity follows.
+    data_count: usize,
+    datagrams: Vec<bytes::Bytes>,
+}
+
+impl SentFrames {
+    const MAX_FRAMES: usize = 90;
+    const MAX_BYTES: usize = 8 << 20;
+
+    fn push(&mut self, frame: SentFrame) {
+        self.bytes += frame.datagrams.iter().map(|datagram| datagram.len()).sum::<usize>();
+        self.frames.push_back(frame);
+        while self.frames.len() > Self::MAX_FRAMES || self.bytes > Self::MAX_BYTES {
+            let Some(old) = self.frames.pop_front() else { break };
+            self.bytes -= old.datagrams.iter().map(|datagram| datagram.len()).sum::<usize>();
+        }
+    }
+
+    /// The datagrams to send again: `chunks` of the frame's data, or all of
+    /// it when empty. `None` if the frame is gone (or was never sent).
+    fn resend(&self, epoch: u8, frame_id: u64, chunks: &[u16]) -> Option<Vec<bytes::Bytes>> {
+        let frame = self.frames.iter().rev().find(|frame| frame.epoch == epoch && frame.frame_id == frame_id)?;
+        let data = &frame.datagrams[..frame.data_count];
+        Some(if chunks.is_empty() {
+            data.to_vec()
+        } else {
+            chunks.iter().filter_map(|&chunk| data.get(chunk as usize).cloned()).collect()
+        })
+    }
 }
 
 /// Parity group size for a measured packet loss rate: more parity on lossy
@@ -358,6 +405,8 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         input_events: AtomicU32::new(0),
         stats: Mutex::new(None),
         fec_group: AtomicU32::new(sunna_proto::media::PARITY_GROUP as u32),
+        sent: Mutex::new(SentFrames::default()),
+        resent: AtomicU32::new(0),
     });
     let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();
     let media_thread = {
@@ -841,6 +890,16 @@ fn send_loop(
                         send_backlog(&connection),
                     );
                 } else {
+                    let data_count = datagrams.iter().filter(|datagram| {
+                        sunna_proto::media::MediaHeader::parse(datagram)
+                            .is_some_and(|(header, _)| header.flags & sunna_proto::media::FLAG_PARITY == 0)
+                    }).count();
+                    signals.sent.lock().unwrap().push(SentFrame {
+                        epoch,
+                        frame_id: wire_frame_id,
+                        data_count,
+                        datagrams: datagrams.clone(),
+                    });
                     wire_frame_id += 1;
                     for datagram in datagrams {
                         if simulate_loss > 0.0 && roll() < simulate_loss {
@@ -976,6 +1035,7 @@ impl HostWindow {
             quic_cwnd_kb = path.cwnd / 1024,
             quic_rtt_ms = path.rtt.as_secs_f64() * 1000.0,
             fec_group = signals.fec_group.load(Ordering::Relaxed),
+            resent = signals.resent.swap(0, Ordering::Relaxed),
             "host window"
         );
         // More parity as soon as loss shows up; back off only after a run of
@@ -1259,6 +1319,21 @@ async fn handle_control(
             }
             Ok(ControlMessage::RequestKeyframe) => {
                 signals.force_keyframe.store(true, Ordering::Relaxed);
+            }
+            Ok(ControlMessage::Resend { epoch, frame_id, chunks }) => {
+                let resend = signals.sent.lock().unwrap().resend(epoch, frame_id, &chunks);
+                match resend {
+                    Some(datagrams) => {
+                        signals.resent.fetch_add(datagrams.len() as u32, Ordering::Relaxed);
+                        for datagram in datagrams {
+                            if connection.send_datagram(datagram).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    // Too old, or dropped before sending: start over.
+                    None => signals.force_keyframe.store(true, Ordering::Relaxed),
+                }
             }
             Ok(ControlMessage::ReceiverReport {
                 frames_complete,

@@ -96,6 +96,10 @@ pub enum ControlMessage {
     HostInfo(HostAbout),
     /// Viewer: start or stop sending sound.
     SetAudio(bool),
+    /// Viewer: these video datagrams didn't arrive; send them again.
+    /// `chunks` are data chunk indexes; empty means all of the frame's data
+    /// (nothing of it arrived, so the viewer doesn't know its size).
+    Resend { epoch: u8, frame_id: u64, chunks: Vec<u16> },
 }
 
 /// What a host is, for display.
