@@ -18,3 +18,8 @@ sunna-viewer.workspace = true
 tauri = { version = "2", features = [] }
 tokio.workspace = true
 tracing.workspace = true
+
+[features]
+# The production build (scripts/install-mac-app.sh): the UI comes from the
+# embedded assets and macOS takes the icon from the app bundle.
+custom-protocol = ["tauri/custom-protocol"]
