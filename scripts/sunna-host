@@ -404,7 +404,7 @@ cmd_uninstall() {
 cmd_report() {
   local key="" sunnad
   [ -f "$CONFIG" ] && key="$(sed -n 's/^SUNNA_TOKEN=//p' "$CONFIG" | tail -1)"
-  sunnad="$(sunnad_path 2>/dev/null || true)"
+  sunnad="$(sunnad_path 2>/dev/null)" || sunnad=""
   {
     echo "Sunna host report, $(date -u '+%Y-%m-%d %H:%M UTC')"
     echo
@@ -414,7 +414,7 @@ cmd_report() {
       echo "GPU        $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -1) (NVIDIA driver)"
     else
       local gpu
-      gpu="$(lspci 2>/dev/null | grep -i -E 'vga|3d controller' | cut -d: -f3- | head -2 | xargs)"
+      gpu="$(lspci 2>/dev/null | grep -i -E 'vga|3d controller' | cut -d: -f3- | head -2 | xargs || true)"
       echo "GPU        ${gpu:-none found (or lspci missing)}"
     fi
     echo "Desktop    ${XDG_SESSION_TYPE:-no graphical session here} ${XDG_CURRENT_DESKTOP:+($XDG_CURRENT_DESKTOP)}"
