@@ -68,6 +68,31 @@ pub type EncoderFactory =
 
 pub type InjectorFactory = Box<dyn Fn() -> Box<dyn InputInjector> + Send + Sync>;
 
+/// Build the encoder for `stream`. If its codec can't be encoded here (a
+/// viewer asking for HEVC from a host without an HEVC encoder), use the
+/// host's own codec instead and record it in `stream`: that's what the viewer
+/// is told, and it decodes accordingly.
+fn open_encoder(
+    new_encoder: &EncoderFactory,
+    stream: &mut StreamConfig,
+    fallback: &str,
+) -> anyhow::Result<Box<dyn Encoder>> {
+    match new_encoder(stream) {
+        Ok(encoder) => Ok(encoder),
+        Err(error) if stream.codec != fallback => {
+            tracing::warn!(
+                requested = %stream.codec,
+                using = fallback,
+                reason = %format!("{error:#}"),
+                "codec unavailable here; falling back"
+            );
+            stream.codec = fallback.to_string();
+            new_encoder(stream)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     /// Share text and images with the authenticated viewer.
@@ -261,7 +286,8 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             .apply((builder.config.width, builder.config.height), &settings)
             .and_then(|mut stream| {
                 let source = (builder.new_source)(&stream)?;
-                let encoder = (builder.new_encoder)(&stream)?;
+                let encoder =
+                    open_encoder(&builder.new_encoder, &mut stream, &builder.config.codec)?;
                 stream.fast_lane &= source.supports_tiles();
                 Ok((stream, source, encoder))
             })
@@ -551,7 +577,7 @@ fn media_loop(
                 .apply((host.config.width, host.config.height), &settings)
                 .and_then(|mut next| {
                     let source = (host.new_source)(&next)?;
-                    let encoder = (host.new_encoder)(&next)?;
+                    let encoder = open_encoder(&host.new_encoder, &mut next, &host.config.codec)?;
                     next.fast_lane &= source.supports_tiles();
                     Ok((next, source, encoder))
                 });
@@ -1094,5 +1120,33 @@ async fn handle_control(
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_codec_falls_back_to_the_hosts_own() {
+        // A host that can only do H.264, asked for HEVC.
+        let factory: EncoderFactory = Box::new(|stream: &StreamConfig| {
+            anyhow::ensure!(stream.codec != "hevc", "no HEVC encoder");
+            sunna_codec::make_encoder("raw", stream.width, stream.height, stream.fps, stream.bitrate_bps)
+        });
+        let mut stream = StreamConfig {
+            width: 64,
+            height: 64,
+            fps: 30,
+            codec: "hevc".into(),
+            bitrate_bps: 1_000_000,
+            fast_lane: false,
+        };
+        assert!(open_encoder(&factory, &mut stream, "h264").is_ok());
+        assert_eq!(stream.codec, "h264", "the viewer must be told the codec actually used");
+
+        // No fallback left: the error surfaces.
+        let mut stream = StreamConfig { codec: "hevc".into(), ..stream };
+        assert!(open_encoder(&factory, &mut stream, "hevc").is_err());
     }
 }

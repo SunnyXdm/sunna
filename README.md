@@ -98,6 +98,7 @@ The package runs on the release it was built on and newer ones: build it on Ubun
 | `sunna-host desktop-restart` | restart the virtual desktop (this closes its apps) |
 | `sunna-host desktop-stop` | stop the host, the virtual desktop and its apps |
 | `sunna-host uninstall [--purge]` | stop sharing and remove the service (and, for an install from source, the programs); `--purge` also deletes the settings and key. For the package, follow with `sudo apt remove sunna-host`. |
+| `sunna-host report` | a summary of the system, GPU, desktop, network and recent log, to send when asking for help (the key is left out) |
 | `sunna-host help` | these commands and options, in the terminal |
 
 | `setup` option | |

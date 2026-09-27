@@ -76,13 +76,32 @@ macro_rules! params {
     }};
 }
 
-/// Library presence only; device/driver compatibility is checked by `new`.
-pub fn available() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
+/// Whether NVENC can really encode `codec` here. The driver libraries being
+/// present isn't enough: an old driver (e.g. 470, the last for Kepler cards
+/// like the GT 710) or a GPU without that encoder fails in `new`. So this
+/// opens a small session once per codec and caches the answer.
+pub fn supports(codec: Codec) -> bool {
+    static H264: OnceLock<bool> = OnceLock::new();
+    static HEVC: OnceLock<bool> = OnceLock::new();
+    let cell = match codec {
+        Codec::H264 => &H264,
+        Codec::Hevc => &HEVC,
+        _ => return false,
+    };
+    *cell.get_or_init(|| {
         // SAFETY: load the standard driver libraries without invoking any symbols.
-        unsafe {
+        let present = unsafe {
             Library::new("libcuda.so.1").is_ok() && Library::new("libnvidia-encode.so.1").is_ok()
+        };
+        if !present {
+            return false;
+        }
+        match NvencEncoder::new(codec, 640, 360, 30, 2_000_000) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::info!(?codec, reason = %format!("{error:#}"), "NVENC can't encode this here");
+                false
+            }
         }
     })
 }

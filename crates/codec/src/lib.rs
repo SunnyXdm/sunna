@@ -188,7 +188,7 @@ pub fn default_codec_name() -> &'static str {
     } else if cfg!(target_os = "linux") {
         // HEVC needs NVENC; H.264 falls back to software (OpenH264).
         #[cfg(target_os = "linux")]
-        if nvenc::available() {
+        if nvenc::supports(Codec::Hevc) {
             return "hevc";
         }
         "h264"
@@ -217,7 +217,13 @@ pub fn make_encoder(
         "h264" | "hevc" => {
             let selected = if codec == "h264" { Codec::H264 } else { Codec::Hevc };
             // SUNNA_NVENC=0 forces software H.264.
-            if codec == "hevc" || std::env::var("SUNNA_NVENC").as_deref() != Ok("0") {
+            let use_nvenc = if codec == "hevc" {
+                anyhow::ensure!(nvenc::supports(Codec::Hevc), "this GPU and driver can't encode HEVC");
+                true
+            } else {
+                std::env::var("SUNNA_NVENC").as_deref() != Ok("0") && nvenc::supports(Codec::H264)
+            };
+            if use_nvenc {
                 match nvenc::NvencEncoder::new(selected, width, height, fps, bitrate_bps) {
                     Ok(encoder) => {
                         tracing::info!(
