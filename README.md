@@ -8,7 +8,7 @@
 
 <p align="center"><img src="docs/images/app.png" alt="The Sunna app, showing five computers" width="880"></p>
 
-Sunna shows another computer's screen on your Mac and sends your keyboard, mouse, trackpad and clipboard back. It uses the hardware video encoders and decoders where they exist and sends small changes like typing as exact, lossless tiles ahead of the video, so text appears as fast as your network allows. There are no accounts and no cloud service: computers talk to each other directly, ideally over [Tailscale](https://tailscale.com).
+Sunna shows another computer's screen on your Mac, plays its sound, and sends your keyboard, mouse, trackpad and clipboard back. It uses the hardware video encoders and decoders where they exist and sends small changes like typing as exact, lossless tiles ahead of the video, so text appears as fast as your network allows. There are no accounts and no cloud service: computers talk to each other directly, ideally over [Tailscale](https://tailscale.com).
 
 **Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11). Not yet: Windows, viewing from Linux (dev tool only), and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
 
@@ -122,6 +122,8 @@ DISPLAY=:0 sunnad --source screen --listen 100.101.102.103:48800 --name office -
 
 `--listen` takes an IP address and port (no `tailscale` or `lan` shortcuts here). Without `--token`, it makes a key and prints it when listening beyond loopback. `sunnad --help` lists the rest: stream size, frame rate, codec, bitrate, and `--no-clipboard`.
 
+**Sound:** the host shares what's playing, encoded as Opus (128 kbps stereo, in 10 ms packets that each carry a copy of the one before, so a lost packet costs nothing). With `desktop` it's the sound going to the computer's speakers, which keep playing too. A virtual desktop gets a silent sound output of its own, and the host shares exactly that. Either way the computer needs a sound server, PulseAudio or PipeWire (which nearly every desktop has); a virtual desktop also needs `pactl` (Debian and Ubuntu: `sudo apt install pulseaudio-utils`). `sunnad --no-audio` turns sharing off; a virtual desktop set up before sound support needs `sunna-host desktop-restart` once.
+
 **Video:** with an NVIDIA GPU (GTX 10-series or newer, driver 530+) the host encodes HEVC on the GPU, in about 4 ms a frame. Otherwise it encodes H.264 on the CPU with OpenH264, about 8–9 ms for a 1080p frame on a 6-core machine when built with nasm. For slow computers, the session menu's **30 fps** option halves the work.
 
 ## Share a Mac
@@ -135,6 +137,8 @@ scripts/run.sh host
 ```
 
 It prints the address, key and link, and shares until you press Ctrl-C or close the window, while the Mac is awake. The first time, macOS asks for **Screen Recording** and **Accessibility** for your terminal app: allow both, quit the terminal, and run it again. The key is the same one the Sunna app on that Mac shows in Settings as this computer's key.
+
+A Mac host shares its sound too (macOS 13 or later, through ScreenCaptureKit, under the same Screen Recording permission). This is new and not yet tested on a real Mac: if a session has no sound, the host's Terminal window says why.
 
 An installable Mac host, shared from the app, is planned.
 
@@ -167,7 +171,7 @@ Open the session menu with the **•••** button at the top left or **⌃⌥M
 | Clipboard | share the clipboard (text and images, both ways) or not; **Type Clipboard Text** types it out key by key, for login screens and password prompts that won't take a paste |
 | Video | codec (HEVC, H.264), resolution, frame rate, bitrate limit, and the fast lane |
 
-The menu also switches between full screen and a window, and shows the stats bar, hides the ••• button, or disconnects.
+The menu also switches between full screen and a window, turns the other computer's sound on and off (**Play Sound**), shows the stats bar, hides the ••• button, or disconnects. Settings (⌘,) has a **Sound** switch for whether sessions start with sound.
 
 | Shortcut | |
 |---|---|
@@ -188,6 +192,7 @@ A computer takes one viewer at a time; while someone is connected, the app shows
 | **Not responding** or **Offline** | The host isn't running or can't be reached. On a Linux host, run `sunna-host status`. Check that Tailscale is connected on both computers, and that no firewall on the host blocks UDP port 48800. |
 | **Key doesn't match** | The computer's key changed. `sunna-host link` on it shows the new one; click the computer in the app and paste it. |
 | **In use** | Someone else is connected. A computer takes one viewer at a time. |
+| No sound | Check **Play Sound** in the session menu and the Mac's own volume. On a Linux host, `sunna-host logs` says whether sound capture started (it needs PulseAudio or PipeWire; see [Sound](#share-a-linux-computer)). A virtual desktop started before sound support needs `sunna-host desktop-restart` once. |
 | **Needs an update** | The app and the host are from different versions. Update both: `git pull`, then run the install scripts again. |
 | **Address not found** | The name doesn't resolve. Use the IP address or the full Tailscale name (`name.tailnet.ts.net`). |
 | ⌘Tab and ⌘Space stay on your Mac | Give Sunna Accessibility access (System Settings → Privacy & Security → Accessibility), then reconnect. ⌃⌥G also switches them between your Mac and the remote. |

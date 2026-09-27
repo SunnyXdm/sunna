@@ -13,6 +13,11 @@
 # session if installed, else XFCE. (GNOME is Wayland-only now, which
 # sunnad can't capture yet.)
 #
+# Sound: if a sound server is running (PulseAudio, or PipeWire's pulse
+# server), the desktop gets its own silent output, sunna_desktop_<display>,
+# and its apps play into it, so the host shares exactly this desktop's sound
+# (its monitor) and nothing else on the machine.
+#
 # Everything is started detached (setsid) with its own D-Bus session, so
 # the desktop outlives the terminal or SSH connection that started it, and
 # the host: apps opened in it keep running (and using CPU) until it's
@@ -26,7 +31,11 @@ DISPLAY_NUM="${1:-${SUNNA_DISPLAY:-:40}}"
 SIZE="${2:-${SUNNA_DESKTOP_SIZE:-1710x1112}}"
 LOG_DIR="${XDG_RUNTIME_DIR:-/tmp}/sunna-desktop"
 SESSION_PID="$LOG_DIR/session${DISPLAY_NUM#:}.pid"
+SINK="sunna_desktop_${DISPLAY_NUM#:}"
+SINK_MODULE="$LOG_DIR/sink${DISPLAY_NUM#:}.module"
 mkdir -p "$LOG_DIR"
+
+sound_server() { command -v pactl >/dev/null && pactl info >/dev/null 2>&1; }
 
 if [ -n "${STOP:-}" ]; then
   # Everything the desktop session started shares its session id.
@@ -35,6 +44,10 @@ if [ -n "${STOP:-}" ]; then
   fi
   rm -f "$SESSION_PID"
   pkill -TERM -f "^Xvfb $DISPLAY_NUM " || true
+  if [ -f "$SINK_MODULE" ] && sound_server; then
+    pactl unload-module "$(cat "$SINK_MODULE")" 2>/dev/null || true
+  fi
+  rm -f "$SINK_MODULE"
   echo "Stopped the desktop on $DISPLAY_NUM."
   exit 0
 fi
@@ -70,12 +83,22 @@ else
   done
 fi
 
+# The desktop's own sound output (see above).
+SOUND_ENV=()
+if sound_server; then
+  if ! pactl list short sinks | awk '{print $2}' | grep -qx "$SINK"; then
+    pactl load-module module-null-sink sink_name="$SINK" \
+      sink_properties=device.description="Sunna-desktop-${DISPLAY_NUM#:}" >"$SINK_MODULE"
+  fi
+  SOUND_ENV=(PULSE_SINK="$SINK")
+fi
+
 # The display can outlive its desktop session (an earlier version tied the
 # session's D-Bus to the SSH connection); start the session if it's gone.
 if [ -f "$SESSION_PID" ] && kill -0 "$(cat "$SESSION_PID")" 2>/dev/null; then
   echo "Desktop session on $DISPLAY_NUM is running."
 else
-  DISPLAY="$DISPLAY_NUM" setsid nohup dbus-run-session -- "$SESSION_CMD" \
+  env DISPLAY="$DISPLAY_NUM" "${SOUND_ENV[@]}" setsid nohup dbus-run-session -- "$SESSION_CMD" \
     >"$LOG_DIR/$DESKTOP.log" 2>&1 </dev/null &
   echo $! >"$SESSION_PID"
   echo "Started $DESKTOP on $DISPLAY_NUM."

@@ -905,14 +905,20 @@ async function openSettings(opener) {
 
   const stats = sheet.querySelector('input[name="stats"]');
   const menuButton = sheet.querySelector('input[name="menu_button"]');
+  const audio = sheet.querySelector('input[name="audio"]');
   stats.checked = settings.stats;
   menuButton.checked = settings.menu_button;
+  audio.checked = settings.audio !== false;
   stats.addEventListener("change", () => {
     settings.stats = stats.checked;
     save();
   });
   menuButton.addEventListener("change", () => {
     settings.menu_button = menuButton.checked;
+    save();
+  });
+  audio.addEventListener("change", () => {
+    settings.audio = audio.checked;
     save();
   });
   const segments = sheet.querySelectorAll(".segmented button");

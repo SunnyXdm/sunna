@@ -115,6 +115,8 @@ pub struct HostConfig {
     pub simulate_loss: f64,
     /// OS and device, told to launchers that probe with the right token.
     pub about: sunna_proto::messages::HostAbout,
+    /// Share this machine's sound with viewers that want it.
+    pub audio: bool,
 }
 
 /// Signals from the control loop into the media thread. This is the seam where
@@ -295,6 +297,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         return Ok(());
     }
     let slot = SessionSlot(Arc::clone(&host));
+    let wants_audio = settings.audio.unwrap_or(true);
     let (width, height) = fit_within((config.width, config.height), None);
     let initial = StreamConfig {
         width,
@@ -330,6 +333,8 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             return Err(error);
         }
     };
+    let mut audio = AudioControl { available: config.audio, connection: connection.clone(), sender: None };
+    audio.set(wants_audio);
     control
         .send(&ControlMessage::HelloAck {
             version: sunna_proto::PROTOCOL_VERSION,
@@ -339,6 +344,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             fps: stream.fps,
             codec: stream.codec.clone(),
             fast_lane: stream.fast_lane,
+            audio: audio.on(),
         })
         .await?;
 
@@ -375,8 +381,10 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         &signals,
         updates_rx,
         config.clipboard,
+        &mut audio,
     )
     .await;
+    drop(audio);
     injector.release_all();
     stop.store(true, Ordering::Relaxed);
     // Teardown can flush hardware callbacks; keep the async runtime responsive.
@@ -1005,6 +1013,7 @@ async fn control_loop(
     signals: &SessionSignals,
     mut updates: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     clipboard: bool,
+    audio: &mut AudioControl,
 ) -> anyhow::Result<()> {
     // `recv` isn't cancellation-safe, so it gets its own task (as in the
     // client) and the loop below can also wake up to send stats.
@@ -1031,11 +1040,119 @@ async fn control_loop(
         &mut updates,
         &mut clipboard,
         &mut incoming,
+        audio,
     )
     .await;
     reader.abort();
     acceptor.abort();
     result
+}
+
+/// The session's sound: while on, a thread captures, encodes and sends it.
+struct AudioControl {
+    /// Sound sharing is enabled and hasn't failed this session.
+    available: bool,
+    connection: Connection,
+    sender: Option<AudioSender>,
+}
+
+impl AudioControl {
+    fn set(&mut self, on: bool) {
+        if !on {
+            self.sender = None;
+            return;
+        }
+        if self.sender.is_some() || !self.available {
+            return;
+        }
+        match AudioSender::start(self.connection.clone()) {
+            Ok(sender) => self.sender = Some(sender),
+            Err(error) => {
+                tracing::info!(reason = %format!("{error:#}"), "no sound this session");
+                self.available = false;
+            }
+        }
+    }
+
+    fn on(&self) -> bool {
+        self.sender.is_some()
+    }
+}
+
+struct AudioSender {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AudioSender {
+    /// 128 kbps stereo Opus: transparent for music, and small next to video.
+    const BITRATE: i32 = 128_000;
+    /// Stop sending after this many silent frames (200 ms); the viewer's
+    /// buffer runs dry into silence, and the link carries nothing.
+    const QUIET_FRAMES: u32 = 20;
+
+    fn start(connection: Connection) -> anyhow::Result<Self> {
+        let mut capture = sunna_audio::open_capture()?;
+        let mut encoder = sunna_audio::Encoder::new(Self::BITRATE)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let stop = Arc::clone(&stop);
+            std::thread::Builder::new().name("sunna-audio-send".into()).spawn(move || {
+                let mut frame = [0i16; sunna_audio::FRAME_LEN];
+                let mut previous: Vec<u8> = Vec::new();
+                let (mut seq, mut quiet) = (0u64, 0u32);
+                let (mut window_start, mut sent, mut bytes, mut skipped) = (Instant::now(), 0u64, 0u64, 0u64);
+                while !stop.load(Ordering::Relaxed) {
+                    if let Err(error) = capture.read(&mut frame) {
+                        tracing::warn!(reason = %format!("{error:#}"), "sound capture stopped");
+                        break;
+                    }
+                    seq += 1;
+                    quiet = if sunna_audio::is_silent(&frame) { quiet + 1 } else { 0 };
+                    if quiet > Self::QUIET_FRAMES {
+                        previous.clear();
+                        skipped += 1;
+                        continue;
+                    }
+                    let packet = match encoder.encode(&frame) {
+                        Ok(packet) => packet,
+                        Err(error) => {
+                            tracing::debug!(%error, "audio encode failed");
+                            continue;
+                        }
+                    };
+                    let datagram = sunna_proto::media::audio_datagram(seq, sunna_proto::now_us(), &packet, &previous);
+                    bytes += datagram.len() as u64;
+                    match connection.send_datagram(datagram) {
+                        Ok(()) => sent += 1,
+                        Err(SendDatagramError::ConnectionLost(_)) => break,
+                        Err(error) => tracing::debug!(%error, "audio datagram not sent"),
+                    }
+                    previous = packet;
+                    if window_start.elapsed() >= Duration::from_secs(10) {
+                        tracing::info!(
+                            sent,
+                            silent_skipped = skipped,
+                            kbps = bytes * 8 / window_start.elapsed().as_millis().max(1) as u64,
+                            "audio window"
+                        );
+                        (window_start, sent, bytes, skipped) = (Instant::now(), 0, 0, 0);
+                    }
+                }
+            })?
+        };
+        tracing::info!("sharing sound");
+        Ok(Self { stop, thread: Some(thread) })
+    }
+}
+
+impl Drop for AudioSender {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The viewer sends each clipboard copy on a unidirectional stream of its
@@ -1086,6 +1203,7 @@ async fn handle_control(
     updates: &mut tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     clipboard: &mut sunna_clipboard::ClipboardSession,
     incoming_clipboard: &mut tokio::sync::mpsc::Receiver<sunna_proto::messages::ClipboardData>,
+    audio: &mut AudioControl,
 ) -> anyhow::Result<()> {
     // AIMD v0.2: multiplicative decrease on real loss (>= 5% of frames in
     // the window) or on latency inflation; hold on minor loss (Wi-Fi drops
@@ -1122,6 +1240,7 @@ async fn handle_control(
             }
         };
         match message {
+            Ok(ControlMessage::SetAudio(on)) => audio.set(on),
             Ok(ControlMessage::SetStream(settings)) => {
                 *signals.reconfigure.lock().unwrap() = Some(settings);
             }

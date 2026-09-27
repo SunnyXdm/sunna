@@ -8,6 +8,7 @@ publish.workspace = true
 anyhow.workspace = true
 sunna-capture.workspace = true
 sunna-client.workspace = true
+sunna-audio.workspace = true
 sunna-codec.workspace = true
 sunna-input.workspace = true
 sunna-proto.workspace = true

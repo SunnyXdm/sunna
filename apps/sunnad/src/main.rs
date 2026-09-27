@@ -68,6 +68,10 @@ struct Args {
     /// Disable clipboard sharing with the viewer.
     #[arg(long)]
     no_clipboard: bool,
+    /// Don't share this machine's sound. SUNNA_AUDIO_SOURCE picks what to
+    /// share on Linux (a PulseAudio source; default: what's playing).
+    #[arg(long)]
+    no_audio: bool,
 }
 
 fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
@@ -211,6 +215,7 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
     drop(encoder);
     let config = HostConfig {
         clipboard: !args.no_clipboard,
+        audio: !args.no_audio,
         name: args.name.clone(),
         width,
         height,

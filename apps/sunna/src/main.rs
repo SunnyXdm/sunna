@@ -53,7 +53,7 @@ fn main() {
         .expect("Sunna failed to start");
 }
 
-/// `sunna viewer --addr IP:PORT --name NAME [--os OS]`, key in SUNNA_TOKEN.
+/// `sunna viewer --addr IP:PORT --name NAME [--os OS] [--no-audio]`, key in SUNNA_TOKEN.
 fn run_viewer(args: Vec<String>) -> i32 {
     let _telemetry = sunna_telemetry::init("viewer", sunna_telemetry::Remote::from_env());
     let value = |flag: &str| {
@@ -72,6 +72,8 @@ fn run_viewer(args: Vec<String>) -> i32 {
         token: std::env::var("SUNNA_TOKEN").unwrap_or_default(),
         host_name: value("--name").unwrap_or_else(|| addr.ip().to_string()),
         host_os: value("--os").unwrap_or_default(),
+        audio: !args.iter().any(|arg| arg == "--no-audio")
+            && std::env::var("SUNNA_AUDIO").map_or(true, |value| value != "0"),
     });
     match result {
         Ok(()) => 0,

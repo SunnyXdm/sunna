@@ -87,6 +87,8 @@ case "${1:-}" in
       # virtual XFCE desktop; SUNNA_DISPLAY=:0 hosts an existing session.
       export DISPLAY="${SUNNA_DISPLAY:-:40}"
       scripts/linux-desktop.sh "$DISPLAY"
+      # A virtual desktop has its own sound output; share that one.
+      [ "$DISPLAY" = :0 ] || export SUNNA_AUDIO_SOURCE="${SUNNA_AUDIO_SOURCE:-sunna_desktop_${DISPLAY#:}.monitor}"
     fi
     # What another computer needs to add this one in the Sunna app.
     cat <<EOF

@@ -48,6 +48,10 @@ impl Host {
     }
 
     fn with_tiles(supports_tiles: bool) -> Self {
+        Self::with_options(supports_tiles, false)
+    }
+
+    fn with_options(supports_tiles: bool, audio: bool) -> Self {
         let server = Server::bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let addr = server.local_addr().unwrap();
         let builds = Arc::new(Mutex::new(Vec::new()));
@@ -66,6 +70,7 @@ impl Host {
                 fast_lane: false,
                 simulate_loss: 0.0,
                 about: Default::default(),
+                audio,
             },
             Box::new(move |config| {
                 // Exercise a source failure after validation has succeeded.
@@ -431,4 +436,81 @@ async fn unsupported_source_reports_fast_lane_off() {
         }
     ));
     control.send(&ControlMessage::Bye).await.unwrap();
+}
+
+/// Audio datagrams that arrive within `window` and decode.
+async fn sound_heard(
+    connection: &sunna_transport::quinn::Connection,
+    decoder: &mut sunna_audio::Decoder,
+    window: Duration,
+) -> usize {
+    use sunna_proto::media::{parse_audio, MediaHeader, FLAG_AUDIO};
+    let mut heard = 0;
+    let mut pcm = [0i16; sunna_audio::FRAME_LEN];
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(Ok(datagram)) = tokio::time::timeout_at(deadline, connection.read_datagram()).await {
+        let Some((header, payload)) = MediaHeader::parse(&datagram) else { continue };
+        if header.flags & FLAG_AUDIO == 0 {
+            continue;
+        }
+        let (current, _previous) = parse_audio(payload).expect("well-formed audio payload");
+        decoder.decode(Some(current), &mut pcm).expect("decodable Opus");
+        heard += 1;
+    }
+    heard
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sound_flows_and_switches_off_and_on() {
+    // The test tone instead of this machine's sound server.
+    std::env::set_var("SUNNA_AUDIO_SOURCE", "synthetic");
+    let host = Host::with_options(true, true);
+    let client = connect_insecure(host.addr, "sunna").await.unwrap();
+    let mut control = ControlChannel::open(&client.connection).await.unwrap();
+    control
+        .send(&ControlMessage::Hello {
+            version: sunna_proto::PROTOCOL_VERSION,
+            name: "test-client".into(),
+            token: "secret".into(),
+            stream: StreamSettings { audio: Some(true), ..Default::default() },
+        })
+        .await
+        .unwrap();
+    let ack = tokio::time::timeout(TIMEOUT, control.recv()).await.unwrap().unwrap();
+    assert!(matches!(ack, ControlMessage::HelloAck { audio: true, .. }), "{ack:?}");
+
+    let mut decoder = sunna_audio::Decoder::new().unwrap();
+    // 10 ms packets: about 50 in half a second.
+    let heard = sound_heard(&client.connection, &mut decoder, Duration::from_millis(500)).await;
+    assert!(heard >= 30, "heard only {heard} packets");
+
+    control.send(&ControlMessage::SetAudio(false)).await.unwrap();
+    sound_heard(&client.connection, &mut decoder, Duration::from_millis(200)).await;
+    let while_off = sound_heard(&client.connection, &mut decoder, Duration::from_millis(300)).await;
+    assert_eq!(while_off, 0, "sound kept flowing after SetAudio(false)");
+
+    control.send(&ControlMessage::SetAudio(true)).await.unwrap();
+    let again = sound_heard(&client.connection, &mut decoder, Duration::from_millis(500)).await;
+    assert!(again >= 30, "heard only {again} packets after switching back on");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_that_wants_no_sound_gets_none() {
+    std::env::set_var("SUNNA_AUDIO_SOURCE", "synthetic");
+    let host = Host::with_options(true, true);
+    let client = connect_insecure(host.addr, "sunna").await.unwrap();
+    let mut control = ControlChannel::open(&client.connection).await.unwrap();
+    control
+        .send(&ControlMessage::Hello {
+            version: sunna_proto::PROTOCOL_VERSION,
+            name: "test-client".into(),
+            token: "secret".into(),
+            stream: StreamSettings { audio: Some(false), ..Default::default() },
+        })
+        .await
+        .unwrap();
+    let ack = tokio::time::timeout(TIMEOUT, control.recv()).await.unwrap().unwrap();
+    assert!(matches!(ack, ControlMessage::HelloAck { audio: false, .. }), "{ack:?}");
+    let mut decoder = sunna_audio::Decoder::new().unwrap();
+    assert_eq!(sound_heard(&client.connection, &mut decoder, Duration::from_millis(300)).await, 0);
 }

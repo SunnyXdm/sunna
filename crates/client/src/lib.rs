@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sunna_codec::make_decoder;
-use sunna_proto::media::{CompleteFrame, MediaHeader, Reassembler};
+use sunna_proto::media::{parse_audio, CompleteFrame, MediaHeader, Reassembler, FLAG_AUDIO};
 use sunna_proto::messages::{ControlMessage, HostStats, InputEvent, StreamSettings};
 use sunna_proto::stats::Percentiles;
 use sunna_transport::quinn::Connection;
@@ -146,6 +146,9 @@ pub struct LiveStats {
     /// Fast-lane tile batches in the last second.
     pub tile_batches: u32,
     pub host: Option<HostStats>,
+    /// Sound is playing (the host sends it and the viewer wants it).
+    pub audio_on: bool,
+    pub audio: Option<sunna_audio::PlayerStats>,
 }
 
 impl LiveStats {
@@ -378,6 +381,7 @@ pub async fn run_client(
     mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
+    let host_sends_audio;
     control
         .send(&ControlMessage::Hello {
             version: sunna_proto::PROTOCOL_VERSION,
@@ -395,7 +399,9 @@ pub async fn run_client(
             fps,
             codec,
             fast_lane,
+            audio,
         } => {
+            host_sends_audio = audio;
             anyhow::ensure!(
                 version == sunna_proto::PROTOCOL_VERSION,
                 "protocol version mismatch: host {version}, client {}",
@@ -512,6 +518,19 @@ pub async fn run_client(
     if let Some(requests) = &mut options.stream_requests {
         requests.mark_changed();
     }
+    // Sound plays through its own small buffer; see sunna_audio::Player.
+    let start_player = || match sunna_audio::Player::start() {
+        Ok(player) => Some(player),
+        Err(error) => {
+            tracing::warn!(reason = %format!("{error:#}"), "can't play sound here");
+            None
+        }
+    };
+    let mut player = if host_sends_audio && options.stream.audio != Some(false) { start_player() } else { None };
+    let mut last_requested = options.stream.clone();
+    if let Some(live) = &options.live {
+        live.lock().unwrap().audio_on = player.is_some();
+    }
     let mut stream_error = None;
     loop {
         tokio::select! {
@@ -525,7 +544,22 @@ pub async fn run_client(
                 }
             } => {
                 match request {
-                    Some(Some(settings)) => control.send(&ControlMessage::SetStream(settings)).await?,
+                    Some(Some(settings)) => {
+                        // Sound on/off is its own message; only video changes
+                        // rebuild the video stream.
+                        if let Some(on) = settings.audio.filter(|on| Some(*on) != last_requested.audio) {
+                            control.send(&ControlMessage::SetAudio(on)).await?;
+                            player = if on { player.take().or_else(start_player) } else { None };
+                            if let Some(live) = &options.live {
+                                live.lock().unwrap().audio_on = player.is_some();
+                            }
+                        }
+                        let video = StreamSettings { audio: None, ..settings.clone() };
+                        if video != (StreamSettings { audio: None, ..last_requested.clone() }) {
+                            control.send(&ControlMessage::SetStream(video)).await?;
+                        }
+                        last_requested = settings;
+                    }
                     Some(None) => {}
                     None => options.stream_requests = None,
                 }
@@ -557,6 +591,14 @@ pub async fn run_client(
             }
             datagram = connection.read_datagram() => {
                 let Ok(datagram) = datagram else { break };
+                if let Some((header, payload)) = MediaHeader::parse(&datagram) {
+                    if header.flags & FLAG_AUDIO != 0 {
+                        if let (Some(player), Some((current, previous))) = (player.as_mut(), parse_audio(payload)) {
+                            player.push(header.frame_id, current, previous);
+                        }
+                        continue;
+                    }
+                }
                 if !MediaHeader::parse(&datagram).is_some_and(|(header, _)| header.epoch == info.epoch) {
                     continue;
                 }
@@ -761,7 +803,9 @@ pub async fn run_client(
                     live.rtt_ms = rtt_samples.last().map(|&rtt| rtt as f64 / 1000.0);
                     live.dropped = dropped;
                     live.tile_batches = window_tile_batches;
+                    live.audio = player.as_ref().map(|player| player.stats());
                 }
+                let sound = player.as_ref().map(|player| player.stats());
                 tracing::info!(
                     fps = window_frames,
                     dropped,
@@ -781,6 +825,11 @@ pub async fn run_client(
                     tile_latency = %Percentiles::from_samples(std::mem::take(&mut window_tile_ages))
                         .map(|w| w.to_string())
                         .unwrap_or_else(|| "-".into()),
+                    audio_packets = sound.as_ref().map(|s| s.packets),
+                    audio_recovered = sound.as_ref().map(|s| s.recovered),
+                    audio_concealed = sound.as_ref().map(|s| s.concealed),
+                    audio_underruns = sound.as_ref().map(|s| s.underruns),
+                    audio_buffered_ms = sound.as_ref().map(|s| s.buffered_ms),
                     "window"
                 );
                 window_tile_batches = 0;

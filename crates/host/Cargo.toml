@@ -10,6 +10,7 @@ bytes.workspace = true
 sunna-capture.workspace = true
 sunna-clipboard.workspace = true
 sunna-codec.workspace = true
+sunna-audio.workspace = true
 sunna-input.workspace = true
 sunna-proto.workspace = true
 sunna-transport.workspace = true

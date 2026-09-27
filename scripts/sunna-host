@@ -326,6 +326,8 @@ cmd_run() {
   if [ "$SUNNA_MODE" = virtual ]; then
     # sunna-desktop.service has started it (the unit waits for that).
     export DISPLAY="$SUNNA_DISPLAY"
+    # Share the virtual desktop's own sound output (linux-desktop.sh).
+    export SUNNA_AUDIO_SOURCE="${SUNNA_AUDIO_SOURCE:-sunna_desktop_${SUNNA_DISPLAY#:}.monitor}"
   else
     [ "${XDG_SESSION_TYPE:-}" = wayland ] &&
       die "the desktop is a Wayland session, which Sunna can't share yet: log in with X11, or run sunna-host setup --virtual"

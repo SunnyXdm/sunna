@@ -22,6 +22,8 @@ pub struct ViewerArgs {
     /// "macOS 26.0", "Arch Linux"; empty when unknown. Picks the shortcuts
     /// the menu offers.
     pub host_os: String,
+    /// Play the host's sound.
+    pub audio: bool,
 }
 
 /// Largest stream this machine can show 1:1 in a window: most of the main
@@ -68,6 +70,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         token,
         host_name,
         host_os,
+        audio,
     } = args;
     tracing::warn!("dev TLS: server certificate is NOT verified");
     let event_loop = viewer::create_event_loop()?;
@@ -99,6 +102,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             token,
             stream: sunna_proto::messages::StreamSettings {
                 max_size,
+                audio: Some(audio),
                 ..Default::default()
             },
             stream_requests: Some(stream_rx),

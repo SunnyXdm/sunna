@@ -115,6 +115,9 @@ pub fn stats_text(live: &LiveStats) -> String {
     if live.dropped > 0 {
         parts.push(format!("lost {}", live.dropped));
     }
+    if let Some(sound) = live.audio.as_ref().filter(|_| live.audio_on) {
+        parts.push(format!("sound {} ms", sound.buffered_ms));
+    }
     if live.tile_batches > 0 {
         parts.push(format!("tiles {}/s", live.tile_batches));
     }
@@ -378,6 +381,7 @@ impl ViewerApp {
                 scale: self.scale,
                 bitrate_mbps: self.requested.max_bitrate_kbps.map(|kbps| kbps / 1000),
                 video_available: !codec.is_empty(),
+                audio: live.audio_on,
             };
             let (view, location) = (layer.view(), layer.menu_location());
             self.capture_after_menu = Some(capture);
@@ -494,6 +498,12 @@ impl ViewerApp {
                 self.show_notice(note, NOTICE_TIME);
             }
             MenuEvent::Chose(MenuAction::TypeClipboard) => self.type_clipboard(),
+            MenuEvent::Chose(MenuAction::ToggleAudio) => {
+                let on = !self.shared.live.lock().unwrap().audio_on;
+                self.requested.audio = Some(on);
+                self.request_stream();
+                self.show_notice(if on { "Sound on" } else { "Sound off" }, NOTICE_TIME);
+            }
             MenuEvent::Chose(MenuAction::FrameRate(fps)) => {
                 self.requested.fps = Some(fps);
                 self.request_stream();

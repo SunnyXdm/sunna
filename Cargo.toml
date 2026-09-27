@@ -11,6 +11,7 @@ members = [
     "crates/client",
     "crates/telemetry",
     "crates/viewer",
+    "crates/audio",
     "apps/sunnad",
     "apps/sunna-cli",
     "apps/sunna",
@@ -28,6 +29,7 @@ default-members = [
     "crates/telemetry",
     "crates/clipboard",
     "crates/viewer",
+    "crates/audio",
     "apps/sunnad",
     "apps/sunna-cli",
 ]
@@ -48,6 +50,7 @@ sunna-clipboard = { path = "crates/clipboard" }
 sunna-host = { path = "crates/host" }
 sunna-client = { path = "crates/client" }
 sunna-telemetry = { path = "crates/telemetry" }
+sunna-audio = { path = "crates/audio" }
 
 anyhow = "1"
 block2 = "0.6"

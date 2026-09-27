@@ -43,7 +43,7 @@ Architecture: $ARCH
 Maintainer: Sunna <sunna@localhost>
 Installed-Size: $SIZE_KB
 Depends: libc6 (>= $GLIBC), libgcc-s1, libstdc++6
-Recommends: xvfb, x11-utils, dbus-x11, xfce4
+Recommends: xvfb, x11-utils, dbus-x11, xfce4, pulseaudio-utils
 Suggests: tailscale
 Section: net
 Priority: optional

@@ -41,6 +41,8 @@ pub struct MediaHeader {
 pub const MEDIA_HEADER_LEN: usize = 26;
 pub const FLAG_KEYFRAME: u8 = 0b0000_0001;
 pub const FLAG_PARITY: u8 = 0b0000_0010;
+/// An audio packet (see [`audio_datagram`]), not part of the video stream.
+pub const FLAG_AUDIO: u8 = 0b0000_0100;
 
 /// Default data chunks per parity datagram (≈12.5% overhead) on a clean link.
 pub const PARITY_GROUP: usize = 8;
@@ -163,6 +165,37 @@ pub fn packetize(
         out.push(buf.freeze());
     }
     out
+}
+
+/// One 10 ms audio packet: `seq` counts frames (it keeps counting while the
+/// host skips silence, so gaps show their length), and each datagram also
+/// carries the previous packet, so one lost datagram costs nothing.
+///
+/// Payload: current length u16 | current Opus data | previous Opus data.
+pub fn audio_datagram(seq: u64, capture_ts_us: u64, current: &[u8], previous: &[u8]) -> Bytes {
+    let payload_len = 2 + current.len() + previous.len();
+    let mut buf = BytesMut::with_capacity(MEDIA_HEADER_LEN + payload_len);
+    MediaHeader {
+        frame_id: seq,
+        chunk_index: 0,
+        chunk_count: 1,
+        frame_len: payload_len as u32,
+        capture_ts_us,
+        flags: FLAG_AUDIO,
+        epoch: 0,
+    }
+    .write(&mut buf);
+    buf.put_u16(current.len() as u16);
+    buf.put_slice(current);
+    buf.put_slice(previous);
+    buf.freeze()
+}
+
+/// Split an audio datagram's payload into (current, previous) Opus packets.
+pub fn parse_audio(payload: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (len, rest) = payload.split_first_chunk::<2>()?;
+    let len = u16::from_be_bytes(*len) as usize;
+    (rest.len() >= len).then(|| rest.split_at(len))
 }
 
 #[derive(Debug, Clone)]
@@ -350,6 +383,16 @@ mod tests {
 
     fn is_parity(datagram: &[u8]) -> bool {
         MediaHeader::parse(datagram).unwrap().0.flags & FLAG_PARITY != 0
+    }
+
+    #[test]
+    fn audio_datagram_roundtrip() {
+        let datagram = audio_datagram(77, 123, b"now", b"before");
+        let (header, payload) = MediaHeader::parse(&datagram).unwrap();
+        assert!(header.flags & FLAG_AUDIO != 0);
+        assert_eq!((header.frame_id, header.capture_ts_us), (77, 123));
+        assert_eq!(parse_audio(payload), Some((&b"now"[..], &b"before"[..])));
+        assert_eq!(parse_audio(&[0, 9, 1]), None, "truncated");
     }
 
     #[test]

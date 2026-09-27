@@ -372,6 +372,7 @@ mod tests {
                     fps: 60,
                     codec: "raw".into(),
                     fast_lane: false,
+                    audio: false,
                 })
                 .await
                 .unwrap();

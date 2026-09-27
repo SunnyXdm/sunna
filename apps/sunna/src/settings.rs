@@ -14,6 +14,8 @@ pub struct Settings {
     pub windowed: bool,
     pub stats: bool,
     pub menu_button: bool,
+    /// Play the other computer's sound.
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +24,7 @@ struct Prefs {
     windowed: bool,
     stats: bool,
     menu_button: bool,
+    audio: bool,
 }
 
 impl Default for Prefs {
@@ -30,6 +33,7 @@ impl Default for Prefs {
             windowed: false,
             stats: true,
             menu_button: true,
+            audio: true,
         }
     }
 }
@@ -91,6 +95,7 @@ pub fn load() -> Settings {
         windowed: prefs.windowed,
         stats: prefs.stats,
         menu_button: prefs.menu_button,
+        audio: prefs.audio,
     }
 }
 
@@ -101,6 +106,7 @@ pub fn save(settings: &Settings) -> Result<(), String> {
         windowed: settings.windowed,
         stats: settings.stats,
         menu_button: settings.menu_button,
+        audio: settings.audio,
     };
     let json = serde_json::to_vec_pretty(&prefs).map_err(|error| error.to_string())?;
     std::fs::write(prefs_path(), json).map_err(|error| error.to_string())
@@ -159,6 +165,10 @@ pub fn viewer_env() -> Vec<(String, String)> {
     env.push((
         "SUNNA_MENU_BUTTON".into(),
         if settings.menu_button { "1" } else { "0" }.into(),
+    ));
+    env.push((
+        "SUNNA_AUDIO".into(),
+        if settings.audio { "1" } else { "0" }.into(),
     ));
     env
 }

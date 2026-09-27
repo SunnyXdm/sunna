@@ -13,6 +13,8 @@
 #   NOISE      percent of each frame that is fresh noise, default 8
 #   SIZE FPS KBPS CODEC   default 1280x720, 60, 12000, h264
 #   HOST_ENV   extra environment for sunnad, e.g. "SUNNA_CC=bbr"
+#   AUDIO      1 to send a test tone too, recorded on the viewer side and
+#              checked for gaps (tools/audio-check.py)
 #   OUT        where the logs go, default /tmp/sunna-lossy
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -26,6 +28,12 @@ FPS="${FPS:-60}"
 KBPS="${KBPS:-12000}"
 CODEC="${CODEC:-h264}"
 HOST_ENV="${HOST_ENV:-}"
+AUDIO="${AUDIO:-0}"
+VIEW_AUDIO=()
+if [ "$AUDIO" = 1 ]; then
+  HOST_ENV="$HOST_ENV SUNNA_AUDIO_SOURCE=synthetic"
+  VIEW_AUDIO=(--audio)
+fi
 OUT="${OUT:-/tmp/sunna-lossy}"
 NS_HOST=sunna-lossy-h
 NS_VIEW=sunna-lossy-v
@@ -67,7 +75,8 @@ sudo ip netns exec "$NS_HOST" sudo -u "$USER" env NO_COLOR=1 SUNNA_SYNTHETIC_NOI
 HOST_PID=$!
 sleep 1
 sudo ip netns exec "$NS_VIEW" sudo -u "$USER" env NO_COLOR=1 RUST_LOG=info,sunna_client=debug SUNNA_TOKEN="$TOKEN" \
-  ./target/release/sunna-cli connect "$ADDR:$PORT" --seconds "$RUN_SECONDS" >"$OUT/viewer.log" 2>&1 || true
+  SUNNA_AUDIO_OUTPUT="$OUT/audio.raw" ./target/release/sunna-cli connect "$ADDR:$PORT" --seconds "$RUN_SECONDS" \
+  "${VIEW_AUDIO[@]}" >"$OUT/viewer.log" 2>&1 || true
 
 python3 - "$OUT/host.log" "$OUT/viewer.log" <<'EOF'
 import re, sys
@@ -99,3 +108,7 @@ print(f"viewer  {mean([num(v.get('fps')) for v in view]):.0f} fps shown, frames 
       f"latency p50 {mean(view_lat):.0f} ms, "
       f"freezes {len(freezes)} totalling {sum(freezes)/1000:.1f} s (longest {max(freezes, default=0):.0f} ms)")
 EOF
+if [ "$AUDIO" = 1 ]; then
+  grep -o 'audio_packets=[^ ]* audio_recovered=[^ ]* audio_concealed=[^ ]* audio_underruns=[^ ]* audio_buffered_ms=[^ ]*' "$OUT/viewer.log" | tail -1 | sed 's/^/sound   /'
+  python3 tools/audio-check.py "$OUT/audio.raw" | sed 's/^/sound   /'
+fi

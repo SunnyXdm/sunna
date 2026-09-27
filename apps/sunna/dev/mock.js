@@ -34,7 +34,7 @@ let machines =
         { id: "w1", name: "gaming-pc", address: "100.70.3.3", key: KEY, os: "Windows 11", device: "desktop", model: "", width: 2560, height: 1440, added: 0, last_seen: now() - 3 * 3600, last_connected: 0 },
       ];
 
-let settings = { key: KEY, windowed: false, stats: true, menu_button: true };
+let settings = { key: KEY, windowed: false, stats: true, menu_button: true, audio: true };
 
 function hostOf(address) {
   const text = address.trim().split(/[?/#]/)[0];

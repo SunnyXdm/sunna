@@ -37,6 +37,7 @@ pub enum MenuAction {
     ToggleClipboard,
     TypeClipboard,
     FrameRate(u32),
+    ToggleAudio,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,7 @@ impl MenuAction {
             MenuAction::ToggleFastLane => 6,
             MenuAction::ToggleClipboard => 7,
             MenuAction::TypeClipboard => 8,
+            MenuAction::ToggleAudio => 9,
             MenuAction::SendShortcut(index) => 3000 + index as isize,
             MenuAction::FrameRate(fps) => 4000 + fps as isize,
         }
@@ -89,6 +91,7 @@ impl MenuAction {
             6 => MenuAction::ToggleFastLane,
             7 => MenuAction::ToggleClipboard,
             8 => MenuAction::TypeClipboard,
+            9 => MenuAction::ToggleAudio,
             10 => MenuAction::Codec(Codec::Hevc),
             11 => MenuAction::Codec(Codec::H264),
             1000..=1100 => MenuAction::Scale((tag - 1000) as u8),
@@ -134,6 +137,8 @@ pub struct MenuState {
     pub bitrate_mbps: Option<u32>,
     /// Stream settings can change live (the host supports it).
     pub video_available: bool,
+    /// The host's sound is playing.
+    pub audio: bool,
 }
 
 static EVENTS: Mutex<Vec<MenuEvent>> = Mutex::new(Vec::new());
@@ -483,6 +488,15 @@ unsafe fn show(job: &PopUp) {
         MenuAction::ToggleStats,
         "s",
         Some(state.stats),
+        true,
+    );
+    add_item(
+        &menu,
+        &target,
+        "Play Sound",
+        MenuAction::ToggleAudio,
+        "",
+        Some(state.audio),
         true,
     );
     add_separator(&menu);

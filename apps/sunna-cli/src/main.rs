@@ -36,6 +36,9 @@ enum Command {
         /// Name shown in the window title (default: the address).
         #[arg(long)]
         name: Option<String>,
+        /// Don't play the host's sound.
+        #[arg(long)]
+        no_audio: bool,
     },
     /// Connect headless: stats only (dev TLS: certificate NOT verified).
     Connect {
@@ -65,6 +68,12 @@ enum Command {
         /// Share this machine's clipboard with the host.
         #[arg(long)]
         clipboard: bool,
+        /// Play the host's sound (SUNNA_AUDIO_OUTPUT=FILE writes raw PCM instead).
+        #[arg(long)]
+        audio: bool,
+        /// With --set-stream-after: then turn sound on or off.
+        #[arg(long, action = clap::ArgAction::Set)]
+        set_audio: Option<bool>,
     },
     /// In-process loopback benchmark: host + client, one report.
     Bench {
@@ -121,12 +130,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             server_name,
             token,
             name,
+            no_audio,
         } => sunna_viewer::run(sunna_viewer::ViewerArgs {
             addr,
             server_name,
             token,
             host_name: name.unwrap_or_else(|| addr.ip().to_string()),
             host_os: String::new(),
+            audio: !no_audio,
         }),
         command => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -152,12 +163,14 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             bitrate_kbps,
             fps,
             fast_lane,
+            audio,
+            set_audio,
         } => {
             tracing::warn!("dev TLS: server certificate is NOT verified");
             let client = connect_insecure(addr, &server_name).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let settings = sunna_proto::messages::StreamSettings {
-                codec, max_size, max_bitrate_kbps: bitrate_kbps, fps, fast_lane,
+                codec, max_size, max_bitrate_kbps: bitrate_kbps, fps, fast_lane, audio: set_audio.or(Some(audio)),
             };
             let (requests, stream_requests) = tokio::sync::watch::channel(None);
             let stream = if let Some(seconds) = set_stream_after {
@@ -165,7 +178,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                     tokio::time::sleep(Duration::from_secs(seconds)).await;
                     let _ = requests.send(Some(settings));
                 });
-                Default::default()
+                sunna_proto::messages::StreamSettings { audio: Some(audio), ..Default::default() }
             } else {
                 settings
             };
@@ -206,6 +219,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 token: String::new(),
                 clipboard: false,
                 about: Default::default(),
+                audio: false,
             };
             make_encoder(&codec, width, height, fps, bitrate_bps)?;
             let host_task = tokio::spawn(run_host(

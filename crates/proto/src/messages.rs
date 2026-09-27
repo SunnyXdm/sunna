@@ -12,6 +12,9 @@ pub struct StreamSettings {
     pub max_bitrate_kbps: Option<u32>,
     pub fps: Option<u32>,
     pub fast_lane: Option<bool>,
+    /// Whether the viewer wants the host's sound. Changing only this sends
+    /// `SetAudio` rather than rebuilding the video stream.
+    pub audio: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +40,8 @@ pub enum ControlMessage {
         fps: u32,
         codec: String,
         fast_lane: bool,
+        /// The host is sending its sound (audio datagrams, `FLAG_AUDIO`).
+        audio: bool,
     },
     SetStream(StreamSettings),
     StreamChanged {
@@ -89,6 +94,8 @@ pub enum ControlMessage {
     /// machine properly. Last in the enum and sent after the ack: older
     /// launchers stop reading at the ack, and older hosts never send it.
     HostInfo(HostAbout),
+    /// Viewer: start or stop sending sound.
+    SetAudio(bool),
 }
 
 /// What a host is, for display.
@@ -272,6 +279,7 @@ mod tests {
                 max_bitrate_kbps: Some(2000),
                 fps: Some(30),
                 fast_lane: Some(false),
+                audio: Some(true),
             }),
             ControlMessage::StreamChanged {
                 epoch: 255,
@@ -308,7 +316,9 @@ mod tests {
                 fps: 60,
                 codec: "raw".into(),
                 fast_lane: false,
+                audio: true,
             },
+            ControlMessage::SetAudio(false),
         ];
         for msg in &messages {
             let bytes = encode(msg).unwrap();
