@@ -323,7 +323,22 @@ pub async fn run_host(
 async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<()> {
     let config = &host.config;
     let mut control = ControlChannel::accept(connection).await?;
-    let settings = match control.recv().await? {
+    let first = match control.recv().await {
+        Ok(message) => message,
+        // A first message this host can't read is from another version of
+        // Sunna: say so, rather than just dropping the connection.
+        Err(sunna_transport::TransportError::Codec(error)) => {
+            let reason = format!(
+                "protocol version mismatch: host {} (update both sides)",
+                sunna_proto::PROTOCOL_VERSION
+            );
+            control.send(&ControlMessage::Refused { reason: reason.clone() }).await?;
+            control.finish().await?;
+            anyhow::bail!("{reason}; couldn't read the client's first message: {error}");
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let settings = match first {
         ControlMessage::Probe { token } => {
             let token_ok = config.token.is_empty() || tokens_match(&token, &config.token);
             control
