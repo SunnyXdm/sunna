@@ -10,6 +10,9 @@
 #   DELAY_MS   one-way delay each way, default 17 (round trip ~34 ms)
 #   LOSS       netem loss on the host's side, default "gemodel 1% 30%":
 #              Wi-Fi-like bursts, ~3% loss, ~3 packets in a row
+#   NETEM      more netem options on the host's side, e.g. Wi-Fi's bunching:
+#              "slot distribution pareto 10ms 30ms" (held, then released
+#              together, in order)
 #   NOISE      percent of each frame that is fresh noise, default 8
 #   SIZE FPS KBPS CODEC   default 1280x720, 60, 12000, h264
 #   HOST_ENV   extra environment for sunnad, e.g. "SUNNA_CC=bbr"
@@ -63,7 +66,7 @@ for ns in "$NS_HOST" "$NS_VIEW"; do sudo ip -n "$ns" link set lo up; done
 sudo ip -n "$NS_HOST" link set sunna-lossy0 up
 sudo ip -n "$NS_VIEW" link set sunna-lossy1 up
 # shellcheck disable=SC2086
-sudo ip netns exec "$NS_HOST" tc qdisc add dev sunna-lossy0 root netem delay "${DELAY_MS}ms" loss $LOSS limit 100000
+sudo ip netns exec "$NS_HOST" tc qdisc add dev sunna-lossy0 root netem delay "${DELAY_MS}ms" loss $LOSS ${NETEM:-} limit 100000
 sudo ip netns exec "$NS_VIEW" tc qdisc add dev sunna-lossy1 root netem delay "${DELAY_MS}ms" limit 100000
 
 mkdir -p "$OUT"

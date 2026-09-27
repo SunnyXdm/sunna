@@ -830,6 +830,8 @@ pub async fn run_client(
                     audio_concealed = sound.as_ref().map(|s| s.concealed),
                     audio_underruns = sound.as_ref().map(|s| s.underruns),
                     audio_buffered_ms = sound.as_ref().map(|s| s.buffered_ms),
+                    audio_target_ms = sound.as_ref().map(|s| s.target_ms),
+                    audio_skipped_ms = sound.as_ref().map(|s| s.skipped_ms),
                     "window"
                 );
                 window_tile_batches = 0;
