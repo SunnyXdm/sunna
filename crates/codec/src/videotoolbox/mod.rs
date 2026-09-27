@@ -250,7 +250,7 @@ impl VtEncoder {
         )]);
 
         // Low-latency rate control by default. Full-res (2846x1778) encode on
-        // an M1, dogfood builds 5-8: low-latency ~23.6 ms (good quality);
+        // an M1, test builds 5-8: low-latency ~23.6 ms (good quality);
         // standard + PrioritizeSpeed ~19 ms (visibly softer); standard
         // quality-first ~28.5 ms. SUNNA_VT_LOW_LATENCY=0 for the standard
         // session.
@@ -391,7 +391,7 @@ impl VtEncoder {
             );
             // MaxFrameDelayCount and PrioritizeEncodingSpeedOverQuality both
             // return kVTPropertyNotSupportedErr (-12900) in the low-latency
-            // session on an M1 (dogfood, macOS 15.6); try them only in the
+            // session on an M1 (testing, macOS 15.6); try them only in the
             // standard session.
             if !low_latency {
                 set(
@@ -400,7 +400,7 @@ impl VtEncoder {
                     "MaxFrameDelayCount",
                 );
                 // Accepted in the standard session, but it visibly softened
-                // the picture (dogfood session A); opt-in only.
+                // the picture (test session A); opt-in only.
                 if std::env::var("SUNNA_VT_PRIORITIZE_SPEED").is_ok_and(|value| value == "1") {
                     set(
                         kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,

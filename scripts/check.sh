@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Run a command (default: the codec hardware tests) and ship its output to the
-# dogfood log collector, so results reach the developer without copy-paste.
+# log collector, so results reach the developer without copy-paste.
 #
 #   scripts/check.sh                              # cargo test --release -p sunna-codec
 #   scripts/check.sh cargo test --release --workspace
 #
-# Uses SUNNA_LOG_URL / SUNNA_LOG_TOKEN from ~/.sunna/dogfood.env.
+# Uses SUNNA_LOG_URL / SUNNA_LOG_TOKEN from ~/.sunna/sunna.env.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-ENV_FILE="${SUNNA_ENV:-$HOME/.sunna/dogfood.env}"
+ENV_FILE="${SUNNA_ENV:-$HOME/.sunna/sunna.env}"
+# Earlier versions called it dogfood.env.
+[ -f "$ENV_FILE" ] || [ ! -f "$HOME/.sunna/dogfood.env" ] || mv "$HOME/.sunna/dogfood.env" "$ENV_FILE"
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090

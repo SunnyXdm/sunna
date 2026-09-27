@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build and run Sunna between two machines on the same tailnet, shipping
-# logs to the dogfood collector (tools/logd).
+# logs to the log collector (tools/logd) when one is set.
 #
-#   scripts/dogfood.sh host           # on the Mac or Linux box to control
-#   scripts/dogfood.sh view <host>    # on the Mac you sit at; <host> is the
+#   scripts/run.sh host                # on the Mac or Linux box to control
+#   scripts/run.sh view <host>    # on the Mac you sit at; <host> is the
 #                                     # host's Tailscale name or 100.x address
-#   scripts/dogfood.sh app            # the Sunna app: pick a machine, connect
+#   scripts/run.sh app                # the Sunna app: pick a machine, connect
 #
-# One-time setup on each Mac: ~/.sunna/dogfood.env containing
+# One-time setup on each Mac: ~/.sunna/sunna.env containing
 #   SUNNA_TOKEN=<same value on both Macs>
 #   SUNNA_LOG_URL=http://<collector tailnet IP>:48900
 #   SUNNA_LOG_TOKEN=<collector token>
@@ -16,14 +16,16 @@
 # remote input) for your terminal app. Grant both, quit and reopen the
 # terminal, run again.
 #
-# SUNNA_KEEP_AWDL_DOWN=1 (env or dogfood.env): hold AWDL (AirDrop/Continuity
+# SUNNA_KEEP_AWDL_DOWN=1 (env or sunna.env): hold AWDL (AirDrop/Continuity
 # Wi-Fi) down for the session. macOS re-enables awdl0 on its own; while it's
 # up, Wi-Fi stalls ~200 ms about once a second. Needs sudo; AWDL is restored
 # when the script exits.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ENV_FILE="${SUNNA_ENV:-$HOME/.sunna/dogfood.env}"
+ENV_FILE="${SUNNA_ENV:-$HOME/.sunna/sunna.env}"
+# Earlier versions called it dogfood.env.
+[ -f "$ENV_FILE" ] || [ ! -f "$HOME/.sunna/dogfood.env" ] || mv "$HOME/.sunna/dogfood.env" "$ENV_FILE"
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090

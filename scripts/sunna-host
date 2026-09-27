@@ -239,8 +239,10 @@ cmd_setup() {
   if [ -n "$key" ]; then
     SUNNA_TOKEN="$key"
   elif [ -z "${SUNNA_TOKEN:-}" ]; then
-    # Keep the key from an earlier dogfood setup, so saved computers still work.
-    local old="$HOME/.sunna/dogfood.env"
+    # Keep the key from an earlier scripts/run.sh setup (dogfood.env in
+    # older versions), so saved computers still work.
+    local old="$HOME/.sunna/sunna.env"
+    [ -f "$old" ] || old="$HOME/.sunna/dogfood.env"
     if [ -f "$old" ] && grep -q '^SUNNA_TOKEN=' "$old"; then
       SUNNA_TOKEN="$(sed -n 's/^SUNNA_TOKEN=//p' "$old" | tail -1 | tr -d '"')"
       echo "Using the key from $old."

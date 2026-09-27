@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sunna dogfood log collector.
+"""Sunna log collector.
 
 Receives NDJSON batches from sunnad / sunna-cli (crates/telemetry) and appends
 them to one file per process run:

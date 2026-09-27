@@ -1,4 +1,4 @@
-//! Logging setup plus optional remote telemetry for dogfooding.
+//! Logging setup plus optional remote telemetry for testing.
 //!
 //! Every binary calls [`init`] once. Logs always go to stderr; when a log
 //! server is configured they are also shipped, as NDJSON batches, to a
@@ -346,7 +346,7 @@ fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
 
 /// Whether AWDL (Apple's peer-to-peer Wi-Fi for AirDrop/Continuity) is up.
 /// While active, the Wi-Fi radio periodically leaves the network's channel,
-/// which showed up in dogfooding as ~150-190 ms hitches every second.
+/// which showed up in testing as ~150-190 ms hitches every second.
 pub fn awdl_active() -> Option<bool> {
     if std::env::consts::OS != "macos" {
         return None;

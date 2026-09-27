@@ -491,7 +491,7 @@ impl ScreenSource {
         // 2846x1778 on an M1 with BGRA input). SUNNA_CAPTURE_BGRA=1 restores
         // BGRA for A/B comparison.
         // The fast lane sends exact RGB tiles, so it needs BGRA capture
-        // (encode time is the same either way; dogfood build 5).
+        // (encode time is the same either way; test build 5).
         let bgra = std::env::var("SUNNA_CAPTURE_BGRA").is_ok_and(|value| value == "1") || fast_lane;
         let (pixel_format, format) = if bgra {
             (PIXEL_FORMAT_BGRA, PixelFormat::Bgra8)

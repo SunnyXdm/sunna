@@ -946,7 +946,7 @@ async function openSettings(opener) {
     }[me.sharing] ??
     (info.platform === "linux"
       ? "Not sharing. Run sunna-host setup to share it."
-      : "Not sharing. To share this Mac, run scripts/dogfood.sh host.");
+      : "Not sharing. To share this Mac, run scripts/run.sh host.");
   if (me.address && me.key) {
     const link = `sunna://${me.address}?key=${me.key}`;
     const row = sheet.querySelector(".link-row");

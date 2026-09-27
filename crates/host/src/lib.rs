@@ -356,7 +356,7 @@ async fn tile_writer(
     let (mut batch_count, mut tile_count, mut bytes, mut skipped) = (0u32, 0u32, 0usize, 0u32);
     // Token bucket: tiles only accelerate what the video will show a moment
     // later, so skipping a batch is always safe. Cap them so they never
-    // compete with the video on slower links (a dogfood session peaked at
+    // compete with the video on slower links (a test session peaked at
     // ~1.8 MB/s of tiles).
     const BUDGET_BYTES_PER_SEC: f64 = 500_000.0; // ~4 Mbit/s
     const BURST_BYTES: f64 = 256.0 * 1024.0;
@@ -440,7 +440,7 @@ fn tokens_match(presented: &str, expected: &str) -> bool {
 
 /// Frames allowed inside the encoder at once. The M1 has one encode engine
 /// that works strictly frame by frame: with 2 in flight the second frame just
-/// queued inside VideoToolbox (capture->encoded ~30 ms, no fps gain; dogfood
+/// queued inside VideoToolbox (capture->encoded ~30 ms, no fps gain; test
 /// build 7). With 1, the newest capture goes in the moment the engine is
 /// free. Chips with several engines may benefit from 2:
 /// SUNNA_ENCODE_IN_FLIGHT=2.

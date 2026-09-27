@@ -216,7 +216,7 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
     let spawned = Command::new(exe)
         .args(&args)
         .envs(settings::viewer_env())
-        // This machine's key, over dogfood.env's.
+        // This machine's key, over sunna.env's.
         .env("SUNNA_TOKEN", &machine.key)
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())

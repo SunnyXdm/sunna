@@ -118,9 +118,9 @@ Settings live in `~/.config/sunna/host.env`, readable only by you: the key, name
 For now a Mac host runs in a Terminal window. It needs the same tools as the app (the Xcode command line tools and Rust), plus [Tailscale](https://tailscale.com): it listens only on the Mac's tailnet address. Make a key (this leaves an existing one alone), then start it:
 
 ```sh
-grep -qs '^SUNNA_TOKEN=' ~/.sunna/dogfood.env || (mkdir -p ~/.sunna && umask 077 && echo "SUNNA_TOKEN=$(openssl rand -hex 16)" >> ~/.sunna/dogfood.env)
+grep -qs '^SUNNA_TOKEN=' ~/.sunna/sunna.env || (mkdir -p ~/.sunna && umask 077 && echo "SUNNA_TOKEN=$(openssl rand -hex 16)" >> ~/.sunna/sunna.env)
 git clone https://github.com/SunnyXdm/sunna.git && cd sunna
-scripts/dogfood.sh host
+scripts/run.sh host
 ```
 
 It prints the address, key and link, and shares until you press Ctrl-C or close the window, while the Mac is awake. The first time, macOS asks for **Screen Recording** and **Accessibility** for your terminal app: allow both, quit the terminal, and run it again. The key is the same one the Sunna app on that Mac shows in Settings as this computer's key.
@@ -187,7 +187,7 @@ A computer takes one viewer at a time; while someone is connected, the app shows
 
 ## Security and privacy
 
-- **Keys.** A host only accepts viewers that present its key. Keep keys secret; anyone with a computer's address and key can control it. The app keeps the computers you add, with their keys, in `~/.sunna/machines.json`, and this Mac's own key in `~/.sunna/dogfood.env`, both readable only by you.
+- **Keys.** A host only accepts viewers that present its key. Keep keys secret; anyone with a computer's address and key can control it. The app keeps the computers you add, with their keys, in `~/.sunna/machines.json`, and this Mac's own key in `~/.sunna/sunna.env`, both readable only by you.
 - **Encryption.** Connections use QUIC, encrypted with TLS 1.3. The app does **not yet verify the host's identity** (hosts use self-signed certificates), so on a network you don't control, someone in the middle could impersonate a host. Use Sunna over **Tailscale** (which authenticates both ends with WireGuard) or a network you trust, and never expose a host to the internet. `sunna-host setup` listens only on your tailnet when Tailscale is running, and warns you when it falls back to your local network. Pinning each host's certificate is planned.
 - **No cloud, no accounts.** Computers connect to each other directly. Nothing is sent anywhere else.
 - **Logs stay local.** The host logs to the system journal (Linux) or its Terminal window (Mac). The app logs only to its standard error, which macOS discards unless you start it from Terminal. Keystrokes and clipboard contents are never logged. (Development builds can also send logs to a collector you run, only when `SUNNA_LOG_URL` is set.)
@@ -225,7 +225,7 @@ cargo test                         # add --workspace to include the app
 | `crates/viewer` | the session window: presentation, keyboard capture, session menu |
 | `crates/input`, `crates/clipboard` | input injection and clipboard sync |
 | `crates/telemetry` | logging, and shipping logs to a development collector |
-| `scripts/` | installers and packaging (`install-mac-app.sh`, `install-host-linux.sh`, `package-linux-deb.sh`, `sunna-host`), and the developer loop (`dogfood.sh`) |
+| `scripts/` | installers and packaging (`install-mac-app.sh`, `install-host-linux.sh`, `package-linux-deb.sh`, `sunna-host`), and the developer loop (`run.sh`) |
 | `docs/` | the website |
 | `research/` | the research and architecture notes behind the design; start at [`00-overview.md`](research/00-overview.md) |
 

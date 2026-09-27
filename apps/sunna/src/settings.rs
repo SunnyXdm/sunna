@@ -1,6 +1,6 @@
 //! Launcher settings. This computer's key (SUNNA_TOKEN) and the log
-//! collector live in ~/.sunna/dogfood.env, shared with
-//! `scripts/dogfood.sh`; viewer preferences live in ~/.sunna/config.json.
+//! collector live in ~/.sunna/sunna.env, shared with
+//! `scripts/run.sh`; viewer preferences live in ~/.sunna/config.json.
 
 use std::path::PathBuf;
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    /// This computer's key: what `dogfood.sh host` shares it with, and the
+    /// This computer's key: what `run.sh host` shares it with, and the
     /// key the Add Computer form starts with.
     pub key: String,
     pub windowed: bool,
@@ -42,14 +42,20 @@ pub fn dir() -> PathBuf {
 }
 
 fn env_path() -> PathBuf {
-    dir().join("dogfood.env")
+    let path = dir().join("sunna.env");
+    // Earlier versions called it dogfood.env.
+    let old = dir().join("dogfood.env");
+    if !path.exists() && old.exists() {
+        let _ = std::fs::rename(&old, &path);
+    }
+    path
 }
 
 fn prefs_path() -> PathBuf {
     dir().join("config.json")
 }
 
-/// `KEY=value` pairs from dogfood.env (comments and blanks skipped).
+/// `KEY=value` pairs from sunna.env (comments and blanks skipped).
 pub fn env_vars() -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(env_path()) else {
         return Vec::new();
@@ -135,7 +141,7 @@ fn write_token(token: &str) -> Result<(), String> {
 }
 
 /// Environment for a viewer process: the collector settings from
-/// dogfood.env plus the viewer preferences.
+/// sunna.env plus the viewer preferences.
 pub fn viewer_env() -> Vec<(String, String)> {
     let settings = load();
     let mut env: Vec<(String, String)> = env_vars()
