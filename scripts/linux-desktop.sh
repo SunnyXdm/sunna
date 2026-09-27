@@ -16,7 +16,9 @@
 # Sound: if a sound server is running (PulseAudio, or PipeWire's pulse
 # server), the desktop gets its own silent output, sunna_desktop_<display>,
 # and its apps play into it, so the host shares exactly this desktop's sound
-# (its monitor) and nothing else on the machine.
+# (its monitor) and nothing else on the machine. If that output would
+# become the machine's default (on a machine without a sound card), the rest
+# of the machine gets a silent output of its own, sunna_silent, instead.
 #
 # Everything is started detached (setsid) with its own D-Bus session, so
 # the desktop outlives the terminal or SSH connection that started it, and
@@ -33,9 +35,33 @@ LOG_DIR="${XDG_RUNTIME_DIR:-/tmp}/sunna-desktop"
 SESSION_PID="$LOG_DIR/session${DISPLAY_NUM#:}.pid"
 SINK="sunna_desktop_${DISPLAY_NUM#:}"
 SINK_MODULE="$LOG_DIR/sink${DISPLAY_NUM#:}.module"
+SILENT=sunna_silent
+SILENT_MODULE="$LOG_DIR/silent.module"
 mkdir -p "$LOG_DIR"
 
 sound_server() { command -v pactl >/dev/null && pactl info >/dev/null 2>&1; }
+default_device() { LC_ALL=C pactl info 2>/dev/null | sed -n "s/^Default $1: //p"; }
+# The index of a sink or source by name.
+device_index() { pactl list short "$1" | awk -v name="$2" '$2 == name { print $1 }'; }
+
+# On a machine without a sound card, a desktop's output can become everyone's
+# default: PulseAudio drops its placeholder output as soon as another exists,
+# and PipeWire picks the only one there is. Other sessions' sound would then
+# play into this desktop's output and reach its viewer, so point the
+# defaults somewhere else: another output, or a silent one made for this.
+keep_defaults_elsewhere() {
+  case "$(default_device Sink)" in sunna_desktop_*) ;; *) return 0 ;; esac
+  local other
+  other="$(pactl list short sinks | awk '$2 !~ /^sunna_desktop_/ { print $2; exit }')"
+  if [ -z "$other" ]; then
+    pactl load-module module-null-sink sink_name="$SILENT" \
+      sink_properties=device.description=Dummy-Output >"$SILENT_MODULE"
+    other="$SILENT"
+  fi
+  pactl set-default-sink "$other"
+  case "$(default_device Source)" in sunna_desktop_*) pactl set-default-source "$other.monitor" ;; esac
+  echo "$other"
+}
 
 if [ -n "${STOP:-}" ]; then
   # Everything the desktop session started shares its session id.
@@ -46,6 +72,12 @@ if [ -n "${STOP:-}" ]; then
   pkill -TERM -f "^Xvfb $DISPLAY_NUM " || true
   if [ -f "$SINK_MODULE" ] && sound_server; then
     pactl unload-module "$(cat "$SINK_MODULE")" 2>/dev/null || true
+    # The silent stand-in goes with the last desktop.
+    if [ -f "$SILENT_MODULE" ] &&
+      ! pactl list short sinks | awk '$2 ~ /^sunna_desktop_/ { found = 1 } END { exit !found }'; then
+      pactl unload-module "$(cat "$SILENT_MODULE")" 2>/dev/null || true
+      rm -f "$SILENT_MODULE"
+    fi
   fi
   rm -f "$SINK_MODULE"
   echo "Stopped the desktop on $DISPLAY_NUM."
@@ -86,9 +118,20 @@ fi
 # The desktop's own sound output (see above).
 SOUND_ENV=()
 if sound_server; then
-  if ! pactl list short sinks | awk '{print $2}' | grep -qx "$SINK"; then
+  if [ -z "$(device_index sinks "$SINK")" ]; then
     pactl load-module module-null-sink sink_name="$SINK" \
       sink_properties=device.description="Sunna-desktop-${DISPLAY_NUM#:}" >"$SINK_MODULE"
+    other="$(keep_defaults_elsewhere)"
+    if [ -n "$other" ]; then
+      # Streams moved here when the placeholder went away aren't this
+      # desktop's (it hasn't started yet): send them back.
+      sink="$(device_index sinks "$SINK")"
+      pactl list short sink-inputs | awk -v sink="$sink" '$2 == sink { print $1 }' |
+        while read -r input; do pactl move-sink-input "$input" "$other" || true; done
+      monitor="$(device_index sources "$SINK.monitor")"
+      pactl list short source-outputs | awk -v source="$monitor" '$2 == source { print $1 }' |
+        while read -r output; do pactl move-source-output "$output" "$other.monitor" || true; done
+    fi
   fi
   SOUND_ENV=(PULSE_SINK="$SINK")
 fi

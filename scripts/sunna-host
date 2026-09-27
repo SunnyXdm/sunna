@@ -127,13 +127,16 @@ EOF
 
 # The host, and in virtual mode the desktop it shares as its own service:
 # restarting the host (an update) leaves the desktop and its apps alone,
-# and stopping the desktop takes everything started in it along.
+# and stopping the desktop takes everything started in it along, the host
+# included (stopped first, so no session is recording the desktop's sound
+# output when it goes away).
 write_units() {
   mkdir -p "$UNIT_DIR"
   local needs=""
   if [ "$SUNNA_MODE" = virtual ]; then
     needs="Wants=$DESKTOP_UNIT
-After=$DESKTOP_UNIT"
+After=$DESKTOP_UNIT
+PartOf=$DESKTOP_UNIT"
     cat >"$DESKTOP_UNIT_FILE" <<EOF
 [Unit]
 Description=Sunna's virtual desktop (a desktop without a screen, to share)
@@ -373,7 +376,8 @@ sound_status() {
     echo "off: no sound server (PulseAudio or PipeWire) is running"
   elif [ "$SUNNA_MODE" != virtual ]; then
     echo "on: what's playing on this computer"
-  elif pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "sunna_desktop_${SUNNA_DISPLAY#:}"; then
+  elif pactl list short sinks 2>/dev/null |
+    awk -v sink="sunna_desktop_${SUNNA_DISPLAY#:}" '$2 == sink { found = 1 } END { exit !found }'; then
     echo "on: this desktop's own output"
   elif systemctl_user is-active --quiet "$DESKTOP_UNIT"; then
     echo "off until sunna-host desktop-restart (this desktop started before Sunna had sound; restarting closes its apps)"
