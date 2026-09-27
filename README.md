@@ -111,6 +111,16 @@ The package runs on the release it was built on and newer ones: build it on Ubun
 
 Settings live in `~/.config/sunna/host.env`, readable only by you: the key, name, where to listen, port (48800), mode, and the virtual desktop's display, size and desktop (`plasma` or `xfce`). After editing it, run `sunna-host restart`. For the mode and the virtual desktop's settings, run `sunna-host setup` instead; a new size or desktop applies after `sunna-host desktop-restart`.
 
+### Running sunnad yourself
+
+`sunna-host` is a convenience around the daemon. To run `sunnad` directly, for example from your own service or a container, give it the X11 display, an address and a key:
+
+```sh
+DISPLAY=:0 sunnad --source screen --listen 100.101.102.103:48800 --name office --token "$KEY"
+```
+
+`--listen` takes an IP address and port (no `tailscale` or `lan` shortcuts here). Without `--token`, it makes a key and prints it when listening beyond loopback. `sunnad --help` lists the rest: stream size, frame rate, codec, bitrate, and `--no-clipboard`.
+
 **Video:** with an NVIDIA GPU (GTX 10-series or newer, driver 530+) the host encodes HEVC on the GPU, in about 4 ms a frame. Otherwise it encodes H.264 on the CPU with OpenH264, about 8–9 ms for a 1080p frame on a 6-core machine when built with nasm. For slow computers, the session menu's **30 fps** option halves the work.
 
 ## Share a Mac

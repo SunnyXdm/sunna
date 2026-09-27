@@ -24,14 +24,16 @@ use sunna_transport::Server;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Source {
     Synthetic,
-    /// Capture the main display (macOS only for now).
+    /// Capture the screen: the main display on macOS, the X11 display in
+    /// $DISPLAY on Linux.
     Screen,
 }
 
 #[derive(Parser, Debug)]
 #[command(name = "sunnad", about = "Sunna headless host daemon")]
 struct Args {
-    /// Address to listen on. Loopback by default — there is no auth yet.
+    /// Address to listen on. Loopback by default; beyond loopback, viewers
+    /// must present the token (--token).
     #[arg(long, default_value = "127.0.0.1:48800")]
     listen: SocketAddr,
     #[arg(long, value_enum, default_value_t = Source::Synthetic)]
@@ -44,7 +46,8 @@ struct Args {
     height: Option<u32>,
     #[arg(long, default_value_t = 60)]
     fps: u32,
-    /// Codec to encode with: "h264" or "hevc" on macOS, "raw" elsewhere.
+    /// Codec: "hevc" or "h264". VideoToolbox on macOS; on Linux, NVENC with an
+    /// NVIDIA GPU, otherwise H.264 on the CPU (OpenH264). "raw" is for tests.
     #[arg(long, env = "SUNNA_CODEC", default_value = default_codec_name())]
     codec: String,
     /// Encoder target bitrate in kilobits per second.
