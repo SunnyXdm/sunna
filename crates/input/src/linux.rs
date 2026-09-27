@@ -7,7 +7,13 @@
 use std::collections::HashSet;
 
 use anyhow::Context;
-use sunna_proto::messages::{GesturePhase, InputEvent, MouseButton};
+use sunna_proto::messages::{GestureKind, GesturePhase, InputEvent, MouseButton};
+
+/// Pinch to zoom, as Linux apps do it: Ctrl + a wheel click per step of
+/// this much magnification (log2; about 9%).
+const PINCH_STEP: f32 = 0.125;
+/// Left Control (evdev 29), as an X keycode.
+const X_LEFT_CONTROL: u8 = 29 + 8;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     ConnectionExt as _, Window, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, KEY_PRESS_EVENT,
@@ -29,6 +35,8 @@ pub struct X11Injector {
     keys_down: HashSet<u8>,
     buttons_down: HashSet<u8>,
     scroll_remainder: (f32, f32),
+    /// Pinch magnification not yet turned into a zoom step (log2).
+    pinch: f32,
     /// Send the Mac's Command key as Control, so Cmd+C/V/Z do what a Mac
     /// user expects (`SUNNA_MAC_COMMAND=ctrl`). Default: Super.
     command_as_ctrl: bool,
@@ -59,6 +67,7 @@ impl X11Injector {
             keys_down: HashSet::new(),
             buttons_down: HashSet::new(),
             scroll_remainder: (0.0, 0.0),
+            pinch: 0.0,
             command_as_ctrl,
         })
     }
@@ -168,6 +177,26 @@ impl InputInjector for X11Injector {
                     return Ok(());
                 }
                 self.key((code + 8) as u8, pressed)?;
+            }
+            InputEvent::Gesture { kind: GestureKind::Pinch, phase, scale_delta, .. } => {
+                if phase == GesturePhase::Begin {
+                    self.pinch = 0.0;
+                }
+                self.pinch += scale_delta;
+                let steps = (self.pinch / PINCH_STEP).trunc();
+                if steps != 0.0 {
+                    self.pinch -= steps * PINCH_STEP;
+                    // Ctrl for the clicks only, unless it's already held.
+                    let held = self.keys_down.contains(&X_LEFT_CONTROL);
+                    if !held {
+                        self.fake(KEY_PRESS_EVENT, X_LEFT_CONTROL, 0, 0)?;
+                    }
+                    // Wheel up (4) zooms in, down (5) out.
+                    self.click(if steps > 0.0 { 4 } else { 5 }, steps.abs() as u32)?;
+                    if !held {
+                        self.fake(KEY_RELEASE_EVENT, X_LEFT_CONTROL, 0, 0)?;
+                    }
+                }
             }
             InputEvent::Gesture { .. } => {}
         }
@@ -376,5 +405,78 @@ mod tests {
         }
         // Round trip so the server has handled everything before we exit.
         injector.conn.get_input_focus().unwrap().reply().unwrap();
+    }
+
+    /// Needs an X server (a throwaway one is best: `Xvfb :49 &`, then
+    /// `DISPLAY=:49 cargo test -p sunna-input -- --ignored pinch`).
+    #[test]
+    #[ignore]
+    fn a_pinch_is_ctrl_and_the_wheel() {
+        use super::*;
+        use sunna_proto::messages::GestureKind;
+        use x11rb::protocol::xproto::{CreateWindowAux, EventMask, InputFocus, WindowClass};
+        use x11rb::protocol::Event;
+        use x11rb::COPY_DEPTH_FROM_PARENT;
+
+        // A window of our own, focused and under the pointer, that records
+        // what arrives.
+        let (conn, screen) = x11rb::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        let window = conn.generate_id().unwrap();
+        let mask = EventMask::KEY_PRESS | EventMask::KEY_RELEASE | EventMask::BUTTON_PRESS;
+        conn.create_window(
+            COPY_DEPTH_FROM_PARENT,
+            window,
+            root,
+            0,
+            0,
+            400,
+            400,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().override_redirect(1).event_mask(mask),
+        )
+        .unwrap();
+        conn.map_window(window).unwrap();
+        conn.set_input_focus(InputFocus::POINTER_ROOT, window, 0u32).unwrap();
+        conn.get_input_focus().unwrap().reply().unwrap();
+
+        let mut injector = X11Injector::new().unwrap();
+        injector.inject(&InputEvent::MouseMoveAbs { x: 0.01, y: 0.01 }).unwrap();
+        let pinch = |phase, scale_delta| InputEvent::Gesture {
+            kind: GestureKind::Pinch,
+            phase,
+            fingers: 2,
+            dx: 0.0,
+            dy: 0.0,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            scale_delta,
+            rotation_delta: 0.0,
+        };
+        // Two steps' worth of zooming in, in small pieces.
+        injector.inject(&pinch(GesturePhase::Begin, 0.0)).unwrap();
+        for _ in 0..5 {
+            injector.inject(&pinch(GesturePhase::Update, 0.06)).unwrap();
+        }
+        injector.inject(&pinch(GesturePhase::End, 0.0)).unwrap();
+        injector.conn.get_input_focus().unwrap().reply().unwrap();
+        conn.get_input_focus().unwrap().reply().unwrap();
+
+        let mut seen = Vec::new();
+        while let Some(event) = conn.poll_for_event().unwrap() {
+            match event {
+                Event::KeyPress(key) => seen.push(format!("press {}", key.detail)),
+                Event::KeyRelease(key) => seen.push(format!("release {}", key.detail)),
+                Event::ButtonPress(button) => seen.push(format!("wheel {} ctrl={}", button.detail, u16::from(button.state) & 4 != 0)),
+                _ => {}
+            }
+        }
+        // A step as each piece completes one, Ctrl held for its click.
+        assert_eq!(
+            seen,
+            ["press 37", "wheel 4 ctrl=true", "release 37", "press 37", "wheel 4 ctrl=true", "release 37"]
+        );
     }
 }

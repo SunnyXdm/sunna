@@ -1020,6 +1020,29 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     momentum: false,
                 });
             }
+            // Trackpad pinch: the host zooms (Ctrl+scroll on Linux, ⌘± on a
+            // Mac). Swipes with three or four fingers stay macOS's own.
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                use sunna_proto::messages::{GestureKind, GesturePhase};
+                let phase = match phase {
+                    TouchPhase::Started => GesturePhase::Begin,
+                    TouchPhase::Moved => GesturePhase::Update,
+                    TouchPhase::Ended => GesturePhase::End,
+                    TouchPhase::Cancelled => GesturePhase::Cancel,
+                };
+                let _ = self.input.send(InputEvent::Gesture {
+                    kind: GestureKind::Pinch,
+                    phase,
+                    fingers: 2,
+                    dx: 0.0,
+                    dy: 0.0,
+                    velocity_x: 0.0,
+                    velocity_y: 0.0,
+                    // macOS gives the change in magnification (+0.01 = 1% bigger).
+                    scale_delta: (1.0 + delta).max(0.01).log2() as f32,
+                    rotation_delta: 0.0,
+                });
+            }
             WindowEvent::Focused(focused) => {
                 #[cfg(target_os = "macos")]
                 if let Some(capture) = &self.capture {

@@ -11,7 +11,13 @@
 use std::ffi::c_void;
 use std::time::Instant;
 
-use sunna_proto::messages::{GesturePhase, InputEvent, MouseButton};
+use sunna_proto::messages::{GestureKind, GesturePhase, InputEvent, MouseButton};
+
+/// Pinch to zoom, as Mac apps take it from a keyboard: ⌘= or ⌘− per step of
+/// this much magnification (log2; about 19%).
+const PINCH_STEP: f32 = 0.25;
+const KEY_EQUAL: u16 = 0x18; // kVK_ANSI_Equal
+const KEY_MINUS: u16 = 0x1B; // kVK_ANSI_Minus
 
 use crate::InputInjector;
 
@@ -149,6 +155,8 @@ pub struct MacInjector {
     other_down: bool,
     last_click: Option<(Instant, CGPoint)>,
     click_state: i64,
+    /// Pinch magnification not yet turned into a zoom step (log2).
+    pinch: f32,
     /// Sub-pixel scroll carried to the next event (trackpads send fractions).
     scroll_remainder: (f32, f32),
     /// Keys currently held down on the host, released if the session ends.
@@ -196,6 +204,7 @@ impl MacInjector {
             last_click: None,
             click_state: 1,
             scroll_remainder: (0.0, 0.0),
+            pinch: 0.0,
             keys_down: Vec::new(),
             caps_lock: false,
         }
@@ -223,6 +232,20 @@ impl MacInjector {
                 }
                 CGEventPost(TAP_HID, event);
                 CFRelease(event as _);
+            }
+        }
+    }
+
+    /// ⌘ + `keycode`, pressed and released, whatever modifiers are held.
+    fn post_command_key(&self, keycode: u16) {
+        for pressed in [true, false] {
+            unsafe {
+                let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode, pressed);
+                if !event.is_null() {
+                    CGEventSetFlags(event, self.flags() | FLAG_COMMAND);
+                    CGEventPost(TAP_HID, event);
+                    CFRelease(event as _);
+                }
             }
         }
     }
@@ -387,10 +410,24 @@ impl InputInjector for MacInjector {
                 }
                 self.post_key(scancode, pressed, repeat);
             }
-            InputEvent::Gesture { kind, phase, .. } => {
-                // Semantic gesture replay (research/05 §4) is a later milestone.
+            InputEvent::Gesture { kind: GestureKind::Pinch, phase, scale_delta, .. } => {
                 if phase == GesturePhase::Begin {
-                    tracing::debug!(?kind, "gesture replay not implemented yet");
+                    self.pinch = 0.0;
+                }
+                self.pinch += scale_delta;
+                let steps = (self.pinch / PINCH_STEP).trunc();
+                if steps != 0.0 {
+                    self.pinch -= steps * PINCH_STEP;
+                    let key = if steps > 0.0 { KEY_EQUAL } else { KEY_MINUS };
+                    for _ in 0..steps.abs() as u32 {
+                        self.post_command_key(key);
+                    }
+                }
+            }
+            InputEvent::Gesture { kind, phase, .. } => {
+                // Rotate and smart zoom have no keyboard equivalent to replay.
+                if phase == GesturePhase::Begin {
+                    tracing::debug!(?kind, "gesture not replayed");
                 }
             }
         }
