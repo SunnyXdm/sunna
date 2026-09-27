@@ -7,10 +7,15 @@
 //! derive any chunk's expected size from the header alone — which is what makes
 //! parity recovery possible without extra bookkeeping on the wire.
 //!
-//! Parity: data chunks are grouped in [`PARITY_GROUP`]s; each group gets one
-//! parity datagram carrying the XOR of its (zero-padded) chunks. One lost
-//! datagram per group is recovered with zero feedback delay (research/03 §4).
-//! Multi-loss falls through to latest-frame-wins + keyframe request.
+//! Parity: a frame's `n` data chunks form `G = ceil(n / S)` parity groups of
+//! at most `S` chunks, *interleaved*: chunk `i` belongs to group `i % G`. Each
+//! group gets one parity datagram, the XOR of its (zero-padded) chunks, sent
+//! after the data. One lost datagram per group is recovered with zero feedback
+//! delay, and because consecutive chunks sit in different groups, so is any
+//! burst of up to `G` consecutive losses, which is how Wi-Fi loses packets.
+//! The sender picks `S` per frame (more parity on lossy links, and for
+//! keyframes) and carries it in the header flags. Anything worse falls
+//! through to latest-frame-wins + a keyframe request.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -20,7 +25,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 /// frame_len u32 | capture_ts_us u64 | flags u8 | epoch u8 — 26 bytes.
 ///
 /// For parity datagrams (`FLAG_PARITY`), `chunk_index` is the parity *group*
-/// index and `chunk_count`/`frame_len` still describe the data frame.
+/// index and `chunk_count`/`frame_len` still describe the data frame. The high
+/// four bits of `flags` carry the frame's parity group size `S` (1..=15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaHeader {
     pub frame_id: u64,
@@ -36,9 +42,18 @@ pub const MEDIA_HEADER_LEN: usize = 26;
 pub const FLAG_KEYFRAME: u8 = 0b0000_0001;
 pub const FLAG_PARITY: u8 = 0b0000_0010;
 
-/// Data chunks per parity datagram (≈12.5% overhead). Static for protocol v0;
-/// adapting it to measured loss is congestion-control work (Milestone 1+).
+/// Default data chunks per parity datagram (≈12.5% overhead) on a clean link.
 pub const PARITY_GROUP: usize = 8;
+/// The largest group size the header can carry.
+pub const MAX_PARITY_GROUP: usize = 15;
+const GROUP_SHIFT: u8 = 4;
+
+fn group_size_from_flags(flags: u8) -> usize {
+    match (flags >> GROUP_SHIFT) as usize {
+        0 => PARITY_GROUP,
+        size => size,
+    }
+}
 
 impl MediaHeader {
     pub fn write(&self, buf: &mut BytesMut) {
@@ -86,7 +101,8 @@ fn chunk_size_at(frame_len: usize, chunk_count: usize, index: usize) -> usize {
 }
 
 /// Split an encoded frame into data + parity datagrams of at most
-/// `max_datagram` bytes each.
+/// `max_datagram` bytes each, with one parity datagram per `group_size` data
+/// chunks (clamped to 1..=[`MAX_PARITY_GROUP`]).
 pub fn packetize(
     epoch: u8,
     frame_id: u64,
@@ -94,13 +110,15 @@ pub fn packetize(
     keyframe: bool,
     payload: &[u8],
     max_datagram: usize,
+    group_size: usize,
 ) -> Vec<Bytes> {
     assert!(max_datagram > MEDIA_HEADER_LEN, "datagram size too small");
     let max_chunk = max_datagram - MEDIA_HEADER_LEN;
     let chunk_count = payload.len().div_ceil(max_chunk).max(1);
     assert!(chunk_count <= u16::MAX as usize, "frame too large to packetize");
     let frame_len = payload.len() as u32;
-    let flags = if keyframe { FLAG_KEYFRAME } else { 0 };
+    let group_size = group_size.clamp(1, MAX_PARITY_GROUP);
+    let flags = (if keyframe { FLAG_KEYFRAME } else { 0 }) | ((group_size as u8) << GROUP_SHIFT);
     let standard = standard_chunk_size(payload.len(), chunk_count);
 
     let header = |chunk_index: u16, flags: u8| MediaHeader {
@@ -113,9 +131,9 @@ pub fn packetize(
         flags,
     };
 
-    let group_count = chunk_count.div_ceil(PARITY_GROUP);
+    let group_count = chunk_count.div_ceil(group_size);
     let mut out = Vec::with_capacity(chunk_count + group_count);
-    let mut parity = vec![0u8; standard];
+    let mut parity = vec![vec![0u8; standard]; group_count];
 
     for index in 0..chunk_count {
         let begin = index * standard;
@@ -127,18 +145,16 @@ pub fn packetize(
         buf.put_slice(chunk);
         out.push(buf.freeze());
 
-        for (parity_byte, &data_byte) in parity.iter_mut().zip(chunk.iter()) {
+        let group = &mut parity[index % group_count];
+        for (parity_byte, &data_byte) in group.iter_mut().zip(chunk.iter()) {
             *parity_byte ^= data_byte;
         }
-        let group_ends = index % PARITY_GROUP == PARITY_GROUP - 1 || index + 1 == chunk_count;
-        if group_ends {
-            let group_index = (index / PARITY_GROUP) as u16;
-            let mut buf = BytesMut::with_capacity(MEDIA_HEADER_LEN + parity.len());
-            header(group_index, flags | FLAG_PARITY).write(&mut buf);
-            buf.put_slice(&parity);
-            out.push(buf.freeze());
-            parity.iter_mut().for_each(|byte| *byte = 0);
-        }
+    }
+    for (group_index, group) in parity.iter().enumerate() {
+        let mut buf = BytesMut::with_capacity(MEDIA_HEADER_LEN + group.len());
+        header(group_index as u16, flags | FLAG_PARITY).write(&mut buf);
+        buf.put_slice(group);
+        out.push(buf.freeze());
     }
     if payload.is_empty() {
         // Degenerate but keep the invariant: every frame yields >= 1 datagram.
@@ -172,9 +188,9 @@ struct Partial {
 }
 
 impl Partial {
-    fn group_range(&self, group: usize) -> std::ops::Range<usize> {
-        let begin = group * PARITY_GROUP;
-        begin..(begin + PARITY_GROUP).min(self.chunks.len())
+    /// Chunk indexes in parity group `group` (interleaved: `i % groups`).
+    fn group_members(&self, group: usize) -> impl Iterator<Item = usize> + Clone {
+        (group..self.chunks.len()).step_by(self.parity.len().max(1))
     }
 
     /// If exactly one chunk of `group` is missing and its parity is present,
@@ -183,7 +199,7 @@ impl Partial {
         let Some(Some(parity)) = self.parity.get(group).cloned() else {
             return false;
         };
-        let range = self.group_range(group);
+        let range = self.group_members(group);
         let mut missing = None;
         for index in range.clone() {
             if self.chunks[index].is_none() {
@@ -273,7 +289,7 @@ impl Reassembler {
             flags: header.flags & !FLAG_PARITY,
             frame_len: header.frame_len as usize,
             chunks: vec![None; chunk_count],
-            parity: vec![None; chunk_count.div_ceil(PARITY_GROUP)],
+            parity: vec![None; chunk_count.max(1).div_ceil(group_size_from_flags(header.flags))],
             received: 0,
         });
 
@@ -295,7 +311,7 @@ impl Reassembler {
             if partial.chunks[index].is_none() {
                 partial.chunks[index] = Some(Bytes::copy_from_slice(payload));
                 partial.received += 1;
-                let group = index / PARITY_GROUP;
+                let group = index % partial.parity.len().max(1);
                 if partial.try_recover(group) {
                     self.recovered_chunks += 1;
                 }
@@ -358,7 +374,7 @@ mod tests {
     #[test]
     fn packetize_reassemble_roundtrip() {
         let payload = payload(10_000);
-        let datagrams = packetize(0, 1, 99, true, &payload, 1200);
+        let datagrams = packetize(0, 1, 99, true, &payload, 1200, PARITY_GROUP);
         let data_count = datagrams.iter().filter(|d| !is_parity(d)).count();
         let parity_count = datagrams.len() - data_count;
         assert!(data_count > 1);
@@ -378,15 +394,15 @@ mod tests {
 
     #[test]
     fn single_loss_per_group_is_recovered() {
-        let payload = payload(9_500);
-        let datagrams = packetize(0, 7, 0, false, &payload, 1200);
+        let payload = payload(9_500); // 9 chunks, 2 interleaved groups
+        let datagrams = packetize(0, 7, 0, false, &payload, 1200, PARITY_GROUP);
         let mut reassembler = Reassembler::new();
         let mut complete = None;
-        // Drop the first data datagram of every parity group.
+        // Drop one data datagram in each group: chunks 0 (group 0) and 1 (group 1).
         let mut data_index = 0usize;
         for datagram in &datagrams {
             if !is_parity(datagram) {
-                let drop = data_index % PARITY_GROUP == 0;
+                let drop = data_index < 2;
                 data_index += 1;
                 if drop {
                     continue;
@@ -396,13 +412,56 @@ mod tests {
         }
         let frame = complete.expect("FEC should recover every group");
         assert_eq!(&frame.data[..], &payload[..]);
-        assert!(reassembler.recovered_chunks > 0);
+        assert_eq!(reassembler.recovered_chunks, 2);
+    }
+
+    /// Drop `burst` consecutive data datagrams starting at data chunk `at`;
+    /// return whether the frame still completed, intact.
+    fn survives_burst(len: usize, group_size: usize, at: usize, burst: usize) -> bool {
+        let payload = payload(len);
+        let datagrams = packetize(0, 11, 0, false, &payload, 1200, group_size);
+        let mut reassembler = Reassembler::new();
+        let mut complete = None;
+        let mut data_index = 0usize;
+        for datagram in &datagrams {
+            if !is_parity(datagram) {
+                let drop = (at..at + burst).contains(&data_index);
+                data_index += 1;
+                if drop {
+                    continue;
+                }
+            }
+            complete = reassembler.push(datagram).or(complete);
+        }
+        complete.is_some_and(|frame| frame.data[..] == payload[..])
+    }
+
+    #[test]
+    fn a_burst_as_long_as_the_group_count_is_recovered() {
+        // 24 chunks in groups of 8: 3 interleaved groups, so any 3 in a row.
+        let len = 24 * (1200 - MEDIA_HEADER_LEN);
+        assert!(survives_burst(len, 8, 5, 3));
+        assert!(survives_burst(len, 8, 21, 3));
+        assert!(!survives_burst(len, 8, 5, 4), "4 in a row hits one group twice");
+    }
+
+    #[test]
+    fn smaller_groups_survive_longer_bursts() {
+        // 10 chunks in groups of 2: 5 groups, so 5 in a row, at 50% overhead.
+        let len = 10 * (1200 - MEDIA_HEADER_LEN);
+        let datagrams = packetize(0, 1, 0, true, &payload(len), 1200, 2);
+        assert_eq!(datagrams.iter().filter(|d| is_parity(d)).count(), 5);
+        let (header, _) = MediaHeader::parse(&datagrams[0]).unwrap();
+        assert_eq!(group_size_from_flags(header.flags), 2);
+        assert!(header.flags & FLAG_KEYFRAME != 0);
+        assert!(survives_burst(len, 2, 3, 5));
+        assert!(!survives_burst(len, 2, 3, 6));
     }
 
     #[test]
     fn last_short_chunk_is_recoverable() {
         let payload = payload(2_500); // 3 chunks at 1200 max: sizes 834/834/832
-        let datagrams = packetize(0, 9, 0, false, &payload, 1200);
+        let datagrams = packetize(0, 9, 0, false, &payload, 1200, PARITY_GROUP);
         let last_data_index = datagrams
             .iter()
             .enumerate()
@@ -426,7 +485,7 @@ mod tests {
     #[test]
     fn double_loss_in_group_is_not_recovered() {
         let payload = payload(9_000);
-        let datagrams = packetize(0, 3, 0, false, &payload, 1200);
+        let datagrams = packetize(0, 3, 0, false, &payload, 1200, PARITY_GROUP);
         let mut reassembler = Reassembler::new();
         let mut complete = None;
         let mut data_index = 0usize;
@@ -445,8 +504,8 @@ mod tests {
 
     #[test]
     fn newer_frame_supersedes_partial() {
-        let old = packetize(0, 1, 0, false, &payload(5000), 1200);
-        let new = packetize(0, 2, 0, false, &payload(3000), 1200);
+        let old = packetize(0, 1, 0, false, &payload(5000), 1200, PARITY_GROUP);
+        let new = packetize(0, 2, 0, false, &payload(3000), 1200, PARITY_GROUP);
         let mut reassembler = Reassembler::new();
         // Only part of frame 1 arrives, then all of frame 2.
         reassembler.push(&old[0]);

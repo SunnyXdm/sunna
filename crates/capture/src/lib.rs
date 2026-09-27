@@ -184,12 +184,26 @@ impl FrameSource for SyntheticSource {
         let (width, height) = (self.width as usize, self.height as usize);
         let bar = (self.frame_id as usize * 4) % width;
         let mut data = vec![0u8; width * height * 4];
+        // Stress testing (dev only): SUNNA_SYNTHETIC_NOISE=<percent> fills that
+        // share of each row with fresh noise every frame, which no encoder can
+        // compress, so frames come out as large as the bitrate allows, like
+        // video playback does.
+        let noise_cols = std::env::var("SUNNA_SYNTHETIC_NOISE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .map_or(0, |percent| width * percent.min(100) / 100);
+        let mut noise_state = 0x2545_f491_4f6c_dd1d_u64 ^ self.frame_id.wrapping_mul(0x9e37_79b9_7f4a_7c15);
         for y in 0..height {
             let row = y * width * 4;
             let shade = (y * 255 / height.max(1)) as u8;
             for x in 0..width {
                 let offset = row + x * 4;
-                if x.abs_diff(bar) < 4 {
+                if x < noise_cols {
+                    noise_state ^= noise_state << 13;
+                    noise_state ^= noise_state >> 7;
+                    noise_state ^= noise_state << 17;
+                    data[offset..offset + 3].copy_from_slice(&noise_state.to_le_bytes()[..3]);
+                } else if x.abs_diff(bar) < 4 {
                     data[offset] = 255;
                     data[offset + 1] = 255;
                     data[offset + 2] = 255;

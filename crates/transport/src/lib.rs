@@ -95,6 +95,19 @@ fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
 
 fn transport_config() -> TransportConfig {
     let mut config = TransportConfig::default();
+    // Congestion control for everything on the connection, video datagrams
+    // included. BBR measures what the path carries; the loss-based default
+    // (Cubic) reads Wi-Fi's random loss as congestion and, at a few percent
+    // loss, throttles video to ~2 Mbps. SUNNA_CC=cubic|newreno for experiments.
+    match std::env::var("SUNNA_CC").as_deref() {
+        Ok("cubic") => {}
+        Ok("newreno") => {
+            config.congestion_controller_factory(Arc::new(quinn::congestion::NewRenoConfig::default()));
+        }
+        _ => {
+            config.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+        }
+    }
     config.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("valid idle timeout")));
     config.keep_alive_interval(Some(KEEP_ALIVE));
     config.datagram_receive_buffer_size(Some(DATAGRAM_RECV_BUFFER));

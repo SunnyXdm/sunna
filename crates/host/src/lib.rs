@@ -129,6 +129,31 @@ struct SessionSignals {
     input_events: AtomicU32,
     /// The last host window's stats, waiting to go to the viewer.
     stats: std::sync::Mutex<Option<HostStats>>,
+    /// Data chunks per parity datagram for delta frames, chosen from the loss
+    /// QUIC measured recently (see `fec_group_for_loss`).
+    fec_group: AtomicU32,
+}
+
+/// Parity group size for a measured packet loss rate: more parity on lossy
+/// links, where interleaved groups also cover longer bursts.
+fn fec_group_for_loss(loss: f64) -> u32 {
+    if loss >= 0.02 {
+        3
+    } else if loss >= 0.005 {
+        4
+    } else {
+        sunna_proto::media::PARITY_GROUP as u32
+    }
+}
+
+/// Keyframes are big (so more likely to lose a packet) and losing one costs a
+/// freeze until the next: protect them more than delta frames.
+fn keyframe_group(delta_group: u32) -> u32 {
+    if delta_group < sunna_proto::media::PARITY_GROUP as u32 {
+        2
+    } else {
+        4
+    }
 }
 
 struct HostState {
@@ -326,6 +351,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         reconfigure: Mutex::new(None),
         input_events: AtomicU32::new(0),
         stats: Mutex::new(None),
+        fec_group: AtomicU32::new(sunna_proto::media::PARITY_GROUP as u32),
     });
     let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();
     let media_thread = {
@@ -740,6 +766,7 @@ fn send_loop(
     // real, because later frames reference it.
     let mut consecutive_failures: u32 = 0;
     let mut window = HostWindow::new();
+    let mut quic_totals = QuicTotals::default();
     // Deterministic xorshift for dev loss simulation; no RNG dependency.
     let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut roll = move || {
@@ -778,6 +805,8 @@ fn send_loop(
             Some(EncoderOutput::Frame(encoded)) => {
                 consecutive_failures = 0;
                 window.encoded(&encoded);
+                let delta_group = signals.fec_group.load(Ordering::Relaxed);
+                let group = if encoded.keyframe { keyframe_group(delta_group) } else { delta_group };
                 let datagrams = packetize(
                     epoch,
                     wire_frame_id,
@@ -785,6 +814,7 @@ fn send_loop(
                     encoded.keyframe,
                     &encoded.data,
                     max_datagram,
+                    group as usize,
                 );
                 // Latest-frame-wins at the sender: a frame that doesn't fit the
                 // send buffer is dropped rather than queued as stale video. It
@@ -831,9 +861,21 @@ fn send_loop(
             signals.target_bitrate_bps.load(Ordering::Relaxed),
             send_backlog(&connection),
             &signals,
+            &connection,
+            &mut quic_totals,
         );
     }
     wire_frame_id
+}
+
+/// QUIC's own counters at the last report, to log per-window changes.
+#[derive(Default)]
+struct QuicTotals {
+    sent_packets: u64,
+    lost_packets: u64,
+    congestion_events: u64,
+    /// Windows in a row that asked for less parity than we use.
+    clean_windows: u32,
 }
 
 /// Per-second host-side stats, logged as one `host window` event.
@@ -871,7 +913,14 @@ impl HostWindow {
         }
     }
 
-    fn maybe_report(&mut self, bitrate_bps: u32, backlog_bytes: usize, signals: &SessionSignals) {
+    fn maybe_report(
+        &mut self,
+        bitrate_bps: u32,
+        backlog_bytes: usize,
+        signals: &SessionSignals,
+        connection: &Connection,
+        quic: &mut QuicTotals,
+    ) {
         let elapsed = self.started.elapsed();
         if elapsed < Duration::from_secs(1) {
             return;
@@ -884,6 +933,7 @@ impl HostWindow {
             samples[(samples.len() - 1) * p / 100] as f64 / 1000.0
         };
         let sent_kbps = (self.sent_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1000.0) as u32;
+        let path = connection.stats().path;
         let encode_p50 = pct(&mut self.encode_us, 50);
         let encode_p95 = pct(&mut self.encode_us, 95);
         *signals.stats.lock().unwrap() = Some(HostStats {
@@ -910,8 +960,40 @@ impl HostWindow {
             capture_to_encoded_ms_p50 = pct(&mut self.capture_to_encoded_us, 50),
             capture_to_encoded_ms_p95 = pct(&mut self.capture_to_encoded_us, 95),
             input_events = signals.input_events.swap(0, Ordering::Relaxed),
+            // What QUIC itself saw this window: loss it detected, how often
+            // its congestion control backed off, its window and round trip.
+            quic_sent = path.sent_packets - quic.sent_packets,
+            quic_lost = path.lost_packets - quic.lost_packets,
+            quic_backoffs = path.congestion_events - quic.congestion_events,
+            quic_cwnd_kb = path.cwnd / 1024,
+            quic_rtt_ms = path.rtt.as_secs_f64() * 1000.0,
+            fec_group = signals.fec_group.load(Ordering::Relaxed),
             "host window"
         );
+        // More parity as soon as loss shows up; back off only after a run of
+        // clean windows, so a lull in a lossy link doesn't strip protection.
+        let sent = path.sent_packets - quic.sent_packets;
+        let lost = path.lost_packets - quic.lost_packets;
+        let wanted = fec_group_for_loss(lost as f64 / sent.max(1) as f64);
+        let current = signals.fec_group.load(Ordering::Relaxed);
+        if wanted < current {
+            signals.fec_group.store(wanted, Ordering::Relaxed);
+            quic.clean_windows = 0;
+        } else if wanted > current {
+            quic.clean_windows += 1;
+            if quic.clean_windows >= 5 {
+                signals.fec_group.store(wanted, Ordering::Relaxed);
+                quic.clean_windows = 0;
+            }
+        } else {
+            quic.clean_windows = 0;
+        }
+        *quic = QuicTotals {
+            sent_packets: path.sent_packets,
+            lost_packets: path.lost_packets,
+            congestion_events: path.congestion_events,
+            clean_windows: quic.clean_windows,
+        };
         *self = Self::new();
     }
 }
@@ -1089,9 +1171,11 @@ async fn handle_control(
                 };
                 // The client requests keyframes itself when it actually needs
                 // one; forcing another here only adds IDR bursts.
-                let total = frames_complete + frames_dropped;
-                let heavy_loss = frames_dropped > 0 && frames_dropped * 20 >= total.max(1);
-                let next = if heavy_loss || inflated {
+                // Loss alone doesn't cut: on Wi-Fi it's mostly random, so a
+                // lower bitrate wouldn't reduce it, only the picture. Parity
+                // handles loss; QUIC's BBR and the send backlog handle real
+                // congestion; here, only growing delay cuts.
+                let next = if inflated {
                     (current / 4 * 3).max(min_bitrate_bps)
                 } else if holding || frames_dropped > 0 {
                     current

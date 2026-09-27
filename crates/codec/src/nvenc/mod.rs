@@ -712,12 +712,12 @@ mod tests {
 
     #[test]
     fn gpu_less_fallback() {
-        // On a driver-equipped host the ignored test exercises the hardware path.
-        // This VM has neither library: probing must be cheap and must not panic.
-        if available() {
+        // On a machine with a working NVENC the ignored test exercises the
+        // hardware path. Without one, probing must not panic, and both codecs
+        // must report unsupported.
+        if supports(Codec::H264) || supports(Codec::Hevc) {
             return;
         }
-        assert!(!available());
         assert!(NvencEncoder::new(Codec::H264, 64, 64, 60, 1_000_000).is_err());
         assert!(crate::make_encoder("hevc", 64, 64, 60, 1_000_000).is_err());
         let mut encoder = crate::make_encoder("h264", 64, 64, 60, 1_000_000).unwrap();
