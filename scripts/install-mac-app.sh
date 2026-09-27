@@ -139,6 +139,14 @@ if [ "$SIGNED" = adhoc ]; then
   codesign --force --deep --sign - "$APP"
 fi
 
+DEST=/Applications
+[ -w "$DEST" ] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
+if pgrep -x Sunna >/dev/null; then
+  echo "Quitting the running Sunna…"
+  osascript -e 'quit app "Sunna"' >/dev/null 2>&1 || true
+  sleep 1
+fi
+
 # Moving from an ad hoc build to the certificate: Sunna's Accessibility
 # entry belongs to the old signature (it shows as on, but no longer
 # applies). Clear it so macOS asks afresh, once.
