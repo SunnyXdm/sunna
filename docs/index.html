@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sunna: your other computers, on your Mac</title>
+  <meta name="description" content="Sunna is a fast, native remote desktop for Mac and Linux. It connects straight to your own computers, with no accounts and no cloud service.">
+  <meta name="theme-color" content="#0b0c10">
+  <link rel="icon" href="images/icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="#top"><img src="images/icon.png" alt="" width="30" height="30"><span>Sunna</span></a>
+    <nav>
+      <a href="#details">Details</a>
+      <a href="#install">Install</a>
+      <a href="#questions">Questions</a>
+      <a href="https://github.com/SunnyXdm/sunna">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <h1>Your other computers,<br>on your Mac.</h1>
+      <p class="lede">Sunna is a fast, native remote desktop for Mac and Linux. It connects straight to your own computers, with no accounts and no cloud service.</p>
+      <div class="actions">
+        <a class="button primary" href="#install">Install Sunna</a>
+        <a class="button" href="https://github.com/SunnyXdm/sunna">Source on GitHub</a>
+      </div>
+      <p class="fine">The app runs on macOS 13 or later. It connects to Macs and Linux computers.</p>
+      <div class="stage">
+        <img class="shot" src="images/hover.png" width="1060" height="740" alt="The Sunna app: five computers, each shown as its own screen, lit when it can be reached">
+      </div>
+    </section>
+
+    <section class="row">
+      <div class="row-text">
+        <h2>Add a computer by its address and key.</h2>
+        <p>Type the address and key, or paste the link the computer printed when you shared it. The preview lights up as soon as the computer answers, with its name, its system and the round trip in milliseconds.</p>
+        <p>Sunna never scans your network on its own. If you use Tailscale, <em>Find on Tailscale</em> lists the computers on your tailnet that are sharing.</p>
+      </div>
+      <img class="shot" src="images/add.png" width="1060" height="740" loading="lazy" alt="Adding a computer: the preview shows the Ubuntu machine it found, 40 ms away">
+    </section>
+
+    <section class="row flip">
+      <div class="row-text">
+        <h2>Click, and you're there.</h2>
+        <p>The computer's screen grows to fill the window and the session opens full screen, in a native window: smooth trackpad scrolling, your ⌘ shortcuts sent across, and the clipboard shared both ways, text and images.</p>
+        <p><kbd>⌃⌥M</kbd> opens the session menu: shortcuts for the other computer's system, video settings, and a way to type your clipboard into password prompts that won't take a paste.</p>
+      </div>
+      <img class="shot" src="images/connecting.png" width="1060" height="740" loading="lazy" alt="Connecting to archlinux: its boot screen, with a progress bar and Starting video">
+    </section>
+
+    <section class="row">
+      <div class="row-text">
+        <h2>Typing that keeps up.</h2>
+        <p>Video takes time to encode, most of all on a computer without a supported GPU. So Sunna also sends small changes, like the letter you just typed, as exact image tiles on a lane of their own, ahead of the video.</p>
+      </div>
+      <figure class="lanes">
+        <div class="lane fast">
+          <span class="name">Fast lane</span>
+          <span class="track"><span class="bar" style="--from: 2; --to: 2.4"></span></span>
+          <span class="value">2 ms</span>
+        </div>
+        <div class="lane">
+          <span class="name">Video</span>
+          <span class="track"><span class="bar" style="--from: 35; --to: 37"></span></span>
+          <span class="value">35–37 ms</span>
+        </div>
+        <div class="axis" aria-hidden="true"><span>0</span><span>10</span><span>20</span><span>30</span><span>40 ms</span></div>
+        <figcaption>How long a typed letter took to go from capture to the viewer: the median over each second of typing into a terminal. The host was a 6-core cloud VM with no GPU, encoding H.264 on its CPU; the viewer ran on the same machine, so there's no network time in either.</figcaption>
+      </figure>
+    </section>
+
+    <section class="details" id="details">
+      <h2>Details</h2>
+      <dl>
+        <div><dt>Video</dt><dd>HEVC or H.264, encoded by the Mac's media engine, an NVIDIA GPU (GTX 10-series or newer, driver 530+) or the CPU, and decoded by your Mac's. The bitrate follows your network.</dd></div>
+        <div><dt>Fast lane</dt><dd>Small changes sent as lossless tiles ahead of the video. On by default for Linux hosts that encode on the CPU.</dd></div>
+        <div><dt>Network</dt><dd>QUIC over UDP port 48800, encrypted with TLS 1.3. Computers connect to each other directly; <a href="https://tailscale.com">Tailscale</a> recommended.</dd></div>
+        <div><dt>Input</dt><dd>Keyboard, mouse and trackpad. ⌘Tab and other system shortcuts go to the other computer once Sunna has Accessibility access.</dd></div>
+        <div><dt>Clipboard</dt><dd>Text and images, both ways. One click turns it off for a session.</dd></div>
+        <div><dt>Share</dt><dd>Macs with macOS 13 or later. Linux PCs and servers with an X11 desktop, or a virtual desktop running Plasma or XFCE.</dd></div>
+        <div><dt>View from</dt><dd>A Mac with macOS 13 or later.</dd></div>
+        <div><dt>Privacy</dt><dd>No accounts and no cloud service. Logs stay on your computers, and keystrokes and clipboard contents are never logged.</dd></div>
+        <div><dt>When idle</dt><dd>With nobody connected, a host uses no CPU and keeps one UDP port open.</dd></div>
+      </dl>
+    </section>
+
+    <section class="install" id="install">
+      <h2>Install</h2>
+      <p class="lede">The install scripts build Sunna on your own computer in a few minutes; there are no prebuilt downloads yet. Each one needs <a href="https://rustup.rs">Rust</a>, plus the tools its step names.</p>
+
+      <div class="step">
+        <div class="step-text">
+          <span class="num">1</span>
+          <h3>Share a Linux computer</h3>
+          <p>Ubuntu, Debian, Arch, Fedora and others. It installs for your user, with no root needed, then shares the X11 desktop you're logged into, or a separate virtual desktop on servers and on machines whose desktop is Wayland. It starts by itself from then on.</p>
+          <p class="note">It also needs a C/C++ compiler and nasm: <code>sudo apt install build-essential nasm</code> on Debian and Ubuntu; elsewhere the script names the packages. On Debian and Ubuntu you can make a package instead: <code>scripts/package-linux-deb.sh</code>.</p>
+        </div>
+        <pre><code>git clone https://github.com/SunnyXdm/sunna.git
+cd sunna
+scripts/install-host-linux.sh</code></pre>
+      </div>
+
+      <div class="step">
+        <div class="step-text">
+          <span class="num or">or</span>
+          <h3>Share a Mac</h3>
+          <p>For now a Mac host runs in a Terminal window. Put a long random key in <code>~/.sunna/dogfood.env</code> as <code>SUNNA_TOKEN=…</code>, then run the host. The first time, macOS asks to give your terminal Screen Recording and Accessibility access.</p>
+        </div>
+        <pre><code>git clone https://github.com/SunnyXdm/sunna.git
+cd sunna
+scripts/dogfood.sh host</code></pre>
+      </div>
+
+      <div class="step">
+        <div class="step-text">
+          <span class="num">2</span>
+          <h3>Install the app on your Mac</h3>
+          <p>It builds <strong>Sunna.app</strong>, puts it in Applications and opens it. Run it again to update.</p>
+          <p class="note">It also needs the Xcode command line tools: <code>xcode-select --install</code>.</p>
+        </div>
+        <div class="step-code">
+          <img class="app-icon" src="images/icon.png" width="96" height="96" alt="Sunna's app icon">
+          <pre><code>git clone https://github.com/SunnyXdm/sunna.git
+cd sunna
+scripts/install-mac-app.sh</code></pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-text">
+          <span class="num">3</span>
+          <h3>Add the computer</h3>
+          <p>Sharing prints the computer's address, key and link. In Sunna, choose <em>Add a Computer</em> (<kbd>⌘N</kbd>) and paste the link. On Linux, <code>sunna-host link</code> shows it again.</p>
+        </div>
+        <pre class="output"><code>    Address   100.101.102.103
+    Key       7f3a…
+
+  In the Sunna app, choose Add a Computer and paste:
+    sunna://100.101.102.103?key=7f3a…</code></pre>
+      </div>
+    </section>
+
+    <section class="questions" id="questions">
+      <h2>Questions</h2>
+      <details>
+        <summary>Is it secure?</summary>
+        <p>A computer only accepts viewers that present its key, and connections are encrypted (QUIC with TLS 1.3). The app doesn't check the host's identity yet, though, so use Sunna over <a href="https://tailscale.com">Tailscale</a> or a network you trust, and never expose a host to the internet. Checking each host's certificate is planned.</p>
+      </details>
+      <details>
+        <summary>Can I share a Wayland desktop?</summary>
+        <p>Not yet. That includes Ubuntu's default session, and GNOME, Plasma or Hyprland on Wayland. Log in with an X11 session (on Ubuntu, "Ubuntu on Xorg"), or share a virtual desktop instead. Wayland support is planned.</p>
+      </details>
+      <details>
+        <summary>What about Windows, or viewing from Linux?</summary>
+        <p>Neither is ready. Sunna shares Macs and Linux computers, and the app runs on macOS.</p>
+      </details>
+      <details>
+        <summary>How fast is it?</summary>
+        <p>It depends on your network and on how the host encodes video: Apple's media engine and NVIDIA GPUs are quick, a CPU is slower, and the fast lane keeps typing quick either way. In a session, <kbd>⌃⌥S</kbd> shows the stats bar with the latency, frame rate and bitrate of your own setup.</p>
+      </details>
+      <details>
+        <summary>Does it use my computer when nobody's connected?</summary>
+        <p>A waiting host uses no CPU and keeps one UDP port open. A virtual desktop keeps running with the apps you opened in it, like a real computer would; <code>sunna-host desktop-stop</code> stops it.</p>
+      </details>
+      <details>
+        <summary>Why isn't there a download?</summary>
+        <p>Prebuilt downloads aren't published yet. Until they are, the install scripts build Sunna on your own computer, which takes a few minutes.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <img src="images/icon.png" alt="" width="22" height="22">
+    <span>Sunna</span>
+    <a href="https://github.com/SunnyXdm/sunna">GitHub</a>
+    <a href="https://github.com/SunnyXdm/sunna#readme">Documentation</a>
+  </footer>
+</body>
+</html>

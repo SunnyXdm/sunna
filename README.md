@@ -1,93 +1,184 @@
-# Sunna
+<p align="center"><img src="docs/images/icon.png" width="128" height="128" alt="Sunna"></p>
 
-A low-latency game-streaming / remote-desktop system. Goal: faster where it counts (p99 on real networks), lighter, and more modern than Parsec and Moonlight — see [research/00-overview.md](research/00-overview.md) for the full research series, [research/06-architecture.md](research/06-architecture.md) for the architecture decisions, and [research/08-architecture-plan.md](research/08-architecture-plan.md) for the full architecture plan (sources in [research/sources/](research/sources/)); [research/07-v1-plan.md](research/07-v1-plan.md) is the earlier near-term plan it amends.
+<h1 align="center">Sunna</h1>
 
-## Status
+<p align="center">Your other computers, on your Mac. A fast, native remote desktop for Mac and Linux, over your own network.</p>
 
-**Milestone 0a done; 0b codec done; reliability layer v0 done.** The end-to-end pipeline runs: synthetic frame source → codec → QUIC datagrams (media) + reliable stream (control/input) → FEC reassembly → keyframe-gated decode → latency stats. On macOS the codec is real hardware **VideoToolbox low-latency H.264** (Annex B on the wire, SPS/PPS on keyframes, infinite GOP); elsewhere it falls back to raw passthrough.
+<p align="center"><img src="docs/images/app.png" alt="The Sunna app, showing five computers" width="880"></p>
 
-Reliability v0 (`--simulate-loss` exercises it): per-frame XOR parity FEC (1 per 8 chunks, ~12.5% overhead) recovers single losses per group with zero feedback delay; frame-continuity tracking catches wholly-lost frames; a lost frame triggers a keyframe request and P-frames are skipped until the IDR arrives (no corrupt frames ever decode); per-second receiver reports drive AIMD bitrate adaptation applied to the *next* encoded frame — the seed of the encoder-coupled congestion controller. Ping/Pong estimates host↔client clock offset at min-RTT so cross-machine latency numbers are meaningful.
+Sunna shows another computer's screen on your Mac and sends your keyboard, mouse, trackpad and clipboard back. It uses the hardware video encoders and decoders where they exist and sends small changes like typing as exact, lossless tiles ahead of the video, so text appears as fast as your network allows. There are no accounts and no cloud service: computers talk to each other directly, ideally over [Tailscale](https://tailscale.com).
 
-Loopback bench: 60 fps 0 drops clean; at 20% simulated loss still 0 drops (all FEC-recovered); at 35% the keyframe recovery path holds the stream together. Capture→decode ~5-7 ms p50 including hardware encode+decode.
+**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11). Not yet: Windows, viewing from Linux (dev tool only), and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
 
-**Testable end-to-end on macOS**: `sunnad --source screen` captures the real display (CGDisplayStream; SCK backend later), `sunna-cli view` opens a viewer window (winit + softbuffer CPU blit; wgpu presenter later) and forwards mouse/scroll/keyboard, injected host-side via CGEventPost. Both directions of permission apply: Screen Recording for the host's capture, Accessibility for the host's input injection.
+## Quick start
 
-## Dogfooding between two Macs (Tailscale)
+1. **Share a computer** (the *host*). On Linux: install the host and run `sunna-host setup` ([details](#share-a-linux-computer)). On a Mac: see [Share a Mac](#share-a-mac). Either way you get an address, a key and a link:
 
-`scripts/dogfood.sh` builds and runs everything; logs from both Macs ship to a collector on the tailnet (`tools/logd/`), so a session can be analysed afterwards.
+   ```
+       Address   100.101.102.103
+       Key       7f3a…
 
-One-time, on each Mac, create `~/.sunna/dogfood.env`:
+     In the Sunna app, choose Add a Computer and paste:
+       sunna://100.101.102.103?key=7f3a…
+   ```
 
-```sh
-SUNNA_TOKEN=<same random string on both Macs>
-SUNNA_LOG_URL=http://<collector tailnet IP>:48900
-SUNNA_LOG_TOKEN=<collector token>
-```
+2. **Install the Sunna app on your Mac** ([details](#install-the-mac-app)):
 
-Then:
+   ```sh
+   git clone https://github.com/SunnyXdm/sunna.git && cd sunna
+   scripts/install-mac-app.sh
+   ```
 
-```sh
-git pull
-scripts/dogfood.sh host                     # on the Mac to control
-scripts/dogfood.sh view <host-tailscale-name>   # on the Mac you sit at
-```
+3. **Open Sunna, choose Add a Computer and paste the link.** The computer shows up with its screen lit when it can be reached; click it to connect.
 
-The host listens only on its Tailscale address and refuses viewers without the session token. The viewer asks the host to scale its capture to fit your screen, so the stream is shown 1:1. On the first `host` run, grant your terminal Screen Recording and Accessibility in System Settings → Privacy & Security, reopen the terminal, and run again. Builds are unsigned: running from Terminal keeps those permissions across rebuilds.
+## Install the Mac app
 
-## Try it (macOS)
+`scripts/install-mac-app.sh` builds **Sunna.app**, installs it in `/Applications` and opens it. Run it again to update. You need:
 
-**Stream your screen and control it from a window:**
+- macOS 13 or later (so far tested on Apple silicon)
+- the Xcode command line tools: `xcode-select --install`
+- Rust: [rustup.rs](https://rustup.rs)
 
-```sh
-cargo build --release
+`scripts/install-mac-app.sh --dmg` also makes `dist/Sunna.dmg` to give to someone else. The app is signed ad hoc (there's no Apple developer account behind it), so on another Mac they need to right-click it and choose **Open** the first time.
 
-# Host: stream the main display (macOS prompts once for Screen Recording
-# permission for your terminal; grant it and run again). For remote input to
-# work, also grant Accessibility permission to the terminal.
-./target/release/sunnad --source screen
+The first time you send ⌘Tab or other system shortcuts to a remote computer, macOS asks to give Sunna **Accessibility** access (System Settings → Privacy & Security). That's only for capturing those shortcuts; everything else works without it.
 
-# Client (same machine, or another Mac on the LAN with --listen 0.0.0.0:48800
-# on the host): opens a viewer window; mouse, scroll and keyboard are
-# forwarded to the host while the window is focused.
-./target/release/sunna-cli view 127.0.0.1:48800
-```
+## Share a Linux computer
 
-Same-machine viewing is a hall-of-mirrors (you're seeing your own screen) — it's still the fastest way to sanity-check latency and input. The real test is two machines on one LAN.
+The Linux host is `sunnad` plus `sunna-host`, a small command that sets it up as a service: it starts by itself (at login, or at boot on machines without a screen), restarts if it crashes, and logs to the system journal.
 
-**Headless checks (no permissions needed):**
+There are no prebuilt downloads yet, so you build it on the computer itself; it takes a few minutes. You need Rust ([rustup.rs](https://rustup.rs)), a C/C++ compiler and, on x86-64, nasm, which the video encoder needs to be fast (`sudo apt install build-essential nasm` on Debian and Ubuntu). The scripts tell you if one is missing.
+
+**Any distribution** (Ubuntu, Debian, Arch, Fedora…), as the user whose desktop to share:
 
 ```sh
-# In-process loopback benchmark (synthetic source, hardware H.264 on macOS):
-cargo run --release -p sunna-cli -- bench --seconds 5
-
-# With simulated packet loss to watch FEC + keyframe recovery work:
-cargo run --release -p sunna-cli -- bench --seconds 5 --simulate-loss 0.2
-
-# Synthetic daemon + headless client:
-cargo run --release -p sunnad
-cargo run --release -p sunna-cli -- connect 127.0.0.1:48800 --seconds 5
+git clone https://github.com/SunnyXdm/sunna.git && cd sunna
+scripts/install-host-linux.sh
 ```
 
-`sunnad` binds 127.0.0.1 by default. There is **no authentication yet** (dev TLS is self-signed + skip-verify) — do not expose it beyond localhost/LAN you trust. Pairing/auth lands in Milestone 2.
+This installs into `~/.local/bin` for your user, with no root needed, and runs `sunna-host setup`. Run it again to update.
 
-## Layout
+**As a package, on Debian and Ubuntu** (22.04+ and Debian 12+), for example to install it on several machines:
 
-| Path | Crate | Purpose |
+```sh
+scripts/package-linux-deb.sh            # makes dist/sunna-host_<version>_<arch>.deb
+sudo apt install ./dist/sunna-host_*.deb
+sunna-host setup                        # as the user whose desktop to share
+```
+
+### Which desktop gets shared
+
+| Mode | What you see | Use it for |
 |---|---|---|
-| `crates/proto` | `sunna-proto` | wire messages (control + input incl. gestures), media packetization/reassembly, stats |
-| `crates/transport` | `sunna-transport` | QUIC (quinn): unreliable datagrams for media, reliable control stream, dev TLS |
-| `crates/capture` | `sunna-capture` | `FrameSource` trait, synthetic source; platform capture backends (stubs) |
-| `crates/codec` | `sunna-codec` | `Encoder`/`Decoder` traits, passthrough codec; hardware backends (stubs) |
-| `crates/input` | `sunna-input` | input injection/capture traits; platform backends (stubs) |
-| `crates/host` | `sunna-host` | host pipeline: source → encode → packetize → send; control handling |
-| `crates/client` | `sunna-client` | client pipeline: receive → reassemble → decode → stats (render window later) |
-| `apps/sunnad` | `sunnad` | headless host daemon |
-| `apps/sunna-cli` | `sunna-cli` | dev client: `connect`, `bench` |
-| `research/` | — | the research series (start at `00-overview.md`) |
+| `desktop` | the X11 desktop you're logged into | a PC or laptop you also use directly |
+| `virtual` | a separate desktop that runs without a screen (Xvfb with Plasma or XFCE) | servers and VMs, and machines whose own desktop is Wayland |
 
-## Design rules (the short version)
+`sunna-host setup` picks for you: `desktop` if you run it from an X11 session, otherwise `virtual`. Choose explicitly with `--desktop` or `--virtual`.
 
-- Never wait on a clock: every stage is event-driven off the previous stage's completion.
-- Zero receive-side buffering: render-on-arrival, latest-frame-wins.
-- The UI shell never touches a video frame or hot-path input event.
-- Measure everything: per-stage timestamps ride the pipeline from capture to present.
+**Wayland:** Sunna can't capture a Wayland desktop yet; that includes Ubuntu's default session, and GNOME, Plasma or Hyprland on Wayland. Either log in with an X11 session (on Ubuntu, pick "Ubuntu on Xorg" on the login screen) or use a virtual desktop. Wayland support is planned.
+
+**A virtual desktop keeps running** after you disconnect, with any apps you opened in it, like a real computer would. `sunna-host desktop-stop` stops it and everything in it.
+
+### Commands
+
+| Command | |
+|---|---|
+| `sunna-host setup` | choose how to share, then start. Options: `--desktop`, `--virtual`, `--listen tailscale\|lan\|IP[:PORT]`, `--name NAME`, `--key KEY`, `--size WxH` |
+| `sunna-host link` | show the address, key and link again |
+| `sunna-host status` | running? listening where? is someone connected? |
+| `sunna-host start`, `stop`, `restart` | |
+| `sunna-host logs` | follow the log |
+| `sunna-host new-key` | make a new key (then edit the computer in the app and paste it) |
+| `sunna-host desktop-restart`, `desktop-stop` | restart or stop the virtual desktop (and its apps) |
+| `sunna-host uninstall [--purge]` | remove the service (and with `--purge`, the settings and key) |
+
+Settings live in `~/.config/sunna/host.env` (readable only by you). Edit it, then `sunna-host restart`.
+
+**Video:** with an NVIDIA GPU (GTX 10-series or newer, driver 530+) the host encodes HEVC on the GPU. Otherwise it encodes H.264 on the CPU, which is fine for desktop work on a modern CPU; the session menu's **30 fps** option halves the load on slower machines.
+
+## Share a Mac
+
+For now a Mac host runs from a Terminal window:
+
+```sh
+git clone https://github.com/SunnyXdm/sunna.git && cd sunna
+scripts/dogfood.sh host
+```
+
+It needs a `~/.sunna/dogfood.env` with the key (`SUNNA_TOKEN=<a long random string>`), listens on the Mac's Tailscale address, and prints the address, key and link. The first time, macOS asks for **Screen Recording** and **Accessibility** for your terminal app: allow both, quit the terminal, and run it again. An installable Mac host (a menu in the app to share this Mac) is planned.
+
+## Using Sunna
+
+![Adding a computer](docs/images/add.png)
+
+- **Add a computer** with **+** (⌘N): type its address (an IP, a name, or `name.tailnet.ts.net`) and key, or paste its `sunna://` link. The preview lights up as soon as the computer answers. **Find on Tailscale** lists the computers on your tailnet that are sharing.
+- **Connect** by clicking a computer whose screen is lit. Its screen grows to fill the window and the session opens in its own full-screen window.
+- **Right-click** a computer (or use its ••• button) to edit it, copy its address or remove it.
+- The app never scans your network by itself: it checks only the computers you've added, every few seconds while it's open.
+
+### During a session
+
+Open the session menu with the **•••** button in the corner or **⌃⌥M**:
+
+| | |
+|---|---|
+| Keyboard | send ⌘ shortcuts to the remote, and **Send Keys**: shortcuts for the remote's OS (⌘Tab, Spotlight, Force Quit, Lock Screen on a Mac; Alt+Tab, Super, Terminal, Lock Screen on Linux) |
+| Clipboard | turn clipboard sharing on or off; **Type Clipboard Text** types it out key by key, for login screens and password prompts that won't take a paste |
+| Video | codec (HEVC, H.264), resolution, frame rate, bitrate limit, and the fast lane |
+
+| Shortcut | |
+|---|---|
+| ⌃⌥M | session menu |
+| ⌃⌥G | give ⌘Tab and other shortcuts back to this Mac (or send them to the remote again) |
+| ⌃⌥F | full screen or window |
+| ⌃⌥S | stats bar (latency, frame rate, bitrate, codec) |
+| ⌃⌥Q | disconnect |
+
+**The fast lane** sends small screen changes (a typed letter, a blinking cursor) as lossless tiles on their own stream, ahead of the video frame that will also contain them. On a host that encodes on the CPU, typed text arrives in about 2 ms plus the network; the video took 35–37 ms in the same test (a 6-core VM, viewer on the same machine). It's on by default for Linux hosts encoding on the CPU; turn it on or off in the session menu under Video.
+
+## Security and privacy
+
+- **Keys.** A host only accepts viewers that present its key. Keep keys secret; anyone with a computer's address and key can control it. The app stores the keys you add in `~/.sunna/machines.json`, readable only by you.
+- **Encryption.** Connections use QUIC, encrypted with TLS 1.3. The app does **not yet verify the host's identity** (hosts use self-signed certificates), so on a network you don't control, someone in the middle could impersonate a host. Use Sunna over **Tailscale** (which authenticates both ends with WireGuard) or a network you trust, and never expose a host to the internet. `sunna-host` listens only on Tailscale when Tailscale is up. Pinning each host's certificate is planned.
+- **No cloud, no accounts.** Computers connect to each other directly. Nothing is sent anywhere else.
+- **Logs stay local.** The host logs to the system journal and the app to its terminal output. Keystrokes and clipboard contents are never logged. (Development builds can ship logs to a collector you run, only if `SUNNA_LOG_URL` is set.)
+- **Idle cost.** A host with nobody connected uses no CPU and holds one listening UDP port (48800 by default).
+
+## Requirements
+
+| | |
+|---|---|
+| The app | macOS 13 or later |
+| A Mac host | macOS 13 or later; Screen Recording and Accessibility permission |
+| A Linux host | x86-64 (ARM64 untested); an X11 desktop, or Xvfb with Plasma or XFCE for a virtual one; glibc 2.34+ (Ubuntu 22.04+, Debian 12+, any current Arch or Fedora) |
+| Network | the host's UDP port 48800 reachable from the viewer; [Tailscale](https://tailscale.com) recommended |
+
+## Building from source
+
+Everything is one Rust workspace:
+
+```sh
+cargo build --release          # sunnad (host), sunna-cli (dev client), sunna (the app)
+cargo test --workspace
+```
+
+| Path | |
+|---|---|
+| `apps/sunna` | the Mac app (Tauri): the launcher UI in `ui/`, and `sunna viewer`, the native session window |
+| `apps/sunnad` | the host daemon |
+| `apps/sunna-cli` | developer client: `view`, `connect` (headless), `bench` (loopback benchmark) |
+| `crates/transport` | QUIC (quinn): media datagrams, reliable control stream, TLS |
+| `crates/proto` | wire messages, packetizing and reassembly, fast-lane tiles |
+| `crates/capture` | screen capture: macOS (CGDisplayStream), X11 (MIT-SHM); fast-lane tile detection |
+| `crates/codec` | encoders and decoders: VideoToolbox, NVENC, OpenH264 |
+| `crates/host`, `crates/client` | the host and client pipelines |
+| `crates/viewer` | the session window: presentation, keyboard capture, session menu |
+| `crates/input`, `crates/clipboard` | input injection and clipboard sync |
+| `scripts/` | installers and packaging (`install-mac-app.sh`, `install-host-linux.sh`, `package-linux-deb.sh`, `sunna-host`), and the developer loop (`dogfood.sh`) |
+| `research/` | the research and architecture notes behind the design; start at [`00-overview.md`](research/00-overview.md) |
+
+The launcher UI can be worked on in a browser with a stand-in for the Rust side: `python3 -m http.server 8766 -d apps/sunna` and open `localhost:8766/ui/` (see `apps/sunna/dev/`).
+
+## License
+
+No license has been chosen yet; until one is, all rights are reserved.
