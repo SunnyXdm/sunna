@@ -15,6 +15,8 @@ use crate::{Capture, Output, CHANNELS, FRAME_LEN, SAMPLE_RATE};
 const PA_STREAM_PLAYBACK: c_int = 1;
 const PA_STREAM_RECORD: c_int = 2;
 const PA_SAMPLE_S16LE: c_int = 3;
+const PA_ERR_NOENTITY: c_int = 5;
+const PA_ERR_CONNECTIONREFUSED: c_int = 6;
 const FRAME_BYTES: u32 = (FRAME_LEN * 2) as u32;
 
 #[repr(C)]
@@ -87,7 +89,7 @@ impl Stream {
         let spec = SampleSpec { format: PA_SAMPLE_S16LE, rate: SAMPLE_RATE, channels: CHANNELS as u8 };
         let name = CString::new("Sunna")?;
         let what = CString::new(what)?;
-        let device = device.map(CString::new).transpose()?;
+        let device_name = device.map(CString::new).transpose()?;
         let mut error = 0;
         // SAFETY: all pointers are valid for the call; a null server and
         // channel map mean the defaults.
@@ -96,7 +98,7 @@ impl Stream {
                 std::ptr::null(),
                 name.as_ptr(),
                 direction,
-                device.as_ref().map_or(std::ptr::null(), |device| device.as_ptr()),
+                device_name.as_ref().map_or(std::ptr::null(), |device| device.as_ptr()),
                 what.as_ptr(),
                 &spec,
                 std::ptr::null(),
@@ -105,7 +107,11 @@ impl Stream {
             )
         };
         if raw.is_null() {
-            bail!("couldn't open the sound server (error {error})");
+            match error {
+                PA_ERR_NOENTITY => bail!("no such sound device"),
+                PA_ERR_CONNECTIONREFUSED => bail!("no sound server is running (PulseAudio or PipeWire)"),
+                _ => bail!("couldn't open the sound server (error {error})"),
+            }
         }
         Ok(Self { raw })
     }

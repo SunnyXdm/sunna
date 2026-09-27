@@ -299,6 +299,9 @@ cmd_setup() {
       if [ "$mode" = virtual ]; then
         echo "  Sharing $SUNNA_NAME with Sunna: a virtual desktop on $SUNNA_DISPLAY (not your screen)."
         [ "$session" = wayland ] && echo "  (Your own desktop is Wayland, which Sunna can't share yet.)"
+        local sound
+        sound="$(sound_status)"
+        case "$sound" in off*) echo "  Sound is $sound." ;; esac
       else
         echo "  Sharing $SUNNA_NAME's desktop ($SUNNA_DISPLAY) with Sunna."
       fi
@@ -355,6 +358,30 @@ cmd_link() {
   echo
 }
 
+# Whether sessions get sound, and if not, what to do.
+sound_status() {
+  if [ -n "${SUNNA_AUDIO_SOURCE:-}" ]; then
+    echo "on: $SUNNA_AUDIO_SOURCE"
+  elif ! command -v pactl >/dev/null; then
+    # linux-desktop.sh needs pactl to give a virtual desktop its sound output.
+    if [ "$SUNNA_MODE" = virtual ]; then
+      echo "off: needs pactl (Debian and Ubuntu: sudo apt install pulseaudio-utils), then sunna-host desktop-restart"
+    else
+      echo "unknown (install pactl to check)"
+    fi
+  elif ! pactl info >/dev/null 2>&1; then
+    echo "off: no sound server (PulseAudio or PipeWire) is running"
+  elif [ "$SUNNA_MODE" != virtual ]; then
+    echo "on: what's playing on this computer"
+  elif pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "sunna_desktop_${SUNNA_DISPLAY#:}"; then
+    echo "on: this desktop's own output"
+  elif systemctl_user is-active --quiet "$DESKTOP_UNIT"; then
+    echo "off until sunna-host desktop-restart (this desktop started before Sunna had sound; restarting closes its apps)"
+  else
+    echo "on when the desktop starts"
+  fi
+}
+
 cmd_status() {
   load
   local state since
@@ -363,6 +390,7 @@ cmd_status() {
   echo "  Name       $SUNNA_NAME"
   echo "  Mode       $SUNNA_MODE ($SUNNA_DISPLAY)"
   echo "  Listening  $(listen_address || true)"
+  echo "  Sound      $(sound_status)"
   if [ "$state" = active ]; then
     # The host logs a line every second while a viewer is connected.
     if journalctl --user -u "$UNIT" --since "-5s" -o cat 2>/dev/null | grep -q "host window"; then
