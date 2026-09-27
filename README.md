@@ -41,7 +41,7 @@ Sunna shows another computer's screen on your Mac, plays its sound, and sends yo
 - the Xcode command line tools: `xcode-select --install`
 - Rust: [rustup.rs](https://rustup.rs)
 
-The first time, the script makes a code-signing certificate for Sunna in your login keychain and macOS asks for your password once, to trust it; if macOS then asks whether `codesign` may use its key, choose **Always Allow**. It exists because macOS remembers permissions by an app's signature: with this certificate, a permission you give Sunna stays through every update. No Apple developer account is involved.
+The first time, the script makes a code-signing certificate for Sunna in your login keychain and macOS asks for your password once, to trust it; if macOS then asks whether `codesign` may use its key, choose **Always Allow**. It exists because macOS remembers permissions by an app's signature: with this certificate, a permission you give Sunna stays through every update. No Apple developer account is involved. If the certificate can't be set up, the script stops rather than install a build macOS would forget; `--adhoc` installs one anyway. The app is built outside the project folder, so there's only ever one Sunna in Launchpad.
 
 Sunna needs **Accessibility** access for one thing: sending ⌘Tab, ⌘Space and other system shortcuts to the other computer. Without it those stay on your Mac and everything else works. Sunna's Settings shows whether it's allowed (**System shortcuts**) and asks for it with **Allow…**. If System Settings shows Sunna as on but Sunna still says no, that entry is left from an older build: use **Reset** there, then allow Sunna again.
 
