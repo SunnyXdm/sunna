@@ -943,7 +943,10 @@ async function openSettings(opener) {
       busy: `Sharing at ${me.address} · in a session`,
       "wrong-key": "Sharing, but with a different key than the one below",
       unknown: "Not on a Tailscale network",
-    }[me.sharing] ?? "Not sharing. Run scripts/dogfood.sh host to share it.";
+    }[me.sharing] ??
+    (info.platform === "linux"
+      ? "Not sharing. Run sunna-host setup to share it."
+      : "Not sharing. To share this Mac, run scripts/dogfood.sh host.");
   if (me.address && me.key) {
     const link = `sunna://${me.address}?key=${me.key}`;
     const row = sheet.querySelector(".link-row");

@@ -80,4 +80,4 @@ else
   echo $! >"$SESSION_PID"
   echo "Started $DESKTOP on $DISPLAY_NUM."
 fi
-echo "Stop it (and the apps in it) with: scripts/linux-desktop.sh stop $DISPLAY_NUM"
+echo "Stop it (and the apps in it) with: $0 stop $DISPLAY_NUM"
