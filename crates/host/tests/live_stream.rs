@@ -155,6 +155,8 @@ async fn live_resolution_codec_failures_and_fast_lane() {
     let received_tiles = Arc::clone(&tiles);
     let (_input, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let options = ClientOptions {
+        device: String::new(),
+        leave: None,
         token: "secret".into(),
         stream: StreamSettings {
             codec: Some("raw".into()),
@@ -293,14 +295,28 @@ async fn hello(
     ControlChannel,
     ControlMessage,
 ) {
+    hello_from(addr, "test-client", "").await
+}
+
+/// A Hello from the viewer called `name` on computer `device`.
+async fn hello_from(
+    addr: SocketAddr,
+    name: &str,
+    device: &str,
+) -> (
+    sunna_transport::ClientConnection,
+    ControlChannel,
+    ControlMessage,
+) {
     let client = connect_insecure(addr, "sunna").await.unwrap();
     let mut control = ControlChannel::open(&client.connection).await.unwrap();
     control
         .send(&ControlMessage::Hello {
             version: sunna_proto::PROTOCOL_VERSION,
-            name: "test-client".into(),
+            name: name.into(),
             token: "secret".into(),
             stream: StreamSettings::default(),
+            device: device.into(),
         })
         .await
         .unwrap();
@@ -359,7 +375,7 @@ async fn probe_auth_busy_refusal_and_slot_release() {
     assert_eq!(
         refused,
         ControlMessage::Refused {
-            reason: "busy: another viewer is connected".into()
+            reason: "busy: test-client is connected".into()
         }
     );
     assert_eq!(host.builds.lock().unwrap().len(), 1);
@@ -395,6 +411,7 @@ async fn unsupported_source_reports_fast_lane_off() {
                 fast_lane: Some(true),
                 ..Default::default()
             },
+            device: String::new(),
         })
         .await
         .unwrap();
@@ -473,6 +490,7 @@ async fn sound_flows_and_switches_off_and_on() {
             name: "test-client".into(),
             token: "secret".into(),
             stream: StreamSettings { audio: Some(true), ..Default::default() },
+            device: String::new(),
         })
         .await
         .unwrap();
@@ -506,6 +524,7 @@ async fn a_viewer_that_wants_no_sound_gets_none() {
             name: "test-client".into(),
             token: "secret".into(),
             stream: StreamSettings { audio: Some(false), ..Default::default() },
+            device: String::new(),
         })
         .await
         .unwrap();
@@ -513,4 +532,56 @@ async fn a_viewer_that_wants_no_sound_gets_none() {
     assert!(matches!(ack, ControlMessage::HelloAck { audio: false, .. }), "{ack:?}");
     let mut decoder = sunna_audio::Decoder::new().unwrap();
     assert_eq!(sound_heard(&client.connection, &mut decoder, Duration::from_millis(300)).await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_viewer_takes_back_its_own_session() {
+    let host = Host::start();
+    let (first, _first_control, ack) = hello_from(host.addr, "Sunny's MacBook Air", "mac-1").await;
+    assert!(matches!(ack, ControlMessage::HelloAck { .. }), "{ack:?}");
+
+    // Probes say who's connected.
+    let busy = probe(host.addr, "sunna", "secret", TIMEOUT).await.unwrap();
+    assert!(busy.busy);
+    assert_eq!(busy.viewer, Some(("Sunny's MacBook Air".into(), "mac-1".into())));
+
+    // Another computer is refused, by name.
+    let (_other, _other_control, refused) = hello_from(host.addr, "Priya's Mac", "mac-2").await;
+    assert_eq!(refused, ControlMessage::Refused { reason: "busy: Sunny's MacBook Air is connected".into() });
+
+    // The same computer (its old session left behind) takes over at once.
+    let started = std::time::Instant::now();
+    let (_again, mut again_control, ack) = hello_from(host.addr, "Sunny's MacBook Air", "mac-1").await;
+    assert!(matches!(ack, ControlMessage::HelloAck { .. }), "{ack:?}");
+    assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());
+    tokio::time::timeout(TIMEOUT, first.connection.closed()).await.expect("the old session is ended");
+    again_control.send(&ControlMessage::Bye).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_that_leaves_frees_the_host_at_once() {
+    let host = Host::start();
+    let client = connect_insecure(host.addr, "sunna").await.unwrap();
+    let (leave, leave_rx) = tokio::sync::watch::channel(false);
+    let (_input, input_rx) = tokio::sync::mpsc::unbounded_channel();
+    let options = ClientOptions {
+        name: "leaver".into(),
+        device: "mac-1".into(),
+        leave: Some(leave_rx),
+        token: "secret".into(),
+        stream: StreamSettings { codec: Some("raw".into()), max_size: Some((320, 180)), ..Default::default() },
+        ..Default::default()
+    };
+    let session = tokio::spawn(run_client(client.connection.clone(), options, |_| {}, |_| {}, input_rx));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(probe(host.addr, "sunna", "secret", TIMEOUT).await.unwrap().busy);
+
+    leave.send(true).unwrap();
+    tokio::time::timeout(TIMEOUT, session).await.unwrap().unwrap().unwrap();
+    // Another computer gets in straight away: no waiting for a timeout.
+    let started = std::time::Instant::now();
+    let (_next, mut next_control, ack) = hello_from(host.addr, "Priya's Mac", "mac-2").await;
+    assert!(matches!(ack, ControlMessage::HelloAck { .. }), "{ack:?}");
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    next_control.send(&ControlMessage::Bye).await.unwrap();
 }

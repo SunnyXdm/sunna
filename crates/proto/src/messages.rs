@@ -22,10 +22,13 @@ pub enum ControlMessage {
     /// First message from the client after the control stream opens.
     Hello {
         version: u16,
+        /// This viewer's computer, as people call it ("Sunny's MacBook Air").
         name: String,
         /// Shared session token; the host refuses clients that don't match.
         token: String,
         stream: StreamSettings,
+        /// This viewer's computer's id (see `InUse`); empty if unknown.
+        device: String,
     },
     /// Host refusal (bad token, busy...), sent instead of `HelloAck`.
     Refused {
@@ -96,6 +99,10 @@ pub enum ControlMessage {
     HostInfo(HostAbout),
     /// Viewer: start or stop sending sound.
     SetAudio(bool),
+    /// After `HostInfo`, when a viewer is connected: who. A probe from the
+    /// same `device` means the session is the prober's own (left behind by a
+    /// crash or a lost network), which a new `Hello` from it takes over.
+    InUse { viewer: String, device: String },
     /// Viewer: these video datagrams didn't arrive; send them again.
     /// `chunks` are data chunk indexes; empty means all of the frame's data
     /// (nothing of it arrived, so the viewer doesn't know its size).
@@ -264,6 +271,11 @@ mod tests {
                     max_size: Some((2304, 1440)),
                     ..Default::default()
                 },
+                device: "0123abcd".into(),
+            },
+            ControlMessage::InUse {
+                viewer: "Sunny's MacBook Air".into(),
+                device: "0123abcd".into(),
             },
             ControlMessage::Input(InputEvent::Gesture {
                 kind: GestureKind::Swipe,

@@ -78,6 +78,8 @@ pub struct Check {
     pub resolved: String,
     /// Why, for the states that need saying.
     pub detail: String,
+    /// When busy: who's connected ("Priya's MacBook Air"), if the host says.
+    pub viewer: String,
 }
 
 impl Check {
@@ -359,14 +361,22 @@ pub async fn check(address: &str, key: &str) -> Check {
         ),
         Ok(probe) => {
             let ours = sunna_proto::PROTOCOL_VERSION;
+            // A session from this Mac (left behind by a crash or a lost
+            // network) isn't "in use": connecting takes it back.
+            let this_mac = sunna_client::device_id();
+            let yours = probe.viewer.as_ref().is_some_and(|(_, device)| !this_mac.is_empty() && *device == this_mac);
             let state = if probe.version != ours {
                 "update-needed"
             } else if !probe.token_ok {
                 "wrong-key"
-            } else if probe.busy {
+            } else if probe.busy && !yours {
                 "busy"
             } else {
                 "ready"
+            };
+            let viewer = match (&probe.viewer, state) {
+                (Some((name, _)), "busy") => name.clone(),
+                _ => String::new(),
             };
             let detail = match state {
                 "update-needed" if probe.version > ours => {
@@ -374,6 +384,7 @@ pub async fn check(address: &str, key: &str) -> Check {
                 }
                 "update-needed" => "That computer runs an older Sunna. Update it.".to_string(),
                 "wrong-key" => "Sunna is there, but the key doesn't match.".to_string(),
+                "busy" if !viewer.is_empty() => format!("{viewer} is connected to it right now."),
                 "busy" => "Someone is connected to it right now.".to_string(),
                 _ => String::new(),
             };
@@ -389,6 +400,7 @@ pub async fn check(address: &str, key: &str) -> Check {
                 rtt_ms: Some(probe.rtt.as_secs_f64() * 1000.0),
                 resolved: String::new(),
                 detail,
+                viewer,
             }
         }
     };

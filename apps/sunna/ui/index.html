@@ -265,6 +265,20 @@
 
         <h3 class="group-title">Sessions</h3>
         <div class="group">
+          <div class="row shortcuts-row" hidden>
+            <div class="row-text">
+              <span class="row-title">System shortcuts</span>
+              <span class="row-hint">⌘Tab, ⌘Space and the like go to the other computer. macOS asks you to allow this once, under Accessibility.</span>
+            </div>
+            <span class="access-state" hidden><svg class="icon"><use href="#i-check"/></svg>Allowed</span>
+            <button type="button" class="button secondary small access-allow" hidden>Allow…</button>
+          </div>
+          <div class="row access-reset-row" hidden>
+            <div class="row-text">
+              <span class="row-hint">Sunna is already on in that list, but this still says no? That entry is from an earlier build: reset it, then allow Sunna again.</span>
+            </div>
+            <button type="button" class="button secondary small access-reset">Reset</button>
+          </div>
           <div class="row">
             <div class="row-text">
               <span class="row-title">Open sessions</span>

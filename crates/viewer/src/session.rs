@@ -92,13 +92,18 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     // The in-session menu's Video choices, sent to the host as SetStream.
     let (stream_tx, stream_rx) = tokio::sync::watch::channel(None);
+    // Set when the window goes (disconnect, ⌘Q, closed): the host is told.
+    let (leave_tx, leave_rx) = tokio::sync::watch::channel(false);
     let max_size = viewer_max_size();
     std::thread::spawn(move || {
-        let _endpoint_guard = client.endpoint;
+        let endpoint = client.endpoint;
         let mut announced = false;
         let options = ClientOptions {
             clipboard: true,
-            name: "sunna-viewer".into(),
+            // How the host lists this viewer ("in use by …").
+            name: std::env::var("SUNNA_VIEWER_NAME").unwrap_or_else(|_| "Sunna viewer".into()),
+            device: sunna_client::device_id(),
+            leave: Some(leave_rx),
             token,
             stream: sunna_proto::messages::StreamSettings {
                 max_size,
@@ -138,6 +143,11 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
                 1
             }
         };
+        // Let the connection's close reach the host (so it's free at once),
+        // but don't hang on a dead network.
+        runtime.block_on(async {
+            let _ = tokio::time::timeout(Duration::from_millis(500), endpoint.wait_idle()).await;
+        });
         // The event loop has no reason to outlive the session; exit skips
         // destructors, so ship remaining telemetry first.
         sunna_telemetry::flush();
@@ -148,7 +158,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let (width, height) = size_rx
         .recv_timeout(Duration::from_secs(10))
         .unwrap_or((1280, 720));
-    viewer::run_viewer(
+    let result = viewer::run_viewer(
         event_loop,
         shared,
         input_tx,
@@ -161,5 +171,10 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         format!("Sunna — {host_name}"),
         width,
         height,
-    )
+    );
+    // The window is gone: leave, and give the session thread a moment to
+    // tell the host (it exits the process when done).
+    let _ = leave_tx.send(true);
+    std::thread::sleep(Duration::from_secs(1));
+    result
 }

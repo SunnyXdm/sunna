@@ -110,15 +110,15 @@ pub struct KeyboardCapture {
 }
 
 impl KeyboardCapture {
-    /// Install the tap. Fails without the Accessibility permission (macOS
-    /// is asked to prompt for it).
+    /// Install the tap. Fails without the Accessibility permission, which
+    /// the app asks for (not every session: that would prompt each time).
     pub fn new(
         input: UnboundedSender<InputEvent>,
         shared: Arc<SharedFrame>,
         wake: EventLoopProxy<FrameReady>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            sunna_input::macos::request_accessibility(),
+            sunna_input::macos::accessibility_granted(),
             "Accessibility permission not granted"
         );
         let state = Box::new(Mutex::new(TapState {

@@ -47,7 +47,10 @@ fn main() {
             connect,
             cancel_connect,
             get_settings,
-            set_settings
+            set_settings,
+            keyboard_access,
+            allow_keyboard_access,
+            reset_keyboard_access
         ])
         .run(tauri::generate_context!())
         .expect("Sunna failed to start");
@@ -172,6 +175,52 @@ fn set_settings(settings: settings::Settings) -> Result<(), String> {
     settings::save(&settings)
 }
 
+/// Whether ⌘Tab, ⌘Space and other system shortcuts can go to the other
+/// computer: macOS's Accessibility permission. Always yes off macOS.
+#[tauri::command]
+fn keyboard_access() -> bool {
+    #[cfg(target_os = "macos")]
+    return sunna_input::macos::accessibility_granted();
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+/// Ask for it: macOS adds Sunna to the Accessibility list (and may show its
+/// prompt), and System Settings opens at that list.
+#[tauri::command]
+fn allow_keyboard_access() {
+    #[cfg(target_os = "macos")]
+    if !sunna_input::macos::request_accessibility() {
+        open_accessibility_settings();
+    }
+}
+
+/// When the list says Sunna is allowed but it still isn't (an entry left
+/// from a differently signed build): forget Sunna's entry and ask afresh.
+#[tauri::command]
+fn reset_keyboard_access() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("/usr/bin/tccutil")
+            .args(["reset", "Accessibility", "dev.sunna.app"])
+            .status()
+            .map_err(|error| error.to_string())?;
+        if !status.success() {
+            open_accessibility_settings();
+            return Err("Couldn't reset it. In the list that opened, select Sunna, remove it with −, then allow it again.".into());
+        }
+        allow_keyboard_access();
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_accessibility_settings() {
+    let _ = Command::new("/usr/bin/open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .status();
+}
+
 /// Open a session in a viewer process. The launcher stays up with the
 /// connection's progress until the viewer's window opens, hides while the
 /// session runs, and comes back when it ends (with why, if it failed).
@@ -220,6 +269,8 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
         .envs(settings::viewer_env())
         // This machine's key, over sunna.env's.
         .env("SUNNA_TOKEN", &machine.key)
+        // How the host lists this Mac while it's connected.
+        .env("SUNNA_VIEWER_NAME", computer_name())
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -297,6 +348,8 @@ fn failure_reason(line: &str) -> Option<String> {
     let message = message.trim();
     let friendly = if message.contains("wrong session token") {
         "The key doesn't match. Edit the computer and paste its key.".to_string()
+    } else if let Some(who) = message.split_once("busy: ").and_then(|(_, rest)| rest.strip_suffix(" is connected")) {
+        format!("{who} is connected to that computer right now.")
     } else if message.contains("busy") {
         "Someone else is connected to that computer.".to_string()
     } else if message.contains("no decoder") {
@@ -353,6 +406,10 @@ fn computer_name() -> String {
 }
 
 fn hide(app: &AppHandle) {
+    // One Dock icon while a session runs, the session's own: the launcher
+    // leaves the Dock (and the menu bar) until the session ends.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     #[cfg(target_os = "macos")]
     let _ = app.hide();
     #[cfg(not(target_os = "macos"))]
@@ -362,6 +419,8 @@ fn hide(app: &AppHandle) {
 }
 
 fn show(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     #[cfg(target_os = "macos")]
     let _ = app.show();
     if let Some(window) = app.get_webview_window("main") {

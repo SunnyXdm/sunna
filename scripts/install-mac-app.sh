@@ -9,13 +9,16 @@
 # Run it again to update. Needs the Xcode command line tools
 # (xcode-select --install) and Rust (https://rustup.rs).
 #
-# The app is signed ad hoc (no Apple developer account), which is all a
-# Mac needs for an app built on it. It's built for this Mac's chip. A copy
-# downloaded from elsewhere (the DMG) is blocked the first time: open it,
-# then allow it in System Settings → Privacy & Security → Open Anyway (on
-# macOS 14 and earlier, right-click it and choose Open). macOS may ask
-# again for Accessibility (to send ⌘Tab and friends to the remote) after
-# an update.
+# The app is signed with a certificate this Mac makes for itself the first
+# time ("Sunna Local Code Signing", in your login keychain; macOS asks for
+# your password once, to trust it for code signing). macOS remembers
+# permissions like Accessibility (to send ⌘Tab and friends to the other
+# computer) by that signature, so they survive updates; an ad hoc signature
+# changes with every build and lost them. No Apple developer account is
+# involved. It's built for this Mac's chip. A copy downloaded from
+# elsewhere (the DMG) is blocked the first time: open it, then allow it in
+# System Settings → Privacy & Security → Open Anyway (on macOS 14 and
+# earlier, right-click it and choose Open).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -69,14 +72,81 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
-codesign --force --deep --sign - "$APP"
 
-DEST=/Applications
-[ -w "$DEST" ] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
-if pgrep -x Sunna >/dev/null; then
-  echo "Quitting the running Sunna…"
-  osascript -e 'quit app "Sunna"' >/dev/null 2>&1 || true
-  sleep 1
+IDENTITY="Sunna Local Code Signing"
+KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+# A usable identity is a certificate with its key, trusted for code signing.
+has_identity() { security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -qF "\"$IDENTITY\""; }
+has_certificate() { security find-certificate -c "$IDENTITY" "$KEYCHAIN" >/dev/null 2>&1; }
+
+# A self-signed code-signing certificate and its key, made once.
+make_certificate() {
+  local dir status
+  dir="$(mktemp -d)"
+  cat >"$dir/cert.conf" <<CONF
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = $IDENTITY
+[ext]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+CONF
+  # macOS's own openssl (LibreSSL): its .p12 is one `security` can import.
+  /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$dir/cert.conf" \
+    -keyout "$dir/key.pem" -out "$dir/cert.pem" >/dev/null 2>&1 &&
+    /usr/bin/openssl pkcs12 -export -inkey "$dir/key.pem" -in "$dir/cert.pem" -name "$IDENTITY" \
+      -passout pass:sunna -out "$dir/identity.p12" >/dev/null 2>&1 &&
+    security import "$dir/identity.p12" -k "$KEYCHAIN" -P sunna -T /usr/bin/codesign >/dev/null
+  status=$?
+  rm -rf "$dir"
+  return $status
+}
+
+# Trust it for code signing (macOS asks for your password, once).
+trust_certificate() {
+  local pem status
+  pem="$(mktemp)"
+  echo "macOS will ask for your password to trust Sunna's certificate for code signing (once)."
+  security find-certificate -c "$IDENTITY" -p "$KEYCHAIN" >"$pem" &&
+    security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$pem"
+  status=$?
+  rm -f "$pem"
+  return $status
+}
+
+if ! has_identity; then
+  echo "Setting up Sunna's signing certificate on this Mac (once), so macOS keeps"
+  echo "Sunna's permissions across updates…"
+  has_certificate || make_certificate || echo "Couldn't make the certificate."
+  has_certificate && { trust_certificate || echo "The certificate wasn't trusted."; }
+fi
+SIGNED=adhoc
+if has_identity; then
+  echo "Signing with \"$IDENTITY\" (if macOS asks whether codesign may use its key, choose Always Allow)…"
+  if SIGN_ERROR="$(codesign --force --deep --timestamp=none --sign "$IDENTITY" "$APP" 2>&1)"; then
+    SIGNED=identity
+  else
+    echo "$SIGN_ERROR" >&2
+  fi
+fi
+if [ "$SIGNED" = adhoc ]; then
+  echo "Note: signing ad hoc, so macOS will ask for Accessibility again after each"
+  echo "update. Run this script again to retry the certificate."
+  codesign --force --deep --sign - "$APP"
+fi
+
+# Moving from an ad hoc build to the certificate: Sunna's Accessibility
+# entry belongs to the old signature (it shows as on, but no longer
+# applies). Clear it so macOS asks afresh, once.
+if [ "$SIGNED" = identity ] && [ -d "$DEST/Sunna.app" ] &&
+  codesign -dv "$DEST/Sunna.app" 2>&1 | grep -q "Signature=adhoc"; then
+  tccutil reset Accessibility dev.sunna.app >/dev/null 2>&1 &&
+    echo "Cleared Sunna's old Accessibility entry: allow it once more (Sunna asks), and it stays allowed from now on." ||
+    echo "In System Settings → Privacy & Security → Accessibility, remove Sunna (−) once; Sunna then asks afresh and it stays allowed."
 fi
 rm -rf "$DEST/Sunna.app"
 cp -R "$APP" "$DEST/"

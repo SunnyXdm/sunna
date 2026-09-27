@@ -392,6 +392,7 @@ mod tests {
                 name: "test-client".into(),
                 token: String::new(),
                 stream: messages::StreamSettings::default(),
+                device: String::new(),
             })
             .await
             .unwrap();

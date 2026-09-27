@@ -102,7 +102,7 @@ function describe(machine, check) {
     case "ready":
       return check.rtt_ms != null ? `Ready · ${ms(check.rtt_ms)}` : "Ready";
     case "busy":
-      return "In use";
+      return check.viewer ? `In use · ${check.viewer}` : "In use";
     case "wrong-key":
       return "Key doesn't match";
     case "update-needed":
@@ -282,7 +282,7 @@ function activate(id) {
     case "wrong-key":
       return openMachineSheet({ machine, opener: tiles.get(id), focus: "key" });
     case "busy":
-      return toast(`Someone is connected to ${machine.name} right now.`, "info");
+      return toast(`${check.viewer || "Someone"} is connected to ${machine.name} right now.`, "info");
     case "update-needed":
       return toast(check.detail || `${machine.name} runs a different version of Sunna.`, "info");
     case undefined:
@@ -427,8 +427,8 @@ listen("session-ended", async ({ payload }) => {
   await launch.close(payload.id);
   state.session = null;
   if (payload.reason) toast(payload.reason);
-  // Give the host a moment to free its viewer slot before looking again.
-  setTimeout(poll, 1500);
+  // The host frees its viewer slot as the session ends: look again now.
+  setTimeout(poll, 300);
 });
 
 $("launch-cancel").addEventListener("click", () => invoke("cancel_connect"));
@@ -556,7 +556,7 @@ function checkMessage(check, address) {
         .filter(Boolean)
         .join(" · ");
     case "busy":
-      return `Found ${check.name || hostOf(address)}. Someone is connected to it right now.`;
+      return `Found ${check.name || hostOf(address)}. ${check.viewer || "Someone"} is connected to it right now.`;
     case "unreachable":
       return `${check.detail} You can add it anyway.`;
     default:
@@ -869,6 +869,41 @@ async function removeMachine(machine) {
 
 // ───────────── Settings ─────────────
 
+/** The System shortcuts row: whether macOS lets Sunna send ⌘Tab and the like,
+ * kept current while the sheet is open (it changes in System Settings). */
+function wireShortcutsRows(sheet) {
+  if (state.info?.platform !== "macos") return;
+  const row = sheet.querySelector(".shortcuts-row");
+  const allowed = row.querySelector(".access-state");
+  const allow = row.querySelector(".access-allow");
+  const resetRow = sheet.querySelector(".access-reset-row");
+  row.hidden = false;
+  let asked = false;
+  const refresh = async () => {
+    if (!sheet.isConnected) return clearInterval(timer);
+    const granted = await invoke("keyboard_access").catch(() => true);
+    allowed.hidden = !granted;
+    allow.hidden = granted;
+    // Asked, but still no: most likely an entry left from an older build.
+    resetRow.hidden = granted || !asked;
+  };
+  const timer = setInterval(refresh, 1500);
+  refresh();
+  allow.addEventListener("click", async () => {
+    asked = true;
+    await invoke("allow_keyboard_access").catch((error) => toast(String(error)));
+    setTimeout(refresh, 800);
+  });
+  sheet.querySelector(".access-reset").addEventListener("click", async () => {
+    try {
+      await invoke("reset_keyboard_access");
+    } catch (error) {
+      toast(String(error), "info");
+    }
+    setTimeout(refresh, 800);
+  });
+}
+
 async function openSettings(opener) {
   if (sheets.some((entry) => entry.sheet.classList.contains("settings-sheet"))) return;
   const sheet = openSheet("settings-sheet-template", opener);
@@ -936,6 +971,7 @@ async function openSettings(opener) {
     });
   }
 
+  wireShortcutsRows(sheet);
   const info = await invoke("app_info").catch(() => ({}));
   sheet.querySelector(".about").textContent = `Sunna ${info.version ?? ""} · protocol ${info.protocol ?? ""}`;
   sheet.querySelector(".this-name").textContent = info.computer || "This computer";
@@ -1210,6 +1246,13 @@ async function start() {
   state.loaded = true;
   renderGrid();
   setTimeout(() => $("grid").classList.add("settled"), 1600);
+  // Without Accessibility, ⌘Tab and friends stay on this Mac: say so once.
+  if (info.platform === "macos" && !(await invoke("keyboard_access").catch(() => true))) {
+    toast("⌘Tab, ⌘Space and other shortcuts will stay on this Mac.", "info", {
+      label: "Allow…",
+      run: () => invoke("allow_keyboard_access"),
+    });
+  }
   poll();
   setInterval(poll, POLL_MS);
   document.addEventListener("visibilitychange", () => {

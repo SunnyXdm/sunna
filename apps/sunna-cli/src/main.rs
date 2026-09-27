@@ -183,6 +183,8 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 settings
             };
             let options = ClientOptions {
+                device: sunna_client::device_id(),
+                leave: None,
                 name: "sunna-cli".into(),
                 clipboard,
                 token,
@@ -235,6 +237,8 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let client = connect_trusted(addr, "sunna", &cert).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let options = ClientOptions {
+                device: sunna_client::device_id(),
+                leave: None,
                 name: "bench-client".into(),
                 clipboard: false,
                 token: String::new(),

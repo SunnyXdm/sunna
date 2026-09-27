@@ -41,9 +41,11 @@ Sunna shows another computer's screen on your Mac, plays its sound, and sends yo
 - the Xcode command line tools: `xcode-select --install`
 - Rust: [rustup.rs](https://rustup.rs)
 
-The first time you connect to a computer, macOS asks to give Sunna **Accessibility** access (System Settings → Privacy & Security → Accessibility). It's only needed to send ⌘Tab, ⌘Space and other system shortcuts to the other computer; without it those stay on your Mac and everything else works. Reconnect after allowing it.
+The first time, the script makes a code-signing certificate for Sunna in your login keychain and macOS asks for your password once, to trust it; if macOS then asks whether `codesign` may use its key, choose **Always Allow**. It exists because macOS remembers permissions by an app's signature: with this certificate, a permission you give Sunna stays through every update. No Apple developer account is involved.
 
-**To give it to someone else,** `scripts/install-mac-app.sh --dmg` also makes `dist/Sunna.dmg`. The app is built for your Mac's chip (Apple silicon or Intel) and signed ad hoc, since there's no Apple developer account behind it, so macOS blocks it on another Mac the first time: open it, then click **Open Anyway** in System Settings → Privacy & Security. (On macOS 14 and earlier, right-click the app and choose **Open** instead.)
+Sunna needs **Accessibility** access for one thing: sending ⌘Tab, ⌘Space and other system shortcuts to the other computer. Without it those stay on your Mac and everything else works. Sunna's Settings shows whether it's allowed (**System shortcuts**) and asks for it with **Allow…**. If System Settings shows Sunna as on but Sunna still says no, that entry is left from an older build: use **Reset** there, then allow Sunna again.
+
+**To give it to someone else,** `scripts/install-mac-app.sh --dmg` also makes `dist/Sunna.dmg`. The app is built for your Mac's chip (Apple silicon or Intel) and signed with your own certificate, which other Macs don't know, so macOS blocks it on another Mac the first time: open it, then click **Open Anyway** in System Settings → Privacy & Security. (On macOS 14 and earlier, right-click the app and choose **Open** instead.)
 
 **To remove it,** quit Sunna and move it from Applications to the Trash. The computers you added and their keys are in `~/.sunna`; delete that folder to remove them too.
 
@@ -181,7 +183,7 @@ The menu also switches between full screen and a window, turns the other compute
 | ⌃⌥S | stats bar (latency, frame rate, bitrate, codec) |
 | ⌃⌥Q | disconnect |
 
-A computer takes one viewer at a time; while someone is connected, the app shows it as **In use**.
+A computer takes one viewer at a time; while someone else is connected, the app shows it as **In use** and who it is. Your own session never blocks you: disconnecting frees the computer at once, and if a session of yours was left behind (a crash, a lost network), connecting again takes it back.
 
 **The fast lane** sends small screen changes (a typed letter, a blinking cursor) as lossless tiles on their own stream, ahead of the video frame that will also contain them. On a host that encodes on the CPU, typed text arrives in about 2 ms plus the network; the video took 35–37 ms in the same test (a 6-core VM, viewer on the same machine). It's on by default for Linux hosts encoding on the CPU; turn it on or off in the session menu under Video.
 
@@ -191,11 +193,11 @@ A computer takes one viewer at a time; while someone is connected, the app shows
 |---|---|
 | **Not responding** or **Offline** | The host isn't running or can't be reached. On a Linux host, run `sunna-host status`. Check that Tailscale is connected on both computers, and that no firewall on the host blocks UDP port 48800. |
 | **Key doesn't match** | The computer's key changed. `sunna-host link` on it shows the new one; click the computer in the app and paste it. |
-| **In use** | Someone else is connected. A computer takes one viewer at a time. |
+| **In use** | Someone else is connected (the app says who). A computer takes one viewer at a time. |
 | No sound | Check **Play Sound** in the session menu and the Mac's own volume. On a Linux host, `sunna-host logs` says whether sound capture started (it needs PulseAudio or PipeWire; see [Sound](#share-a-linux-computer)). A virtual desktop started before sound support needs `sunna-host desktop-restart` once. |
 | **Needs an update** | The app and the host are from different versions. Update both: `git pull`, then run the install scripts again. |
 | **Address not found** | The name doesn't resolve. Use the IP address or the full Tailscale name (`name.tailnet.ts.net`). |
-| ⌘Tab and ⌘Space stay on your Mac | Give Sunna Accessibility access (System Settings → Privacy & Security → Accessibility), then reconnect. ⌃⌥G also switches them between your Mac and the remote. |
+| ⌘Tab and ⌘Space stay on your Mac | Allow them in Sunna's Settings → **System shortcuts**, then reconnect. ⌃⌥G also switches them between your Mac and the remote. |
 | On Wi-Fi, the video hitches about once a second | That's the Mac's AirDrop radio (AWDL) scanning. `sudo ifconfig awdl0 down` turns it off, and AirDrop with it, until macOS turns it back on or you run `sudo ifconfig awdl0 up`. |
 | Choppy video from a Linux host without an NVIDIA GPU | Choose **30 fps** or a lower resolution in the session menu. If the host was built before nasm was installed, run the install script again: it rebuilds the encoder. |
 | A Linux desktop won't share | It's probably a Wayland session: log in with an X11 session, or run `sunna-host setup --virtual`. |

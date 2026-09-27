@@ -114,6 +114,11 @@ pub struct ClientOptions {
     pub token: String,
     pub stream: StreamSettings,
     pub stream_requests: Option<tokio::sync::watch::Receiver<Option<StreamSettings>>>,
+    /// This computer's id (see [`device_id`]): lets the host hand this viewer
+    /// back its own session instead of saying it's in use.
+    pub device: String,
+    /// Set to `true` to leave: the host is told, so it's free at once.
+    pub leave: Option<tokio::sync::watch::Receiver<bool>>,
     /// Disconnect after this long; runs until the connection closes if `None`.
     pub duration: Option<Duration>,
     /// Updated every second with the session's numbers (stats overlay).
@@ -174,6 +179,8 @@ pub struct ProbeResult {
     pub version: u16,
     pub busy: bool,
     pub token_ok: bool,
+    /// When busy (newer hosts): who is connected, and their computer's id.
+    pub viewer: Option<(String, String)>,
     /// Sent by newer hosts when the token matched.
     pub about: Option<sunna_proto::messages::HostAbout>,
     /// Round trip to the host, as the connection measured it.
@@ -181,6 +188,40 @@ pub struct ProbeResult {
 }
 
 /// Query a peer without starting capture or taking its viewer slot.
+/// This computer's id as a viewer: random, made once and kept in
+/// `~/.sunna/device-id`. Not a secret (the key is): it only tells a host
+/// that a viewer is the same computer as before.
+pub fn device_id() -> String {
+    let Some(home) = std::env::var_os("HOME") else { return String::new() };
+    let path = std::path::Path::new(&home).join(".sunna").join("device-id");
+    if let Ok(id) = std::fs::read_to_string(&path) {
+        let id = id.trim();
+        if !id.is_empty() {
+            return id.to_string();
+        }
+    }
+    let mut bytes = [0u8; 16];
+    if std::fs::File::open("/dev/urandom").and_then(|mut random| std::io::Read::read_exact(&mut random, &mut bytes)).is_err() {
+        return String::new();
+    }
+    let id: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, &id);
+    id
+}
+
+/// Resolves once `leave` is set (or its sender is gone); never without one.
+async fn left(leave: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match leave {
+        Some(leave) => {
+            let _ = leave.wait_for(|&leave| leave).await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 pub async fn probe(
     addr: SocketAddr,
     server_name: &str,
@@ -206,6 +247,7 @@ pub async fn probe(
                 version,
                 busy,
                 token_ok,
+                viewer: None,
                 about: None,
                 rtt: Duration::ZERO,
             },
@@ -217,6 +259,12 @@ pub async fn probe(
             let next = tokio::time::timeout(Duration::from_millis(500), control.recv()).await;
             if let Ok(Ok(ControlMessage::HostInfo(about))) = next {
                 result.about = Some(about);
+                if result.busy {
+                    let next = tokio::time::timeout(Duration::from_millis(500), control.recv()).await;
+                    if let Ok(Ok(ControlMessage::InUse { viewer, device })) = next {
+                        result.viewer = Some((viewer, device));
+                    }
+                }
             }
         }
         result.rtt = client.connection.rtt();
@@ -388,6 +436,7 @@ pub async fn run_client(
             name: options.name.clone(),
             token: options.token.clone(),
             stream: options.stream.clone(),
+            device: options.device.clone(),
         })
         .await?;
     let mut info = match control.recv().await? {
@@ -825,6 +874,11 @@ pub async fn run_client(
                 let _ = control.send(&ControlMessage::Bye).await;
                 break;
             }
+            _ = left(&mut options.leave) => {
+                tracing::info!("leaving: telling the host");
+                let _ = control.send(&ControlMessage::Bye).await;
+                break;
+            }
         }
 
         if std::mem::take(&mut poll_due) {
@@ -866,6 +920,8 @@ pub async fn run_client(
         }
     }
 
+    // Close now rather than leave the host to time the connection out.
+    connection.close(0u32.into(), b"bye");
     reader.abort();
     tile_reader.abort();
     drop(frame_tx);

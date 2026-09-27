@@ -211,13 +211,61 @@ struct HostState {
     new_encoder: EncoderFactory,
     new_injector: InjectorFactory,
     busy: AtomicBool,
+    /// The connected viewer, while `busy`.
+    viewer: std::sync::Mutex<Option<Viewer>>,
+}
+
+/// Who holds the viewer slot.
+struct Viewer {
+    name: String,
+    device: String,
+    connection: Connection,
 }
 
 struct SessionSlot(Arc<HostState>);
 
 impl Drop for SessionSlot {
     fn drop(&mut self) {
+        *self.0.viewer.lock().unwrap() = None;
         self.0.busy.store(false, Ordering::Release);
+    }
+}
+
+impl HostState {
+    /// Take the viewer slot. A viewer coming back from the same computer
+    /// (its old session left behind by a crash, a quit, or a lost network)
+    /// takes over its own session instead of finding the host in use.
+    async fn claim(&self, name: &str, device: &str, connection: &Connection) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if self.busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                *self.viewer.lock().unwrap() = Some(Viewer {
+                    name: name.to_string(),
+                    device: device.to_string(),
+                    connection: connection.clone(),
+                });
+                return Ok(());
+            }
+            let old = {
+                let viewer = self.viewer.lock().unwrap();
+                match viewer.as_ref() {
+                    Some(old) if !device.is_empty() && old.device == device => Some(old.connection.clone()),
+                    // Already leaving (its connection closed): wait for it.
+                    Some(old) if old.connection.close_reason().is_some() => None,
+                    Some(old) => return Err(format!("busy: {} is connected", old.name)),
+                    // Between the flag and the record (just claimed or released).
+                    None => None,
+                }
+            };
+            if let Some(old) = old {
+                tracing::info!(viewer = name, "the same viewer reconnected: ending its old session");
+                old.close(0u32.into(), b"replaced by a new session from the same viewer");
+            }
+            if Instant::now() >= deadline {
+                return Err("busy: the previous session is still ending".into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 
@@ -243,6 +291,7 @@ pub async fn run_host(
         new_encoder,
         new_injector,
         busy: AtomicBool::new(false),
+        viewer: std::sync::Mutex::new(None),
     });
     let mut sessions = tokio::task::JoinSet::new();
     loop {
@@ -294,6 +343,15 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
                 about.width = config.width;
                 about.height = config.height;
                 control.send(&ControlMessage::HostInfo(about)).await?;
+                let viewer = host
+                    .viewer
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|viewer| (viewer.name.clone(), viewer.device.clone()));
+                if let Some((viewer, device)) = viewer {
+                    control.send(&ControlMessage::InUse { viewer, device }).await?;
+                }
             }
             control.finish().await?;
             return Ok(());
@@ -303,6 +361,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             name,
             token,
             stream,
+            device,
         } => {
             if !config.token.is_empty() && !tokens_match(&token, &config.token) {
                 control
@@ -326,23 +385,16 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
                 control.finish().await?;
                 anyhow::bail!(reason);
             }
+            if let Err(reason) = host.claim(&name, &device, connection).await {
+                control.send(&ControlMessage::Refused { reason }).await?;
+                control.finish().await?;
+                return Ok(());
+            }
+            tracing::info!(viewer = name, "viewer connected");
             stream
         }
         other => anyhow::bail!("expected Hello or Probe, got {other:?}"),
     };
-    if host
-        .busy
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        control
-            .send(&ControlMessage::Refused {
-                reason: "busy: another viewer is connected".into(),
-            })
-            .await?;
-        control.finish().await?;
-        return Ok(());
-    }
     let slot = SessionSlot(Arc::clone(&host));
     let wants_audio = settings.audio.unwrap_or(true);
     let (width, height) = fit_within((config.width, config.height), None);

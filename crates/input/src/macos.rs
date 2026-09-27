@@ -112,6 +112,12 @@ pub fn accessibility_trusted() -> bool {
     unsafe { AXIsProcessTrusted() != 0 }
 }
 
+/// Whether this app has Accessibility (so it can send ⌘Tab and friends, or
+/// inject input), without asking for it.
+pub fn accessibility_granted() -> bool {
+    unsafe { AXIsProcessTrusted() != 0 }
+}
+
 /// Check Accessibility (needed to inject input) and, if missing, have macOS
 /// show its prompt pointing at System Settings. Returns whether it's granted
 /// now; a grant usually needs the terminal restarted to take effect.

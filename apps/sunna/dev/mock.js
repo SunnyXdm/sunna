@@ -61,6 +61,7 @@ async function check(address, key) {
   }
   return {
     state: found.busy ? "busy" : "ready",
+    viewer: found.busy ? "Priya's MacBook Pro" : "",
     name: found.name,
     os: found.os,
     device: found.device,
@@ -76,6 +77,10 @@ async function check(address, key) {
 const commands = {
   app_info: () => ({ version: "0.0.1", protocol: 3, computer: "Sunny's MacBook Air", platform: "macos" }),
   get_settings: () => ({ ...settings }),
+  // ?access=no previews the Accessibility prompt flow.
+  keyboard_access: () => !location.search.includes("access=no"),
+  allow_keyboard_access: () => {},
+  reset_keyboard_access: () => {},
   set_settings: ({ settings: next }) => {
     settings = { ...next };
   },
