@@ -5006,7 +5006,11 @@ dependencies = [
  "sunna-transport",
  "tokio",
  "tracing",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "winit",
+ "x11-dl",
 ]
 
 [[package]]

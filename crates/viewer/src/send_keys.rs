@@ -86,6 +86,12 @@ const LINUX: &[Shortcut] = &[
 
 /// The shortcuts that make sense on a host running `os` ("macOS 26.0",
 /// "Arch Linux"; empty when unknown, most likely an older Mac host).
+/// The host is a Mac (an unknown host is treated as one, as the menu does).
+pub fn host_is_mac(os: &str) -> bool {
+    let os = os.to_lowercase();
+    os.is_empty() || os.contains("mac")
+}
+
 pub fn shortcuts_for(os: &str) -> &'static [Shortcut] {
     let os = os.to_lowercase();
     if os.is_empty() || os.contains("mac") {

@@ -31,4 +31,7 @@ egui-wgpu = { version = "0.36", features = ["winit", "wayland", "x11"] }
 egui-winit = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
 pollster = "0.4"
 qoi.workspace = true
-
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+x11-dl = "2"

@@ -661,7 +661,7 @@ fn bar(ui: &egui::Ui, id: &str, text: &str, top: bool) {
                 .corner_radius(8)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(text).monospace().size(12.0).color(egui::Color32::from_white_alpha(242)));
+                    ui.add(egui::Label::new(egui::RichText::new(text).monospace().size(12.0).color(egui::Color32::from_white_alpha(242))).wrap_mode(egui::TextWrapMode::Extend));
                 });
         });
 }

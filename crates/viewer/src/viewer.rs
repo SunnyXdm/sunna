@@ -35,6 +35,8 @@ use crate::menu_model::{MenuAction, MenuEvent, MenuState};
 use crate::send_keys;
 #[cfg(target_os = "linux")]
 use crate::gpu::GpuPresenter;
+#[cfg(target_os = "linux")]
+use crate::linux_keyboard::KeyboardCapture;
 
 /// How much to scale the stream to show it in `area` (both in pixels).
 /// 1:1 when the stream was sized for this screen (a Mac host matches the
@@ -77,8 +79,10 @@ const HOTKEY_HELP: &str =
     "••• (top left) or ⌃⌥M: menu  ·  ⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥Q disconnect";
 #[cfg(target_os = "linux")]
 const HOTKEY_HELP: &str =
-    "••• (top left) or Ctrl+Alt+M: menu  ·  Ctrl+Alt+F full screen  ·  Ctrl+Alt+S stats  ·  Ctrl+Alt+Q disconnect";
+    "••• (top left) or Ctrl+Alt+M: menu  ·  Ctrl+Alt+G release keyboard  ·  Ctrl+Alt+F full screen  ·  Ctrl+Alt+Q disconnect";
 
+#[cfg(target_os = "linux")]
+const ACCESSIBILITY_HELP: &str = "This desktop doesn't let apps take its shortcuts: Alt+Tab and Super stay here  ·  Ctrl+Alt+Q disconnect";
 #[cfg(target_os = "macos")]
 const ACCESSIBILITY_HELP: &str = "⌘Tab, ⌘Space and other shortcuts stay on this Mac: allow them in Sunna's Settings → System shortcuts, then reconnect  ·  ⌃⌥Q disconnect";
 
@@ -171,7 +175,7 @@ pub fn run_viewer(
         seen_stream_error: None,
         proxy,
         notice: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         capture: None,
         shared,
         input,
@@ -228,8 +232,9 @@ struct ViewerApp {
     proxy: EventLoopProxy<FrameReady>,
     /// Bottom notice and when it goes away.
     notice: Option<(String, Instant)>,
-    /// Sends ⌘Tab and other system shortcuts to the host while focused.
-    #[cfg(target_os = "macos")]
+    /// Sends ⌘Tab (Alt+Tab, Super on Linux) and other system shortcuts to
+    /// the host while focused.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     capture: Option<KeyboardCapture>,
     shared: Arc<SharedFrame>,
     input: UnboundedSender<InputEvent>,
@@ -391,6 +396,10 @@ impl ViewerApp {
             if let Some(gpu) = self.gpu.as_mut() {
                 self.menu_open = true;
                 gpu.open_menu(state);
+                self.capture_after_menu = Some(self.capture.as_ref().is_some_and(|capture| capture.enabled()));
+                if let Some(capture) = &self.capture {
+                    capture.set_enabled(false);
+                }
                 self.release_window_keys();
             }
         }
@@ -400,13 +409,12 @@ impl ViewerApp {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn menu_state(&self) -> Option<MenuState> {
         let window = self.window.as_ref()?;
-        #[cfg(target_os = "macos")]
+        // While the menu is open capture is paused: show what it'll return to.
         let (capture, capture_available) = (
-            self.capture.as_ref().is_some_and(|capture| capture.enabled()),
+            self.capture_after_menu
+                .unwrap_or_else(|| self.capture.as_ref().is_some_and(|capture| capture.enabled())),
             self.capture.is_some(),
         );
-        #[cfg(target_os = "linux")]
-        let (capture, capture_available) = (false, false);
         let live = self.shared.live.lock().unwrap().clone();
         let codec = match live.codec.as_str() {
             "hevc" => "hevc",
@@ -583,7 +591,6 @@ impl ViewerApp {
             }
             MenuEvent::Closed => {
                 self.menu_open = false;
-                #[cfg(target_os = "macos")]
                 if let (Some(capture), Some(enabled)) =
                     (&self.capture, self.capture_after_menu.take())
                 {
@@ -641,7 +648,7 @@ impl ViewerApp {
     /// ⌃⌥G from the window's key events, which only arrive while capture
     /// is off: turn it on.
     fn toggle_capture(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             let Some(capture) = &self.capture else {
                 self.show_notice(ACCESSIBILITY_HELP, NOTICE_TIME * 2);
@@ -674,13 +681,35 @@ impl ViewerApp {
                 );
             }
         }
+        #[cfg(target_os = "linux")]
+        {
+            let enabled = self.capture.as_ref().is_some_and(|capture| capture.enabled());
+            if enabled {
+                self.release_window_keys();
+                self.show_notice(
+                    "Keyboard captured: Alt+Tab, Super and other shortcuts go to the remote  ·  Ctrl+Alt+G gives them back",
+                    NOTICE_TIME,
+                );
+            } else {
+                self.show_notice(
+                    "Keyboard released: shortcuts stay on this computer  ·  Ctrl+Alt+G to capture again",
+                    NOTICE_TIME,
+                );
+            }
+        }
     }
 
     /// Take ⌘Tab and the other system shortcuts for the host (macOS; needs
     /// the Accessibility permission).
     fn install_capture(&mut self) {
         #[cfg(target_os = "linux")]
-        self.show_notice(HOTKEY_HELP, NOTICE_TIME);
+        if let Some(window) = &self.window {
+            match KeyboardCapture::new(window) {
+                Ok(capture) => self.capture = Some(capture),
+                Err(error) => tracing::warn!(error = %format!("{error:#}"), "keyboard capture unavailable; the desktop keeps its shortcuts"),
+            }
+            self.show_notice(HOTKEY_HELP, NOTICE_TIME);
+        }
         #[cfg(target_os = "macos")]
         match KeyboardCapture::new(
             self.input.clone(),
@@ -695,6 +724,28 @@ impl ViewerApp {
                 tracing::warn!(%error, "keyboard capture unavailable; macOS keeps its shortcuts");
                 self.show_notice(ACCESSIBILITY_HELP, NOTICE_TIME * 2);
             }
+        }
+    }
+
+    /// A PC keyboard on a Mac host: Ctrl does what ⌘ does there (Ctrl+C
+    /// copies), and Super is ⌃. `SUNNA_SWAP_CTRL_CMD=0` keeps them as they are.
+    fn map_modifier(&self, vk: u16) -> u16 {
+        const COMMAND: u16 = 0x37;
+        const RIGHT_COMMAND: u16 = 0x36;
+        const CONTROL: u16 = 0x3B;
+        const RIGHT_CONTROL: u16 = 0x3E;
+        let swap = cfg!(target_os = "linux")
+            && send_keys::host_is_mac(&self.stream.host_os)
+            && std::env::var("SUNNA_SWAP_CTRL_CMD").as_deref() != Ok("0");
+        if !swap {
+            return vk;
+        }
+        match vk {
+            CONTROL => COMMAND,
+            RIGHT_CONTROL => RIGHT_COMMAND,
+            COMMAND => CONTROL,
+            RIGHT_COMMAND => RIGHT_CONTROL,
+            other => other,
         }
     }
 
@@ -1249,7 +1300,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 });
             }
             WindowEvent::Focused(focused) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 if let Some(capture) = &self.capture {
                     capture.set_focused(focused);
                 }
@@ -1292,7 +1343,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                     }
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    if let Some(scancode) = keymap::mac_keycode(code) {
+                    if let Some(scancode) = keymap::mac_keycode(code).map(|vk| self.map_modifier(vk)) {
                         let pressed = event.state == ElementState::Pressed;
                         if pressed {
                             if !self.keys_down.contains(&scancode) {

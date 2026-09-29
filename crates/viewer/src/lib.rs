@@ -8,6 +8,8 @@ mod cursor;
 #[cfg(target_os = "linux")]
 mod gpu;
 mod keyboard;
+#[cfg(target_os = "linux")]
+mod linux_keyboard;
 mod keymap;
 #[cfg(target_os = "macos")]
 mod layer_presenter;
