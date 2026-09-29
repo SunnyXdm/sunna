@@ -1241,6 +1241,8 @@ async function start() {
     }),
   ]);
   state.info = info;
+  // Linux draws its own title bar: no room to leave for traffic lights.
+  document.documentElement.dataset.platform = info.platform ?? "";
   state.defaultKey = settings.key ?? "";
   state.machines = machines;
   state.loaded = true;

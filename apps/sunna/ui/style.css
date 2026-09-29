@@ -115,6 +115,7 @@ code {
   background: rgba(22, 23, 27, 0.92);
   border-bottom-color: rgba(0, 0, 0, 0.5);
 }
+[data-platform="linux"] .toolbar { padding-left: 18px; }
 .toolbar-title { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
 .toolbar-title h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
 .toolbar-title p { margin: 1px 0 0; font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
