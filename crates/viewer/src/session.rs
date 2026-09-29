@@ -53,7 +53,15 @@ fn viewer_max_size() -> Option<(u32, u32)> {
             (height as f64 * fraction_h * scale) as u32,
         ))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let (width, height) = crate::linux_screen::main_display_pixel_size()?;
+        Some((
+            ((width as f64 * fraction_w * scale) as u32) & !1,
+            ((height as f64 * fraction_h * scale) as u32) & !1,
+        ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (scale, fraction_w, fraction_h);
         None

@@ -28,7 +28,7 @@
         <a class="button primary" href="#install">Install Sunna</a>
         <a class="button" href="https://github.com/SunnyXdm/sunna">Source on GitHub</a>
       </div>
-      <p class="fine">The app runs on macOS 13 or later. It connects to Macs and Linux computers.</p>
+      <p class="fine">The app runs on macOS 13 or later, and on Linux. It connects to Macs and Linux computers.</p>
       <div class="stage">
         <img class="shot" src="images/hover.png" width="1060" height="740" alt="The Sunna app: five computers, each shown as its own screen, lit when it can be reached">
       </div>
@@ -83,7 +83,7 @@
         <div><dt>Sound</dt><dd>What's playing on the other computer, as Opus: 128 kbps stereo in 10 ms packets, each carrying a copy of the one before, so a lost packet costs nothing. Play Sound in the session menu turns it on and off.</dd></div>
         <div><dt>Clipboard</dt><dd>Text and images, both ways. One click turns it off for a session.</dd></div>
         <div><dt>Share</dt><dd>Macs with macOS 13 or later. Linux PCs and servers with an X11 desktop, or a virtual desktop running Plasma or XFCE.</dd></div>
-        <div><dt>View from</dt><dd>A Mac with macOS 13 or later.</dd></div>
+        <div><dt>View from</dt><dd>A Mac with macOS 13 or later, or a Linux PC (X11 or Wayland).</dd></div>
         <div><dt>Privacy</dt><dd>No accounts and no cloud service. Logs stay on your computers, and keystrokes and clipboard contents are never logged.</dd></div>
         <div><dt>When idle</dt><dd>With nobody connected, a host uses no CPU and keeps one UDP port open.</dd></div>
       </dl>
@@ -157,7 +157,7 @@ scripts/install-mac-app.sh</code></pre>
       </details>
       <details>
         <summary>What about Windows, or viewing from Linux?</summary>
-        <p>Neither is ready. Sunna shares Macs and Linux computers, and the app runs on macOS.</p>
+        <p>Viewing from Linux works: <code>scripts/install-app-linux.sh</code> installs the app, which decodes on the GPU and sends Alt+Tab and Super to the other computer while it's focused. Windows isn't ready, either to share or to view from.</p>
       </details>
       <details>
         <summary>How fast is it?</summary>

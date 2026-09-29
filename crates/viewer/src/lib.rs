@@ -10,6 +10,8 @@ mod gpu;
 mod keyboard;
 #[cfg(target_os = "linux")]
 mod linux_keyboard;
+#[cfg(target_os = "linux")]
+mod linux_screen;
 mod keymap;
 #[cfg(target_os = "macos")]
 mod layer_presenter;

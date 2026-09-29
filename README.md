@@ -10,7 +10,7 @@
 
 Sunna shows another computer's screen on your Mac, plays its sound, and sends your keyboard, mouse, trackpad and clipboard back. It uses the hardware video encoders and decoders where they exist and sends small changes like typing as exact, lossless tiles ahead of the video, so text appears as fast as your network allows. There are no accounts and no cloud service: computers talk to each other directly, ideally over [Tailscale](https://tailscale.com).
 
-**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11). Not yet: Windows, viewing from Linux (dev tool only), and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
+**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11); the app for Linux is new (see [Install the app on Linux](#install-the-app-on-linux)). Not yet: Windows, and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ Sunna shows another computer's screen on your Mac, plays its sound, and sends yo
        sunna://100.101.102.103?key=7f3a…
    ```
 
-2. **Install the Sunna app on your Mac** ([details](#install-the-mac-app)):
+2. **Install the Sunna app on your Mac** ([details](#install-the-mac-app); on Linux, [`scripts/install-app-linux.sh`](#install-the-app-on-linux)):
 
    ```sh
    git clone https://github.com/SunnyXdm/sunna.git && cd sunna
@@ -48,6 +48,25 @@ Sunna needs **Accessibility** access for one thing: sending ⌘Tab, ⌘Space and
 **To give it to someone else,** `scripts/install-mac-app.sh --dmg` also makes `dist/Sunna.dmg`. The app is built for your Mac's chip (Apple silicon or Intel) and signed with your own certificate, which other Macs don't know, so macOS blocks it on another Mac the first time: open it, then click **Open Anyway** in System Settings → Privacy & Security. (On macOS 14 and earlier, right-click the app and choose **Open** instead.)
 
 **To remove it,** quit Sunna and move it from Applications to the Trash. The computers you added and their keys are in `~/.sunna`; delete that folder to remove them too.
+
+## Install the app on Linux
+
+The same app, for viewing from a Linux PC: the Computers window, and sessions in a window of their own, full screen unless you choose otherwise.
+
+```sh
+git clone https://github.com/SunnyXdm/sunna.git && cd sunna
+scripts/install-app-linux.sh
+```
+
+It builds Sunna, installs it in `~/.local/bin` for your user (no root needed) and adds it to your desktop's app menu. Run it again to update. You need Rust 1.95 or later ([rustup.rs](https://rustup.rs)), a C/C++ compiler, WebKitGTK 4.1 and, for decoding on the GPU and for HEVC, FFmpeg's development files; the script names the packages your distribution calls them. On Debian and Ubuntu: `sudo apt install build-essential nasm libwebkit2gtk-4.1-dev libavcodec-dev libavutil-dev`.
+
+What's different from the Mac:
+
+- **Video** is decoded by FFmpeg on the GPU (NVIDIA through NVDEC, Intel and AMD through VA-API) and drawn with Vulkan or OpenGL. Without a GPU decoder it decodes in software, and asks the host for H.264, the cheaper codec to decode.
+- **Shortcuts:** while the session window is focused, Alt+Tab, Super and your desktop's other shortcuts go to the remote. On X11 the app takes the keyboard; on Wayland it asks the compositor, which may ask you once. **Ctrl+Alt+G** gives them back to your desktop.
+- **Modifier keys on a Mac host:** Ctrl works as ⌘ there (Ctrl+C copies, Ctrl+Tab… is ⌘Tab), and Super as ⌃. Set `SUNNA_SWAP_CTRL_CMD=0` to keep them as they are.
+- **Hotkeys** use Ctrl+Alt where the Mac uses ⌃⌥: Ctrl+Alt+M for the menu, Ctrl+Alt+F full screen, Ctrl+Alt+S stats, Ctrl+Alt+Q disconnect.
+- **Clipboard** goes through X11, which on a Wayland desktop means XWayland (on by default on GNOME, KDE and Hyprland).
 
 ## Share a Linux computer
 
@@ -183,6 +202,8 @@ The menu also switches between full screen and a window, turns the other compute
 | ⌃⌥S | stats bar (latency, frame rate, bitrate, codec) |
 | ⌃⌥Q | disconnect |
 
+On Linux, use Ctrl+Alt for ⌃⌥ (Ctrl+Alt+M, and so on).
+
 A computer takes one viewer at a time; while someone else is connected, the app shows it as **In use** and who it is. Your own session never blocks you: disconnecting frees the computer at once, and if a session of yours was left behind (a crash, a lost network), connecting again takes it back.
 
 **The fast lane** sends small screen changes (a typed letter, a blinking cursor) as lossless tiles on their own stream, ahead of the video frame that will also contain them. On a host that encodes on the CPU, typed text arrives in about 2 ms plus the network; the video took 35–37 ms in the same test (a 6-core VM, viewer on the same machine). It's on by default for Linux hosts encoding on the CPU; turn it on or off in the session menu under Video.
@@ -216,7 +237,7 @@ A computer takes one viewer at a time; while someone else is connected, the app 
 
 | | |
 |---|---|
-| The app | macOS 13 or later |
+| The app | macOS 13 or later; or Linux (X11 or Wayland) with WebKitGTK 4.1, and FFmpeg for decoding on the GPU |
 | A Mac host | macOS 13 or later; Tailscale; Screen Recording and Accessibility permission for the terminal it runs in |
 | A Linux host | x86-64 (ARM64 untested); an X11 desktop, or Xvfb with Plasma or XFCE for a virtual one; to build it, Rust, a C/C++ compiler and nasm |
 | Network | the host's UDP port 48800 reachable from the viewer; [Tailscale](https://tailscale.com) recommended |
