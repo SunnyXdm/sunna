@@ -3,6 +3,10 @@
 //! `sunna-cli view` and the Sunna app, which runs each session in its own
 //! viewer process.
 
+#[cfg(target_os = "linux")]
+mod cursor;
+#[cfg(target_os = "linux")]
+mod gpu;
 mod keyboard;
 mod keymap;
 #[cfg(target_os = "macos")]
@@ -11,6 +15,7 @@ mod layer_presenter;
 mod mac_keyboard;
 #[cfg(target_os = "macos")]
 mod menu;
+mod menu_model;
 #[cfg(target_os = "macos")]
 mod remote_cursor;
 mod send_keys;

@@ -27,6 +27,8 @@ pub enum PixelFormat {
     Bgra8,
     Nv12,
     P010,
+    /// Planar Y, U, V (4:2:0), tightly packed: software decoders' output.
+    I420,
 }
 
 impl PixelFormat {
@@ -35,7 +37,7 @@ impl PixelFormat {
             PixelFormat::Bgra8 => 4,
             // Planar formats aren't byte-per-pixel; callers of the synthetic
             // path only use Bgra8. Real backends carry GPU surfaces instead.
-            PixelFormat::Nv12 | PixelFormat::P010 => 0,
+            PixelFormat::Nv12 | PixelFormat::P010 | PixelFormat::I420 => 0,
         }
     }
 }

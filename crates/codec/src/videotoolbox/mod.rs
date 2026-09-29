@@ -837,6 +837,7 @@ impl Decoder for VtDecoder {
             format: PixelFormat::Bgra8,
             data: FrameData::Surface(surface),
             capture_ts_us,
+            color: crate::Color::default(),
         })
     }
 }

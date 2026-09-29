@@ -28,9 +28,13 @@ use crate::layer_presenter::LayerPresenter;
 #[cfg(target_os = "macos")]
 use crate::mac_keyboard::KeyboardCapture;
 #[cfg(target_os = "macos")]
-use crate::menu::{self, MenuAction, MenuEvent, MenuState};
-#[cfg(target_os = "macos")]
+use crate::menu;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::menu_model::{MenuAction, MenuEvent, MenuState};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::send_keys;
+#[cfg(target_os = "linux")]
+use crate::gpu::GpuPresenter;
 
 /// How much to scale the stream to show it in `area` (both in pixels).
 /// 1:1 when the stream was sized for this screen (a Mac host matches the
@@ -66,11 +70,14 @@ pub struct SharedFrame {
 }
 
 /// How long a notice stays up.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const NOTICE_TIME: Duration = Duration::from_secs(6);
 #[cfg(target_os = "macos")]
 const HOTKEY_HELP: &str =
     "••• (top left) or ⌃⌥M: menu  ·  ⌃⌥G release keyboard  ·  ⌃⌥F full screen  ·  ⌃⌥Q disconnect";
+#[cfg(target_os = "linux")]
+const HOTKEY_HELP: &str =
+    "••• (top left) or Ctrl+Alt+M: menu  ·  Ctrl+Alt+F full screen  ·  Ctrl+Alt+S stats  ·  Ctrl+Alt+Q disconnect";
 
 #[cfg(target_os = "macos")]
 const ACCESSIBILITY_HELP: &str = "⌘Tab, ⌘Space and other shortcuts stay on this Mac: allow them in Sunna's Settings → System shortcuts, then reconnect  ·  ⌃⌥Q disconnect";
@@ -121,7 +128,7 @@ pub fn stats_text(live: &LiveStats) -> String {
     if live.tile_batches > 0 {
         parts.push(format!("tiles {}/s", live.tile_batches));
     }
-    parts.push("⌃⌥S hide".into());
+    parts.push(if cfg!(target_os = "linux") { "Ctrl+Alt+S hide" } else { "⌃⌥S hide" }.into());
     parts.join("  ·  ")
 }
 
@@ -190,6 +197,12 @@ pub fn run_viewer(
         capture_toggled_in_menu: false,
         #[cfg(target_os = "macos")]
         layer: None,
+        #[cfg(target_os = "linux")]
+        gpu: None,
+        #[cfg(target_os = "linux")]
+        cursors: Default::default(),
+        #[cfg(target_os = "linux")]
+        cursor_key: None,
         presented: 0,
         present_window: Instant::now(),
     };
@@ -260,6 +273,14 @@ struct ViewerApp {
     /// Zero-copy presenter; when set, softbuffer isn't used.
     #[cfg(target_os = "macos")]
     layer: Option<LayerPresenter>,
+    /// GPU presenter (Linux); when set, softbuffer isn't used.
+    #[cfg(target_os = "linux")]
+    gpu: Option<GpuPresenter>,
+    /// The host's pointer shapes, built for this window at this size.
+    #[cfg(target_os = "linux")]
+    cursors: std::collections::HashMap<(u64, u32), winit::window::CustomCursor>,
+    #[cfg(target_os = "linux")]
+    cursor_key: Option<(u64, u32)>,
     presented: u64,
     present_window: Instant,
 }
@@ -281,7 +302,11 @@ impl ViewerApp {
         if let Some(layer) = self.layer.as_mut() {
             layer.show_stats(text.as_deref());
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.show_stats(text.as_deref());
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let _ = text;
     }
 
@@ -291,6 +316,10 @@ impl ViewerApp {
         #[cfg(target_os = "macos")]
         if let Some(layer) = self.layer.as_mut() {
             layer.show_notice(Some(&text));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.show_notice(Some(&text));
         }
         tracing::info!(notice = %text, "viewer notice");
         self.notice = Some((text, Instant::now() + time));
@@ -306,6 +335,10 @@ impl ViewerApp {
             #[cfg(target_os = "macos")]
             if let Some(layer) = self.layer.as_mut() {
                 layer.show_notice(None);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.show_notice(None);
             }
         }
     }
@@ -335,62 +368,15 @@ impl ViewerApp {
     /// keyboard goes to the menu, never the host: capture is off and keys
     /// held through the window are released.
     fn open_menu(&mut self) {
+        if self.menu_open {
+            return;
+        }
         #[cfg(target_os = "macos")]
         {
-            let (Some(layer), Some(window)) = (self.layer.as_ref(), self.window.as_ref()) else {
-                return;
-            };
-            if self.menu_open {
-                return;
-            }
+            let Some(state) = self.menu_state() else { return };
+            let Some(layer) = self.layer.as_ref() else { return };
             self.menu_open = true;
-            let capture = self
-                .capture
-                .as_ref()
-                .is_some_and(|capture| capture.enabled());
-            let live = self.shared.live.lock().unwrap().clone();
-            let codec = match live.codec.as_str() {
-                "hevc" => "hevc",
-                "h264" => "h264",
-                "raw" => "raw",
-                _ => "",
-            };
-            let detail = if live.codec.is_empty() {
-                "Connecting…".to_string()
-            } else {
-                let mut parts = vec![format!(
-                    "{} {}×{}",
-                    live.codec.to_uppercase(),
-                    live.width,
-                    live.height
-                )];
-                if live.stream_fps > 0 {
-                    parts.push(format!("{} fps", live.stream_fps));
-                }
-                if let Some((p50, _)) = live.latency_ms {
-                    parts.push(format!("{p50:.0} ms"));
-                }
-                parts.join("  ·  ")
-            };
-            let state = MenuState {
-                host: self.stream.host_name.clone(),
-                detail,
-                shortcuts: send_keys::shortcuts_for(&self.stream.host_os),
-                clipboard: !live.clipboard_paused,
-                fps: live.stream_fps,
-                stats: self.stats_visible,
-                fullscreen: window.fullscreen().is_some(),
-                capture,
-                capture_available: self.capture.is_some(),
-                button_visible: self.button_visible,
-                codec,
-                stream_size: self.stream_size,
-                fast_lane: live.fast_lane,
-                scale: self.scale,
-                bitrate_mbps: self.requested.max_bitrate_kbps.map(|kbps| kbps / 1000),
-                video_available: !codec.is_empty(),
-                audio: live.audio_on,
-            };
+            let capture = state.capture;
             let (view, location) = (layer.view(), layer.menu_location());
             self.capture_after_menu = Some(capture);
             if let Some(capture) = &self.capture {
@@ -399,10 +385,75 @@ impl ViewerApp {
             self.release_window_keys();
             menu::pop_up(&self.proxy, view, location, state);
         }
+        #[cfg(target_os = "linux")]
+        {
+            let Some(state) = self.menu_state() else { return };
+            if let Some(gpu) = self.gpu.as_mut() {
+                self.menu_open = true;
+                gpu.open_menu(state);
+                self.release_window_keys();
+            }
+        }
+    }
+
+    /// What the menu shows now.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn menu_state(&self) -> Option<MenuState> {
+        let window = self.window.as_ref()?;
+        #[cfg(target_os = "macos")]
+        let (capture, capture_available) = (
+            self.capture.as_ref().is_some_and(|capture| capture.enabled()),
+            self.capture.is_some(),
+        );
+        #[cfg(target_os = "linux")]
+        let (capture, capture_available) = (false, false);
+        let live = self.shared.live.lock().unwrap().clone();
+        let codec = match live.codec.as_str() {
+            "hevc" => "hevc",
+            "h264" => "h264",
+            "raw" => "raw",
+            _ => "",
+        };
+        let detail = if live.codec.is_empty() {
+            "Connecting…".to_string()
+        } else {
+            let mut parts = vec![format!(
+                "{} {}×{}",
+                live.codec.to_uppercase(),
+                live.width,
+                live.height
+            )];
+            if live.stream_fps > 0 {
+                parts.push(format!("{} fps", live.stream_fps));
+            }
+            if let Some((p50, _)) = live.latency_ms {
+                parts.push(format!("{p50:.0} ms"));
+            }
+            parts.join("  ·  ")
+        };
+        Some(MenuState {
+            host: self.stream.host_name.clone(),
+            detail,
+            shortcuts: send_keys::shortcuts_for(&self.stream.host_os),
+            clipboard: !live.clipboard_paused,
+            fps: live.stream_fps,
+            stats: self.stats_visible,
+            fullscreen: window.fullscreen().is_some(),
+            capture,
+            capture_available,
+            button_visible: self.button_visible,
+            codec,
+            stream_size: self.stream_size,
+            fast_lane: live.fast_lane,
+            scale: self.scale,
+            bitrate_mbps: self.requested.max_bitrate_kbps.map(|kbps| kbps / 1000),
+            video_available: !codec.is_empty(),
+            audio: live.audio_on,
+        })
     }
 
     /// Ask the host for `requested`; `stream_changed` reports the outcome.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn request_stream(&mut self) {
         tracing::info!(settings = ?self.requested, "stream change requested");
         self.stream
@@ -441,7 +492,7 @@ impl ViewerApp {
         self.seen_stream_error = live.last_stream_error;
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn handle_menu(&mut self, event_loop: &ActiveEventLoop, event: MenuEvent) {
         match event {
             MenuEvent::Chose(MenuAction::ToggleStats) => {
@@ -518,8 +569,13 @@ impl ViewerApp {
             }
             MenuEvent::Chose(MenuAction::HideButton) => {
                 self.button_visible = !self.button_visible;
+                #[cfg(target_os = "macos")]
                 if let Some(layer) = self.layer.as_mut() {
                     layer.set_button_visible(self.button_visible);
+                }
+                #[cfg(target_os = "linux")]
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.set_button_visible(self.button_visible);
                 }
                 if !self.button_visible {
                     self.show_notice("Menu button hidden  ·  ⌃⌥M opens the menu", NOTICE_TIME);
@@ -527,6 +583,7 @@ impl ViewerApp {
             }
             MenuEvent::Closed => {
                 self.menu_open = false;
+                #[cfg(target_os = "macos")]
                 if let (Some(capture), Some(enabled)) =
                     (&self.capture, self.capture_after_menu.take())
                 {
@@ -541,13 +598,20 @@ impl ViewerApp {
         }
     }
 
-    /// Type this Mac's clipboard text on the host, key by key, for places a
-    /// paste can't reach (login screens, password prompts). Never logged.
-    #[cfg(target_os = "macos")]
+    /// Type this computer's clipboard text on the host, key by key, for
+    /// places a paste can't reach (login screens, password prompts). Never logged.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn type_clipboard(&mut self) {
         /// Enough for a password or a command; a stray essay stays home.
         const MAX_CHARS: usize = 4000;
-        let Some(text) = menu::clipboard_text().filter(|text| !text.is_empty()) else {
+        #[cfg(target_os = "macos")]
+        let text = menu::clipboard_text();
+        #[cfg(target_os = "linux")]
+        let text = sunna_clipboard::system_clipboard().ok().and_then(|mut clipboard| match clipboard.read() {
+            Some(sunna_clipboard::ClipboardContent::Text(text)) => Some(text),
+            _ => None,
+        });
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
             self.show_notice("The clipboard has no text to type", NOTICE_TIME);
             return;
         };
@@ -615,6 +679,8 @@ impl ViewerApp {
     /// Take ⌘Tab and the other system shortcuts for the host (macOS; needs
     /// the Accessibility permission).
     fn install_capture(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.show_notice(HOTKEY_HELP, NOTICE_TIME);
         #[cfg(target_os = "macos")]
         match KeyboardCapture::new(
             self.input.clone(),
@@ -647,10 +713,41 @@ impl ViewerApp {
         {
             self.layer.is_some()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            self.gpu.is_some()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             false
         }
+    }
+
+    /// Wear the host's pointer shape (Linux: a winit custom cursor, built at
+    /// the size the picture shows the host's pixels).
+    #[cfg(target_os = "linux")]
+    fn update_cursor(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.pointer_inside || self.menu_open {
+            return;
+        }
+        let (Some(window), Some(gpu)) = (&self.window, &self.gpu) else { return };
+        let shape = self.shared.live.lock().unwrap().cursor.clone();
+        let Some(shape) = shape else { return };
+        let (_, _, content_width, _) = gpu.content_rect();
+        let scale = content_width / shape.screen_width.max(1) as f64;
+        let key = (shape.id, (scale * 1000.0).round() as u32);
+        if self.cursor_key == Some(key) {
+            return;
+        }
+        let cursor = match self.cursors.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let Some(source) = crate::cursor::scaled(&shape, scale) else { return };
+                entry.insert(event_loop.create_custom_cursor(source)).clone()
+            }
+        };
+        window.set_cursor(cursor);
+        self.cursor_key = Some(key);
     }
 
     /// Where the stream appears in the window, in physical pixels: the
@@ -674,6 +771,10 @@ impl ViewerApp {
     }
 
     fn content_rect(&self, window: (f64, f64)) -> (f64, f64, f64, f64) {
+        #[cfg(target_os = "linux")]
+        if let Some(gpu) = &self.gpu {
+            return gpu.content_rect();
+        }
         let (win_w, win_h) = window;
         if !self.uses_layer() {
             return (0.0, 0.0, win_w, win_h);
@@ -761,6 +862,28 @@ impl ViewerApp {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl ViewerApp {
+    /// Draw the GPU picture and act on what the menu says.
+    fn draw_gpu(&mut self, event_loop: &ActiveEventLoop) {
+        let events = match self.gpu.as_mut() {
+            Some(gpu) => {
+                gpu.render();
+                gpu.take_events()
+            }
+            None => return,
+        };
+        for event in events {
+            self.handle_menu(event_loop, event);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn gpu_scale(window: Option<&Window>) -> f64 {
+    window.map_or(1.0, |window| window.scale_factor())
+}
+
 #[inline(always)]
 fn dst_row_write(dst: &mut u32, src_row: &[u8], sx: usize) {
     *dst = u32::from_le_bytes([src_row[sx], src_row[sx + 1], src_row[sx + 2], 0]);
@@ -793,7 +916,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
         let mut attributes = Window::default_attributes()
             .with_title(&self.title)
             .with_inner_size(PhysicalSize::new(width, height));
-        if cfg!(target_os = "macos") && !windowed() {
+        if !windowed() {
             attributes =
                 attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
@@ -828,6 +951,17 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 return;
             }
             Err(error) => tracing::warn!(%error, "layer presenter unavailable, using CPU blit"),
+        }
+        #[cfg(target_os = "linux")]
+        match GpuPresenter::new(window.clone(), self.stream_size) {
+            Ok(mut gpu) => {
+                gpu.set_button_visible(self.button_visible);
+                self.gpu = Some(gpu);
+                self.window = Some(window);
+                self.install_capture();
+                return;
+            }
+            Err(error) => tracing::warn!(error = %format!("{error:#}"), "GPU presenter unavailable, using CPU blit"),
         }
 
         let context = match softbuffer::Context::new(window.clone()) {
@@ -905,6 +1039,30 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             self.refresh_stats(false);
             return;
         }
+        #[cfg(target_os = "linux")]
+        if self.gpu.is_some() {
+            let frame = self.shared.latest.lock().unwrap().take();
+            let batches = std::mem::take(&mut *self.shared.tiles.lock().unwrap());
+            let mut shown = false;
+            if let Some(gpu) = self.gpu.as_mut() {
+                if let Some(frame) = &frame {
+                    if gpu.show(frame) {
+                        self.stream_size = gpu.stream_size();
+                    }
+                    shown = true;
+                }
+                for batch in batches {
+                    gpu.add_tiles(batch);
+                }
+            }
+            if shown {
+                self.note_presented();
+            }
+            self.update_cursor(event_loop);
+            self.refresh_stats(false);
+            self.draw_gpu(event_loop);
+            return;
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -916,9 +1074,35 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // The overlay sees input first; while the menu is open, none of it
+        // goes to the host.
+        #[cfg(target_os = "linux")]
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.on_window_event(&event);
+            let input = matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::PinchGesture { .. }
+            );
+            if input && gpu.menu_open() {
+                if let WindowEvent::CursorMoved { position, .. } = &event {
+                    let scale = gpu_scale(self.window.as_deref());
+                    self.cursor_pt = (position.x / scale, position.y / scale);
+                }
+                return;
+            }
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
+                #[cfg(target_os = "linux")]
+                if self.gpu.is_some() {
+                    self.draw_gpu(event_loop);
+                    return;
+                }
                 if !self.uses_layer() {
                     self.render();
                 }
@@ -928,7 +1112,12 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 if let (Some(layer), Some(window)) = (self.layer.as_mut(), self.window.as_ref()) {
                     layer.fit(window, (size.width, size.height));
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(target_os = "linux")]
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.resize(size.width, size.height);
+                    self.cursor_key = None;
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 let _ = size;
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -950,6 +1139,14 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                 if let Some(layer) = self.layer.as_mut() {
                     let over = layer.button_contains(self.cursor_pt);
                     layer.set_button_hover(over);
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(gpu) = self.gpu.as_mut() {
+                        let over = gpu.button_contains(self.cursor_pt);
+                        gpu.set_button_hover(over);
+                    }
+                    self.update_cursor(event_loop);
                 }
                 if let Some(window) = &self.window {
                     let size = window.inner_size();
@@ -977,6 +1174,14 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                             .layer
                             .as_ref()
                             .is_some_and(|layer| layer.button_contains(self.cursor_pt))
+                    {
+                        self.swallow_left_up = true;
+                        self.open_menu();
+                        return;
+                    }
+                    #[cfg(target_os = "linux")]
+                    if state == ElementState::Pressed
+                        && self.gpu.as_ref().is_some_and(|gpu| gpu.button_contains(self.cursor_pt))
                     {
                         self.swallow_left_up = true;
                         self.open_menu();
@@ -1134,8 +1339,9 @@ mod tests {
         };
         assert_eq!(
             stats_text(&live),
-            "HEVC 3360×2100  ·  60 fps  ·  12.3 / 20 Mbps  ·  latency 55 ms (p95 71)  ·  \
-             encode 26.1 ms  ·  decode 7.2 ms  ·  rtt 14 ms  ·  ⌃⌥S hide"
+            format!("HEVC 3360×2100  ·  60 fps  ·  12.3 / 20 Mbps  ·  latency 55 ms (p95 71)  ·  \
+             encode 26.1 ms  ·  decode 7.2 ms  ·  rtt 14 ms  ·  {}",
+            if cfg!(target_os = "linux") { "Ctrl+Alt+S hide" } else { "⌃⌥S hide" })
         );
     }
 }

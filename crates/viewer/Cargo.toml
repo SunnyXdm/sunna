@@ -9,6 +9,7 @@ anyhow.workspace = true
 sunna-capture.workspace = true
 sunna-client.workspace = true
 sunna-audio.workspace = true
+sunna-clipboard.workspace = true
 sunna-codec.workspace = true
 sunna-input.workspace = true
 sunna-proto.workspace = true
@@ -22,3 +23,12 @@ winit.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 qoi.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
+egui-wgpu = { version = "0.36", features = ["winit", "wayland", "x11"] }
+egui-winit = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
+pollster = "0.4"
+qoi.workspace = true
+

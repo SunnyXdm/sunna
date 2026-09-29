@@ -128,6 +128,9 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             stream: sunna_proto::messages::StreamSettings {
                 max_size,
                 audio: Some(audio),
+                // A codec this machine decodes (a Linux viewer without an
+                // HEVC decoder must not get the NVENC host's HEVC).
+                codec: sunna_codec::preferred_decode_codec().map(str::to_string),
                 ..Default::default()
             },
             stream_requests: Some(stream_rx),

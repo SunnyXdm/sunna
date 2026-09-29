@@ -162,19 +162,24 @@ impl Decoder for OpenH264Decoder {
         let Some(yuv) = self.decoder.decode(data).context("OpenH264 decode")? else {
             bail!("decoder produced no picture yet");
         };
+        // Planes as they are (I420): the viewer converts on the GPU.
         let (width, height) = yuv.dimensions();
-        let mut pixels = vec![0u8; width * height * 4];
-        yuv.write_rgba8(&mut pixels);
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.swap(0, 2); // RGBA -> BGRA
+        let (chroma_w, chroma_h) = (width.div_ceil(2), height.div_ceil(2));
+        let (y_stride, u_stride, v_stride) = yuv.strides();
+        let mut bytes = Vec::with_capacity(width * height + chroma_w * chroma_h * 2);
+        for (plane, stride, w, h) in [(yuv.y(), y_stride, width, height), (yuv.u(), u_stride, chroma_w, chroma_h), (yuv.v(), v_stride, chroma_w, chroma_h)] {
+            for row in 0..h {
+                bytes.extend_from_slice(&plane[row * stride..row * stride + w]);
+            }
         }
         Ok(DecodedFrame {
             frame_id,
             width: width as u32,
             height: height as u32,
-            format: PixelFormat::Bgra8,
-            data: FrameData::Cpu(Bytes::from(pixels)),
+            format: PixelFormat::I420,
+            data: FrameData::Cpu(Bytes::from(bytes)),
             capture_ts_us,
+            color: crate::Color::default(),
         })
     }
 }

@@ -6,6 +6,8 @@
 //! AMD AMF, Intel QuickSync via libvpl, Apple VideoToolbox with
 //! `EnableLowLatencyRateControl`. Codec ladder: AV1 > HEVC > H.264.
 
+#[cfg(sunna_ffmpeg)]
+pub mod ffmpeg;
 pub mod h264;
 #[cfg(target_os = "linux")]
 pub mod nvenc;
@@ -65,6 +67,25 @@ pub struct DecodedFrame {
     /// from the passthrough codec.
     pub data: FrameData,
     pub capture_ts_us: u64,
+    /// How YUV pixels map to RGB (unused for BGRA).
+    pub color: Color,
+}
+
+/// YUV → RGB matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Matrix {
+    Bt601,
+    /// What every Sunna host encodes.
+    #[default]
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Color {
+    pub matrix: Matrix,
+    /// Full (0-255) rather than video (16-235) range.
+    pub full_range: bool,
 }
 
 /// One result per submitted frame, delivered in submission order.
@@ -174,6 +195,7 @@ impl Decoder for Passthrough {
             format: self.format,
             data: FrameData::Cpu(Bytes::copy_from_slice(data)),
             capture_ts_us,
+            color: Color::default(),
         })
     }
 }
@@ -268,7 +290,61 @@ pub fn make_decoder(codec: &str, width: u32, height: u32) -> anyhow::Result<Box<
         #[cfg(target_os = "macos")]
         "hevc" => Ok(Box::new(videotoolbox::VtDecoder::new(Codec::Hevc))),
         #[cfg(target_os = "linux")]
-        "h264" => Ok(Box::new(openh264_codec::OpenH264Decoder::new()?)),
+        "h264" | "hevc" => linux_decoder(codec),
         other => anyhow::bail!("no decoder for codec {other:?} on this platform"),
+    }
+}
+
+/// FFmpeg (GPU first) when it's there; OpenH264 for H.264 otherwise.
+#[cfg(target_os = "linux")]
+fn linux_decoder(codec: &str) -> anyhow::Result<Box<dyn Decoder>> {
+    #[cfg(sunna_ffmpeg)]
+    match ffmpeg::FfmpegDecoder::new(codec) {
+        Ok(decoder) => return Ok(Box::new(decoder)),
+        Err(error) if codec == "h264" => tracing::warn!(%error, "FFmpeg decoder unavailable; using OpenH264"),
+        Err(error) => return Err(error),
+    }
+    match codec {
+        "h264" => Ok(Box::new(openh264_codec::OpenH264Decoder::new()?)),
+        other => anyhow::bail!("no {other} decoder here: this viewer was built without FFmpeg"),
+    }
+}
+
+/// The codec a viewer here should ask for: None leaves it to the host.
+/// On Linux: HEVC when the GPU decodes it (sharper for the bits), else
+/// H.264, the cheaper of the two to decode in software.
+pub fn preferred_decode_codec() -> Option<&'static str> {
+    if let Ok(codec) = std::env::var("SUNNA_VIEW_CODEC") {
+        return match codec.as_str() {
+            "h264" => Some("h264"),
+            "hevc" => Some("hevc"),
+            _ => None,
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(sunna_ffmpeg)]
+        if ffmpeg::hardware_decodes("hevc") {
+            return Some("hevc");
+        }
+        Some("h264")
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+/// How this viewer decodes, for the stats bar: "nvdec", "vaapi", "software".
+pub fn decode_backend_hint(codec: &str) -> &'static str {
+    #[cfg(sunna_ffmpeg)]
+    {
+        if ffmpeg::hardware_decodes(codec) {
+            return "gpu";
+        }
+        return "software";
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = codec;
+        if cfg!(target_os = "macos") { "gpu" } else { "software" }
     }
 }
