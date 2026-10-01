@@ -151,6 +151,7 @@ class Touch(view: View, private val remote: Remote) {
             }
             MotionEvent.ACTION_CANCEL -> {
                 handler.removeCallbacks(hold)
+                stopMomentum()
                 releaseButton()
                 if (state == State.SCROLLING) remote.scroll(0f, 0f, 2)
                 if (state == State.PINCHING) remote.pinchEnded()
@@ -230,6 +231,18 @@ class Touch(view: View, private val remote: Remote) {
             }
             else -> {}
         }
+    }
+
+    /** Drop whatever's in progress (focus went elsewhere mid-gesture). */
+    fun cancel() {
+        handler.removeCallbacks(hold)
+        stopMomentum()
+        releaseButton()
+        if (state == State.PINCHING) remote.pinchEnded()
+        if (state == State.SCROLLING) remote.scroll(0f, 0f, 2)
+        state = State.IDLE
+        tracker?.recycle()
+        tracker = null
     }
 
     private fun releaseButton() {

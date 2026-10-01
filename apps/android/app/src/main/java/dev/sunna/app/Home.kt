@@ -37,6 +37,8 @@ interface App {
     fun editMachine(machine: Machine?, focusKey: Boolean = false, link: String? = null)
     fun machineMenu(machine: Machine, anchor: View)
     fun background(work: () -> Unit)
+    fun askForNotifications()
+    fun openSettings()
 }
 
 /** A frame `ratio` times as wide as it is tall. */
@@ -421,6 +423,13 @@ class HomeView(context: Context, private val app: App) : FrameLayout(context) {
                 setOnClickListener { app.editMachine(null) }
             }
             addView(add, LinearLayout.LayoutParams(dpi(44f), dpi(44f)))
+            val settings = FrameLayout(context).apply {
+                background = ripple(null, dp(22f))
+                addView(context.icon(R.drawable.ic_settings, Palette.TEXT_2, 22f), FrameLayout.LayoutParams(dpi(22f), dpi(22f), Gravity.CENTER))
+                contentDescription = "Settings"
+                setOnClickListener { app.openSettings() }
+            }
+            addView(settings, LinearLayout.LayoutParams(dpi(44f), dpi(44f)))
         }
         addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
@@ -437,7 +446,7 @@ class HomeView(context: Context, private val app: App) : FrameLayout(context) {
                 setPadding(0, dpi(30f), 0, dpi(8f))
             })
             addView(context.text(15f, Palette.TEXT_2).apply {
-                text = "Add a computer that's sharing with Sunna. Setting up sharing prints a link (on Linux, sunna-host link shows it again): open it on this phone, or paste it here."
+                text = "Add a computer that's sharing with Sunna: scan its QR code with this phone's camera, or paste its link here. Both appear when sharing starts; Settings in Sunna on that computer (or sunna-host link on Linux) shows them again."
                 gravity = Gravity.CENTER
                 setLineSpacing(0f, 1.3f)
                 maxWidth = dpi(380f)

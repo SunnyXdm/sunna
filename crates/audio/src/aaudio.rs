@@ -64,17 +64,22 @@ struct Shared {
     stop: AtomicBool,
 }
 
-struct Stream(*mut AAudioStream);
+/// An open stream; closing it (on drop) stops its callbacks, and it keeps
+/// what they read alive until then.
+struct Stream {
+    raw: *mut AAudioStream,
+    _shared: Arc<Shared>,
+}
 
 // SAFETY: AAudio streams may be stopped and closed from any thread.
 unsafe impl Send for Stream {}
 
-impl Stream {
-    fn close(self) {
-        // SAFETY: an open stream, closed once.
+impl Drop for Stream {
+    fn drop(&mut self) {
+        // SAFETY: an open stream, closed once; no callback runs after close.
         unsafe {
-            AAudioStream_requestStop(self.0);
-            AAudioStream_close(self.0);
+            AAudioStream_requestStop(self.raw);
+            AAudioStream_close(self.raw);
         }
     }
 }
@@ -132,7 +137,7 @@ fn open(shared: &Arc<Shared>) -> anyhow::Result<Stream> {
             bail!("couldn't start the sound output (AAudio {result})");
         }
         tracing::info!(burst, "playing through AAudio");
-        Ok(Stream(stream))
+        Ok(Stream { raw: stream, _shared: Arc::clone(shared) })
     }
 }
 
@@ -151,18 +156,14 @@ impl AAudioOutput {
             while !watched.stop.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(200));
                 if watched.lost.swap(false, Ordering::AcqRel) || stream.is_none() {
-                    if let Some(stream) = stream.take() {
-                        stream.close();
-                    }
+                    drop(stream.take());
                     match open(&watched) {
                         Ok(reopened) => stream = Some(reopened),
                         Err(error) => tracing::debug!(%error, "sound output not back yet"),
                     }
                 }
             }
-            if let Some(stream) = stream {
-                stream.close();
-            }
+            drop(stream);
         })?;
         Ok(Self { shared, thread: Some(thread) })
     }

@@ -88,6 +88,17 @@ class MachineSheet(
             setPadding(dpi(20f), 0, dpi(20f), 0)
         }
         fields.addView(label("Address"))
+        if (machine == null) {
+            // A link copied elsewhere (a message, a computer's screen): both fields at once.
+            address.addView(ImageView(context).apply {
+                setImageResource(R.drawable.ic_paste)
+                imageTintList = android.content.res.ColorStateList.valueOf(Palette.TEXT_2)
+                setPadding(dpi(10f), dpi(10f), dpi(10f), dpi(10f))
+                background = ripple(null, dp(20f))
+                contentDescription = "Paste"
+                setOnClickListener { paste() }
+            }, LinearLayout.LayoutParams(dpi(40f), dpi(40f)))
+        }
         fields.addView(address)
         fields.addView(label("Key"))
         val eye = ImageView(context).apply {
@@ -203,6 +214,22 @@ class MachineSheet(
         if (secret.isNotEmpty()) say("The key came with the link.", false)
     }
 
+    private fun paste() {
+        val manager = context.getSystemService(android.content.ClipboardManager::class.java)
+        val text = runCatching { manager?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() }.getOrNull()?.trim()
+        if (text.isNullOrEmpty()) {
+            say("The clipboard is empty.", false)
+            return
+        }
+        if (splitLink(text) != null) {
+            fill(text)
+            scheduleCheck(immediately = true)
+        } else {
+            address.input.setText(text)
+        }
+        address.input.setSelection(address.input.text.length)
+    }
+
     private fun say(text: String?, problem: Boolean) {
         message.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
         message.text = text ?: ""
@@ -287,10 +314,14 @@ class MachineSheet(
         val draft = Draft(name.input.text.toString(), where, secret, about)
         val saved = if (machine == null) app.store.add(draft) else app.store.update(machine.id, draft)
         if (saved == null) {
-            say("That computer is no longer in your list.", true)
+            say(if (machine != null && app.store.list().none { it.id == machine.id }) "That computer is no longer in your list." else "Couldn't save it: the phone's storage may be full.", true)
             return
         }
-        about?.let { app.checks[saved.id] = it }
+        when {
+            about != null -> app.checks[saved.id] = about
+            // Somewhere else now, not checked yet: what we knew was about the old one.
+            machine != null && (machine.address != saved.address || machine.key != saved.key) -> app.checks.remove(saved.id)
+        }
         close()
         onSaved(saved, machine == null)
     }
@@ -299,7 +330,10 @@ class MachineSheet(
         val machine = machine ?: return
         hideKeyboard()
         confirm(context, parent as FrameLayout, "Remove “${machine.name}”?", "You can add it again with its address and key.", "Remove") {
-            app.store.remove(machine.id)
+            if (!app.store.remove(machine.id)) {
+                say("Couldn't remove it: the phone's storage may be full.", true)
+                return@confirm
+            }
             app.checks.remove(machine.id)
             close()
             onSaved(machine, false)

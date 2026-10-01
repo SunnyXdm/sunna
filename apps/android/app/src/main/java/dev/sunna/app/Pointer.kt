@@ -88,13 +88,14 @@ class Viewport {
         clamp()
     }
 
-    /** A zoomed picture covers the screen; no empty margins past its edges. */
+    /** A zoomed picture covers the area it's shown in (above the keyboard,
+     *  clear of the cutout); no empty margins past its edges. */
     private fun clamp() {
         update()
         val w = picture.width()
         val h = picture.height()
-        panX = if (w <= viewWidth) 0f else panX.coerceIn(viewWidth - w / 2 - safe.centerX(), w / 2 - safe.centerX())
-        panY = if (h <= viewHeight) 0f else panY.coerceIn(viewHeight - h / 2 - safe.centerY(), h / 2 - safe.centerY())
+        panX = if (w <= safe.width()) 0f else panX.coerceIn(safe.right - w / 2 - safe.centerX(), safe.left + w / 2 - safe.centerX())
+        panY = if (h <= safe.height()) 0f else panY.coerceIn(safe.bottom - h / 2 - safe.centerY(), safe.top + h / 2 - safe.centerY())
         update()
     }
 
@@ -104,8 +105,8 @@ class Viewport {
         if (zoom <= 1.001f) return false
         var dx = 0f
         var dy = 0f
-        if (x < margin) dx = margin - x else if (x > viewWidth - margin) dx = viewWidth - margin - x
-        if (y < margin) dy = margin - y else if (y > viewHeight - margin) dy = viewHeight - margin - y
+        if (x < safe.left + margin) dx = safe.left + margin - x else if (x > safe.right - margin) dx = safe.right - margin - x
+        if (y < safe.top + margin) dy = safe.top + margin - y else if (y > safe.bottom - margin) dy = safe.bottom - margin - y
         if (dx == 0f && dy == 0f) return false
         panBy(dx, dy)
         return true

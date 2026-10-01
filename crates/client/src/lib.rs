@@ -473,10 +473,11 @@ fn spawn_decoder(
                     Err(error) => {
                         counters.decode_errors.fetch_add(1, Ordering::Relaxed);
                         tracing::debug!(frame_id = frame.frame_id, %error, "decode failed");
-                        if !awaiting_keyframe {
-                            awaiting_keyframe = true;
-                            let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
-                        }
+                        // Even a keyframe we were waiting for: without asking
+                        // again, a failed first one would leave the picture
+                        // frozen until the host happens to send another.
+                        awaiting_keyframe = true;
+                        let _ = events.send(DecodeEvent::NeedKeyframe { epoch });
                     }
                 }
             }
@@ -502,17 +503,24 @@ pub async fn run_client(
     mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
+    let hello = ControlMessage::Hello {
+        version: sunna_proto::PROTOCOL_VERSION,
+        name: options.name.clone(),
+        token: options.token.clone(),
+        stream: options.stream.clone(),
+        device: options.device.clone(),
+    };
+    // A host that never answers, or a viewer leaving meanwhile, mustn't leave
+    // the session hanging before it starts.
+    let reply = tokio::select! {
+        reply = tokio::time::timeout(Duration::from_secs(10), async {
+            control.send(&hello).await?;
+            Ok::<_, anyhow::Error>(control.recv().await?)
+        }) => reply.map_err(|_| anyhow::anyhow!("no answer from the host for 10 seconds"))??,
+        _ = left(&mut options.leave) => anyhow::bail!("left before the session started"),
+    };
     let host_sends_audio;
-    control
-        .send(&ControlMessage::Hello {
-            version: sunna_proto::PROTOCOL_VERSION,
-            name: options.name.clone(),
-            token: options.token.clone(),
-            stream: options.stream.clone(),
-            device: options.device.clone(),
-        })
-        .await?;
-    let mut info = match control.recv().await? {
+    let mut info = match reply {
         ControlMessage::HelloAck {
             version,
             name,

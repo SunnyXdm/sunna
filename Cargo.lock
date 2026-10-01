@@ -4839,6 +4839,7 @@ dependencies = [
  "jni 0.21.1",
  "serde_json",
  "sunna-client",
+ "sunna-clipboard",
  "sunna-codec",
  "sunna-proto",
  "sunna-transport",

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use jni::objects::{JClass, JObject, JObjectArray, JString};
+use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
 use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jobjectArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use serde_json::json;
@@ -264,22 +264,38 @@ struct Connect {
     key: String,
     name: String,
     settings: StreamSettings,
+    /// Share the clipboard (the app relays the phone's; see sunna_clipboard).
+    clipboard: bool,
+}
+
+/// Resolves once the app has asked to leave.
+async fn left(leave: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = leave.wait_for(|&leave| leave).await;
 }
 
 async fn run(session: Arc<Session>, connect: Connect, input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>, requests: tokio::sync::watch::Receiver<Option<StreamSettings>>, leave: tokio::sync::watch::Receiver<bool>) {
     let asked_to_leave = leave.clone();
-    let addr = match reach::resolve(&connect.address).await {
-        Ok(addr) => addr,
-        Err(check) => return session.end(check.detail),
+    let mut watching = leave.clone();
+    // Cancel works at every step: finding the host, connecting, starting.
+    let addr = tokio::select! {
+        found = reach::resolve(&connect.address) => match found {
+            Ok(addr) => addr,
+            Err(check) => return session.end(check.detail),
+        },
+        _ = left(&mut watching) => return session.end(String::new()),
     };
     tracing::warn!("dev TLS: server certificate is NOT verified");
-    let client = match tokio::time::timeout(Duration::from_secs(10), sunna_transport::connect_insecure(addr, "sunna")).await {
-        Ok(Ok(client)) => client,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "couldn't connect");
-            return session.end(format!("Couldn't reach {addr}. Is Sunna sharing on that computer?"));
-        }
-        Err(_) => return session.end(format!("Nothing answered at {addr} for 10 seconds. Is Sunna sharing on that computer?")),
+    let connecting = tokio::time::timeout(Duration::from_secs(10), sunna_transport::connect_insecure(addr, "sunna"));
+    let client = tokio::select! {
+        connected = connecting => match connected {
+            Ok(Ok(client)) => client,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "couldn't connect");
+                return session.end(format!("Couldn't reach {addr}. Is Sunna sharing on that computer?"));
+            }
+            Err(_) => return session.end(format!("Nothing answered at {addr} for 10 seconds. Is Sunna sharing on that computer?")),
+        },
+        _ = left(&mut watching) => return session.end(String::new()),
     };
     if *asked_to_leave.borrow() {
         client.connection.close(0u32.into(), b"bye");
@@ -293,7 +309,7 @@ async fn run(session: Arc<Session>, connect: Connect, input: tokio::sync::mpsc::
     let options = ClientOptions {
         // A new pointer shape: the app puts it on.
         wake: Some(sunna_client::Wake(Arc::new(move || woken.bump()))),
-        clipboard: false,
+        clipboard: connect.clipboard,
         name: connect.name,
         token: connect.key,
         stream: connect.settings,
@@ -305,7 +321,7 @@ async fn run(session: Arc<Session>, connect: Connect, input: tokio::sync::mpsc::
     };
     let result = run_client(connection, options, move |frame| shown.frame(frame.width, frame.height), |_| {}, input).await;
     let reason = match result {
-        Ok(_) if *asked_to_leave.borrow() => String::new(),
+        _ if *asked_to_leave.borrow() => String::new(),
         Ok(_) => why_it_ended(watched.close_reason()),
         Err(error) => {
             tracing::warn!("session error: {error:#}");
@@ -355,6 +371,12 @@ pub extern "system" fn Java_dev_sunna_app_Native_init(mut env: JNIEnv, _: JClass
         sunna_client::set_state_dir(std::path::PathBuf::from(dir).join("sunna"));
         tracing::info!(version = env!("CARGO_PKG_VERSION"), protocol = sunna_proto::PROTOCOL_VERSION, "Sunna native library ready");
     })
+}
+
+/// The wire protocol's version, for the app's About.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_protocol(_: JNIEnv, _: JClass) -> jint {
+    sunna_proto::PROTOCOL_VERSION as jint
 }
 
 /// Is a host there, does the key fit, and what is it? JSON (`reach::Check`).
@@ -424,7 +446,10 @@ pub extern "system" fn Java_dev_sunna_app_Native_connect(
     codec: JString,
     max_width: jint,
     max_height: jint,
+    bitrate_mbps: jint,
+    fps: jint,
     audio: jboolean,
+    clipboard: jboolean,
 ) -> jlong {
     let address = text(&mut env, &address);
     let key = text(&mut env, &key);
@@ -437,11 +462,12 @@ pub extern "system" fn Java_dev_sunna_app_Native_connect(
         let settings = StreamSettings {
             codec: (!codec.is_empty()).then_some(codec),
             max_size: (max_width > 0 && max_height > 0).then_some((max_width as u32, max_height as u32)),
+            max_bitrate_kbps: (bitrate_mbps > 0).then_some(bitrate_mbps as u32 * 1000),
+            fps: (fps > 0).then_some(fps as u32),
             audio: Some(audio == JNI_TRUE),
             // Tiles ahead of the video are for the desktop viewers' own
             // renderers; here the decoder draws the whole picture.
             fast_lane: Some(false),
-            ..Default::default()
         };
         let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
         let (input, input_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -459,7 +485,7 @@ pub extern "system" fn Java_dev_sunna_app_Native_connect(
             last_shown: Mutex::new((sunna_codec_stats().shown, Instant::now())),
         });
         sessions().lock().unwrap().insert(handle, Arc::clone(&session));
-        let connect = Connect { address, key, name, settings };
+        let connect = Connect { address, key, name, settings, clipboard: clipboard == JNI_TRUE };
         runtime().spawn(forward(command_rx, input));
         runtime().spawn(run(session, connect, input_rx, request_rx, leave_rx));
         handle
@@ -613,6 +639,47 @@ pub extern "system" fn Java_dev_sunna_app_Native_shortcut(_: JNIEnv, _: JClass, 
         if let Some(shortcut) = session.shortcuts.get(index as usize) {
             session.send(Command::Keys(sunna_client::keys::press(shortcut.keys)));
         }
+    }
+}
+
+/// The phone's clipboard has something new: 0 text (UTF-8), 1 a PNG image.
+/// Sessions sharing the clipboard send it to their host.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_clipboardCopied(env: JNIEnv, _: JClass, kind: jint, data: JByteArray) {
+    let Ok(bytes) = env.convert_byte_array(&data) else { return };
+    let content = match kind {
+        0 => match String::from_utf8(bytes) {
+            Ok(text) => sunna_clipboard::ClipboardContent::Text(text),
+            Err(_) => return,
+        },
+        1 => sunna_clipboard::ClipboardContent::Png(bytes),
+        _ => return,
+    };
+    sunna_clipboard::copied_on_phone(content);
+}
+
+/// Moves on whenever a host has copied something for the phone's clipboard.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_clipboardRemoteCount(_: JNIEnv, _: JClass) -> jlong {
+    sunna_clipboard::remote_count() as jlong
+}
+
+/// What the host copied last, once: a kind byte (0 text, 1 PNG), then the data.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_clipboardTake(env: JNIEnv, _: JClass) -> jbyteArray {
+    let Some(content) = sunna_clipboard::take_for_phone() else { return std::ptr::null_mut() };
+    let bytes = match content {
+        sunna_clipboard::ClipboardContent::Text(text) => [&[0u8][..], text.as_bytes()].concat(),
+        sunna_clipboard::ClipboardContent::Png(data) => [&[1u8][..], &data].concat(),
+    };
+    env.byte_array_from_slice(&bytes).map(|array| array.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+/// Share the clipboard with the host or not, during the session.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_setClipboardShared(_: JNIEnv, _: JClass, handle: jlong, shared: jboolean) {
+    if let Some(session) = session(handle) {
+        session.live.lock().unwrap().clipboard_paused = shared != JNI_TRUE;
     }
 }
 

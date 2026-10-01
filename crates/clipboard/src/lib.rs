@@ -10,6 +10,11 @@ use tokio::sync::watch;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+// Plain Rust (the app relays Android's clipboard), so it builds and tests
+// anywhere; only Android uses it.
+mod phone;
+
+pub use phone::{copied_on_phone, remote_count, take_for_phone};
 
 pub const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -82,7 +87,11 @@ pub fn system_clipboard() -> anyhow::Result<Box<dyn Clipboard>> {
     {
         Ok(Box::new(macos::MacClipboard::new()?))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    {
+        Ok(Box::new(phone::PhoneClipboard))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "android")))]
     {
         anyhow::bail!("clipboard is unsupported on this platform")
     }

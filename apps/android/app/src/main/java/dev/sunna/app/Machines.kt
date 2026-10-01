@@ -152,10 +152,19 @@ fun statusColor(state: String): Int = when (state) {
 }
 
 /** The computers you've added, in this app's private files (the keys are
- *  secrets; backups leave them out). */
-class MachineStore(context: Context) {
+ *  secrets; backups leave them out). One for the whole process, so work
+ *  still running for an old screen can't save over a newer one. */
+class MachineStore private constructor(context: Context) {
     private val file = File(context.filesDir, "machines.json")
     private var cached: List<Machine>? = null
+
+    companion object {
+        @Volatile
+        private var instance: MachineStore? = null
+
+        fun get(context: Context): MachineStore =
+            instance ?: synchronized(this) { instance ?: MachineStore(context.applicationContext).also { instance = it } }
+    }
 
     @Synchronized
     fun list(): List<Machine> {
@@ -168,14 +177,19 @@ class MachineStore(context: Context) {
         return machines
     }
 
+    /** Write the list, then swap it in, so a crash can't leave half a file.
+     *  False (and nothing changed) if the phone couldn't store it. */
     @Synchronized
-    private fun save(machines: List<Machine>) {
+    private fun save(machines: List<Machine>): Boolean {
         val array = JSONArray()
         machines.forEach { array.put(it.toJson()) }
         val temporary = File(file.parentFile, "machines.json.tmp")
-        temporary.writeText(JSONObject().put("machines", array).toString(2))
-        temporary.renameTo(file)
-        cached = machines
+        val saved = runCatching {
+            temporary.writeText(JSONObject().put("machines", array).toString(2))
+            temporary.renameTo(file)
+        }.getOrDefault(false)
+        if (saved) cached = machines
+        return saved
     }
 
     private fun now() = System.currentTimeMillis() / 1000
@@ -202,33 +216,32 @@ class MachineStore(context: Context) {
     }
 
     @Synchronized
-    fun add(draft: Draft): Machine {
+    fun add(draft: Draft): Machine? {
         val machine = learn(Machine(newId(), nameFor(draft), draft.address.trim(), draft.key.trim(), added = now()), draft.about)
-        save(list() + machine)
-        return machine
+        return machine.takeIf { save(list() + it) }
     }
 
     @Synchronized
     fun update(id: String, draft: Draft): Machine? {
         var updated: Machine? = null
-        save(list().map { machine ->
+        val saved = save(list().map { machine ->
             if (machine.id != id) return@map machine
             val moved = machine.address != draft.address.trim()
             // A different address may be a different computer.
             val base = if (moved) machine.copy(os = "", device = "", model = "", width = 0, height = 0, lastSeen = 0) else machine
             learn(base.copy(name = nameFor(draft), address = draft.address.trim(), key = draft.key.trim()), draft.about).also { updated = it }
         })
-        return updated
+        return updated?.takeIf { saved }
     }
 
     @Synchronized
-    fun remove(id: String) = save(list().filter { it.id != id })
+    fun remove(id: String): Boolean = save(list().filter { it.id != id })
 
     @Synchronized
-    fun put(index: Int, machine: Machine) {
+    fun put(index: Int, machine: Machine): Boolean {
         val machines = list().filter { it.id != machine.id }.toMutableList()
         machines.add(index.coerceIn(0, machines.size), machine)
-        save(machines)
+        return save(machines)
     }
 
     /** Keep what the computers said about themselves. */
@@ -241,7 +254,9 @@ class MachineStore(context: Context) {
     }
 
     @Synchronized
-    fun markConnected(id: String) = save(list().map { if (it.id == id) it.copy(lastConnected = now(), lastSeen = now()) else it })
+    fun markConnected(id: String) {
+        save(list().map { if (it.id == id) it.copy(lastConnected = now(), lastSeen = now()) else it })
+    }
 }
 
 /** Small preferences: how touch works, what the session shows. */
@@ -258,6 +273,28 @@ class Prefs(context: Context) {
     var stats: Boolean
         get() = prefs.getBoolean("stats", false)
         set(value) = prefs.edit().putBoolean("stats", value).apply()
+
+    /** What hosts call this phone ("Priya's Pixel is connected"); empty for
+     *  the phone's own name. */
+    var deviceName: String
+        get() = prefs.getString("device_name", "") ?: ""
+        set(value) = prefs.edit().putString("device_name", value.trim()).apply()
+
+    /** Let the keyboard correct words and swipe-type; Sunna retypes what
+     *  changes on the host. Off: every key goes over as it's pressed. */
+    var suggestions: Boolean
+        get() = prefs.getBoolean("suggestions", false)
+        set(value) = prefs.edit().putBoolean("suggestions", value).apply()
+
+    /** Where the session's ••• button sits along the top: -1 (left) to 1 (right). */
+    var menuButtonAt: Float
+        get() = prefs.getFloat("menu_button_at", 0f)
+        set(value) = prefs.edit().putFloat("menu_button_at", value.coerceIn(-1f, 1f)).apply()
+
+    /** Share the clipboard with the host during sessions. */
+    var clipboard: Boolean
+        get() = prefs.getBoolean("clipboard", true)
+        set(value) = prefs.edit().putBoolean("clipboard", value).apply()
 
     var sound: Boolean
         get() = prefs.getBoolean("sound", true)

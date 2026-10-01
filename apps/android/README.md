@@ -27,8 +27,43 @@ Then, with `ANDROID_HOME` (or `local.properties`) pointing at the SDK:
 
 Gradle builds the Rust library first (`buildRust`: always optimized, for
 arm64-v8a and x86_64). `-Psunna.rustToolchain=<toolchain>` picks a rustup
-toolchain other than the default. The release build is signed with the debug
-key until Sunna has one of its own.
+toolchain other than the default.
+
+## Signing
+
+Android installs an update only if it's signed with the same key as the app
+it replaces, so release builds are signed with a key of your own, kept
+outside the repository. Make one once:
+
+```sh
+mkdir -p ~/.sunna/android && chmod 700 ~/.sunna/android
+keytool -genkeypair -keystore ~/.sunna/android/sunna-release.jks -alias sunna \
+  -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=Sunna"
+```
+
+and describe it in `~/.sunna/android/signing.properties` (readable only by
+you):
+
+```properties
+storeFile=/home/you/.sunna/android/sunna-release.jks
+storePassword=…
+keyAlias=sunna
+keyPassword=…
+```
+
+`-Psunna.signing=<file>` or `SUNNA_ANDROID_SIGNING=<file>` points at another
+properties file. Without one, the release build is signed with the debug key.
+Back the key up: an app signed with a different key can't update this one;
+it has to be uninstalled first, which deletes its computers.
+
+## Adding computers
+
+Android doesn't let one app ask Tailscale which devices it knows, so the app
+can't list the tailnet's computers. Instead, a computer shows a QR code of its
+`sunna://` link: `sunna-host link` on Linux, Settings › Show QR Code in the
+desktop app, or `scripts/run.sh host` on a Mac. The phone's camera opens the
+link, and Sunna's Add a Computer comes up with the address and key filled in
+(an intent filter for the `sunna` scheme).
 
 ## Trying it in the emulator
 

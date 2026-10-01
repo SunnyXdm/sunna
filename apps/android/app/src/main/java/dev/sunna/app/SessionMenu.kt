@@ -72,45 +72,39 @@ class SessionMenu(
         body.addView(quick)
 
         // The host's own shortcuts.
-        body.addView(section("Shortcuts"))
+        body.addView(context.sectionTitle("Shortcuts"))
         val shortcuts = runCatching { Native.shortcuts(check.os) }.getOrDefault(emptyArray())
-        val list = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = rounded(white(.05f), dp(16f))
-        }
-        shortcuts.forEachIndexed { index, title ->
-            list.addView(row(title) {
+        body.addView(context.group(*shortcuts.mapIndexed { index, title ->
+            context.linkRow(title) {
                 close()
                 session.shortcut(index)
-            })
-            if (index < shortcuts.size - 1) list.addView(View(context).apply { setBackgroundColor(Palette.LINE) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { marginStart = dpi(16f) })
-        }
-        body.addView(list)
+            }
+        }.toTypedArray()))
+
+        // The keyboard.
+        body.addView(context.sectionTitle("Keyboard"))
+        body.addView(context.group(
+            SwitchRow(context, "Keyboard suggestions", "Corrections and swipe typing; Sunna retypes what changes", { app.prefs.suggestions }) { session.setSuggestions(it) },
+        ))
+
+        // The clipboard.
+        body.addView(context.sectionTitle("Clipboard"))
+        body.addView(context.group(
+            SwitchRow(context, "Share the clipboard", "Copy on one, paste on the other, both ways", { session.sharingClipboard }) { session.shareClipboard(it) },
+            context.linkRow("Type clipboard text", "Key by key, for login screens and password prompts") {
+                close()
+                session.post { session.typeClipboard() }
+            },
+        ))
 
         // The video.
-        body.addView(section("Video"))
-        val video = LinearLayout(context).apply {
+        body.addView(context.sectionTitle("Video"))
+        body.addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(white(.05f), dp(16f))
             setPadding(dpi(14f), dpi(6f), dpi(14f), dpi(10f))
-        }
-        video.addView(choice("Sharpness", listOf("Full" to 100, "75%" to 75, "50%" to 50), { app.prefs.scale }) {
-            app.prefs.scale = it
-            session.applyStream()
+            for (row in context.videoChoices(app.prefs) { session.applyStream() }) addView(row)
         })
-        video.addView(choice("Frame rate", listOf("60" to 60, "30" to 30), { app.prefs.fps }) {
-            app.prefs.fps = it
-            session.applyStream()
-        })
-        video.addView(choice("Bitrate", listOf("Auto" to 0, "10" to 10, "20" to 20, "40" to 40, "80" to 80), { app.prefs.bitrateMbps }) {
-            app.prefs.bitrateMbps = it
-            session.applyStream()
-        })
-        video.addView(choice("Codec", listOf("Auto" to "", "HEVC" to "hevc", "H.264" to "h264"), { app.prefs.codec }) {
-            app.prefs.codec = it
-            session.applyStream()
-        })
-        body.addView(video)
 
         body.addView(context.button("Disconnect", ButtonStyle.DESTRUCTIVE, R.drawable.ic_power) {
             close()
@@ -131,12 +125,6 @@ class SessionMenu(
         if (w == 0) return
         val fps = if (status.isNull("shownFps")) status.optInt("fps") else status.optDouble("shownFps").toInt()
         detail.text = "${codecName(status.optString("codec"))}  ·  $w×$h  ·  $fps fps"
-    }
-
-    private fun section(title: String) = context.text(13f, Palette.TEXT_3, Type.semibold).apply {
-        text = title.uppercase()
-        letterSpacing = 0.06f
-        setPadding(dpi(6f), dpi(22f), 0, dpi(8f))
     }
 
     private fun refreshActions() = actions.forEach { it() }
@@ -181,53 +169,4 @@ class SessionMenu(
     }
 
     private fun action(icon: Int, label: () -> String, on: () -> Boolean, run: () -> Unit) = action({ icon }, label, on, run)
-
-    private fun row(title: String, run: () -> Unit) = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dpi(50f)
-        setPadding(dpi(16f), 0, dpi(16f), 0)
-        background = ripple(null, dp(16f))
-        addView(context.text(15.5f, Palette.TEXT).apply { text = title }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        addView(context.icon(R.drawable.ic_arrow, Palette.TEXT_3, 16f), LinearLayout.LayoutParams(dpi(16f), dpi(16f)))
-        setOnClickListener { run() }
-    }
-
-    /** A labeled row of choices, one of them chosen. */
-    private fun <T> choice(title: String, options: List<Pair<String, T>>, current: () -> T, choose: (T) -> Unit): View {
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dpi(8f), 0, 0)
-        }
-        row.addView(context.text(14.5f, Palette.TEXT).apply { text = title }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        val group = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = rounded(0x40000000, dp(10f))
-            setPadding(dpi(3f), dpi(3f), dpi(3f), dpi(3f))
-        }
-        val pills = options.map { (label, value) ->
-            context.text(13.5f, Palette.TEXT_2, Type.medium).apply {
-                text = label
-                gravity = Gravity.CENTER
-                minWidth = dpi(40f)
-                setPadding(dpi(9f), dpi(7f), dpi(9f), dpi(7f))
-                setOnClickListener {
-                    choose(value)
-                    refreshActions()
-                }
-            }.also { group.addView(it) } to value
-        }
-        val paint = {
-            for ((pill, value) in pills) {
-                val chosen = value == current()
-                pill.background = if (chosen) rounded(white(.16f), dp(8f)) else null
-                pill.setTextColor(if (chosen) Palette.TEXT else Palette.TEXT_2)
-            }
-        }
-        actions += paint
-        paint()
-        row.addView(group)
-        return row
-    }
 }

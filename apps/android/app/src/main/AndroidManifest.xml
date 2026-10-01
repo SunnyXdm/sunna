@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Keeping a session connected while the app is in the background, and
+         its notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
@@ -25,7 +30,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- The link a computer prints when it starts sharing. -->
+            <!-- The link a computer prints when it starts sharing (or shows as a QR code). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -33,5 +38,21 @@
                 <data android:scheme="sunna" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".SessionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a remote desktop session connected while the app is in the background" />
+        </service>
+
+        <!-- The host's copied images, for apps that paste them. -->
+        <provider
+            android:name=".ClipboardFiles"
+            android:authorities="dev.sunna.app.clipboard"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

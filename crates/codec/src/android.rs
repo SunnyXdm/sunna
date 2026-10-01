@@ -100,7 +100,7 @@ fn monotonic_ns() -> i64 {
     let mut time = Timespec { seconds: 0, nanoseconds: 0 };
     // SAFETY: plain libc call into a local.
     unsafe { clock_gettime(CLOCK_MONOTONIC, &mut time) };
-    time.seconds as i64 * 1_000_000_000 + time.nanoseconds as i64
+    time.seconds * 1_000_000_000 + time.nanoseconds
 }
 
 /// A surface to draw on: one reference to the app's `ANativeWindow`.
@@ -312,25 +312,33 @@ impl Active {
 
     /// Put one access unit into the decoder.
     fn queue(&self, data: &[u8], sequence: u64) -> anyhow::Result<()> {
-        let codec = self.codec.read().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(codec) = codec.as_ref() else { bail!("the decoder stopped") };
         // The decoder hands input buffers back as it finishes frames; a short
-        // wait covers a busy moment, a long one means it has stalled.
+        // wait covers a busy moment, a long one means it has stalled. The lock
+        // is taken per wait, so stopping (a surface going away) never waits
+        // on more than one.
         let deadline = Instant::now() + Duration::from_millis(100);
-        let index = loop {
+        loop {
+            let guard = self.codec.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(codec) = guard.as_ref() else { bail!("the decoder stopped") };
             // SAFETY: a live codec.
             let index = unsafe { AMediaCodec_dequeueInputBuffer(codec.0, 10_000) };
             if index >= 0 {
-                break index as usize;
+                return self.fill(codec, index as usize, data, sequence);
             }
             if index != TRY_AGAIN_LATER {
                 self.dead.store(true, Ordering::Release);
                 bail!("decoder input failed ({index})");
             }
+            drop(guard);
             if Instant::now() > deadline {
+                // A new decoder at the next keyframe, rather than this one forever.
+                self.dead.store(true, Ordering::Release);
                 bail!("decoder stalled: no input buffer for 100 ms");
             }
-        };
+        }
+    }
+
+    fn fill(&self, codec: &Codec, index: usize, data: &[u8], sequence: u64) -> anyhow::Result<()> {
         let mut capacity = 0usize;
         // SAFETY: the buffer at `index` is ours until queued.
         let buffer = unsafe { AMediaCodec_getInputBuffer(codec.0, index, &mut capacity) };
@@ -366,7 +374,7 @@ impl Active {
             let codec = self.codec.read().unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(codec) = codec.as_ref() else { return };
             // SAFETY: a live codec; `info` is ours.
-            let index = unsafe { AMediaCodec_dequeueOutputBuffer(codec.0, &mut info, 20_000) };
+            let index = unsafe { AMediaCodec_dequeueOutputBuffer(codec.0, &mut info, 10_000) };
             match index {
                 index if index >= 0 => {
                     let mut newest = (index as usize, info);
@@ -506,7 +514,7 @@ impl MediaCodecDecoder {
             height,
             active: None,
             // A keyframe of a busy screen at a high bitrate runs to a few MB.
-            max_input: ((width as usize * height as usize).max(2 << 20)).min(16 << 20),
+            max_input: (width as usize * height as usize).clamp(2 << 20, 16 << 20),
             sequence: 0,
         })
     }

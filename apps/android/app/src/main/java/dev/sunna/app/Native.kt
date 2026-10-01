@@ -11,6 +11,9 @@ object Native {
     /** Once, before anything else: where this phone's Sunna state lives. */
     @JvmStatic external fun init(filesDir: String)
 
+    /** The wire protocol's version, for About. */
+    @JvmStatic external fun protocol(): Int
+
     /** Is a host there and does the key fit? JSON (`reach::Check`); blocks. */
     @JvmStatic external fun check(address: String, key: String): String
 
@@ -21,7 +24,7 @@ object Native {
     @JvmStatic external fun parseAddress(address: String): String
 
     /** Start a session; it connects in the background. Returns its handle. */
-    @JvmStatic external fun connect(address: String, key: String, name: String, hostOs: String, codec: String, maxWidth: Int, maxHeight: Int, audio: Boolean): Long
+    @JvmStatic external fun connect(address: String, key: String, name: String, hostOs: String, codec: String, maxWidth: Int, maxHeight: Int, bitrateMbps: Int, fps: Int, audio: Boolean, clipboard: Boolean): Long
 
     /** The surface the decoder draws sessions on; null when it goes away. */
     @JvmStatic external fun setSurface(surface: Surface?)
@@ -58,6 +61,17 @@ object Native {
     @JvmStatic external fun shortcut(handle: Long, index: Int)
 
     @JvmStatic external fun setStream(handle: Long, codec: String, maxWidth: Int, maxHeight: Int, bitrateMbps: Int, fps: Int, audio: Boolean)
+
+    /** The phone's clipboard has something new: kind 0 text (UTF-8), 1 PNG. */
+    @JvmStatic external fun clipboardCopied(kind: Int, data: ByteArray)
+
+    /** Moves on whenever a host has copied something for the phone. */
+    @JvmStatic external fun clipboardRemoteCount(): Long
+
+    /** What the host copied, once: a kind byte (0 text, 1 PNG), then the data. */
+    @JvmStatic external fun clipboardTake(): ByteArray?
+
+    @JvmStatic external fun setClipboardShared(handle: Long, shared: Boolean)
 
     @JvmStatic external fun leave(handle: Long)
 

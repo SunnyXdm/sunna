@@ -73,7 +73,7 @@ class SessionView(
     private val pointer = PointerView(activity, viewport)
     private val keyInput = KeyInput(activity, this)
     private val mac = check.os.isEmpty() || check.os.lowercase().contains("mac")
-    private val keyBar = KeyBar(activity, mac, { code, down -> if (session != 0L) Native.macKey(session, code, down) }, { key(it) }) { keyboard(false) }
+    private val keyBar = KeyBar(activity, mac, { code, down -> if (session != 0L) Native.macKey(session, code, down) }, { barKey(it) }) { keyboard(false) }
     private val menuButton = FrameLayout(activity)
     private val stats: TextView = activity.text(11.5f, Color.WHITE, Type.medium)
     private val launch = LaunchOverlay(activity, tile() ?: ScreenView(activity).apply { os = Os.of(check.os) }, machine.name) { leave() }
@@ -94,6 +94,15 @@ class SessionView(
     private var status = JSONObject()
     private var skippedNoted = false
     private var menu: SessionMenu? = null
+    private val clipboard = PhoneClipboard(activity, app)
+    /** Delivers results even after this view is gone (a View's own post
+     *  waits for it to come back, which it won't). */
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    /** Hardware keys and mouse buttons down on the host, to let go of when
+     *  Sunna loses focus with them held. */
+    private val keysDown = HashSet<Int>()
+    private val mouseDown = HashSet<Int>()
+    private var lastStreamError: String? = null
 
     val active: Boolean get() = session != 0L && !ended
 
@@ -117,6 +126,7 @@ class SessionView(
             addView(activity.icon(R.drawable.ic_more, Color.WHITE, 18f), LayoutParams(dpi(18f), dpi(18f), Gravity.CENTER))
             contentDescription = "Session menu"
             setOnClickListener { openMenu() }
+            draggableAlongTop()
             alpha = 0f
             visibility = View.GONE
         }
@@ -176,17 +186,21 @@ class SessionView(
         immersive(true)
         // Asking the phone about its decoders can take a moment: not on the
         // thread drawing the animation.
-        val name = deviceName()
+        val name = app.prefs.deviceName.ifEmpty { deviceName() }
         val sound = app.prefs.sound
         app.background {
             codec = app.prefs.codec.ifEmpty { if (Decoders.hardware("video/hevc")) "hevc" else "h264" }
             val (w, h) = requestedSize()
-            val handle = Native.connect(machine.address, machine.key, name, check.os, codec, w, h, sound)
-            post {
+            // The clipboard channel always opens; not sharing pauses it, so it
+            // can be turned on during the session.
+            val handle = Native.connect(machine.address, machine.key, name, check.os, codec, w, h, app.prefs.bitrateMbps, app.prefs.fps, sound, true)
+            main.post {
                 if (ended) {
                     Native.close(handle)
                 } else {
                     session = handle
+                    Native.setClipboardShared(handle, app.prefs.clipboard)
+                    if (app.prefs.clipboard) clipboard.start()
                     Choreographer.getInstance().postFrameCallback(this)
                 }
             }
@@ -203,6 +217,7 @@ class SessionView(
         return Decoders.fit(if (codec == "hevc") "video/hevc" else "video/avc", w, h)
     }
 
+    /** This phone, as hosts name it: "Sunny's Pixel", or its make and model. */
     private fun deviceName(): String =
         Settings.Global.getString(activity.contentResolver, Settings.Global.DEVICE_NAME)?.ifEmpty { null }
             ?: "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
@@ -218,6 +233,8 @@ class SessionView(
 
     private fun finish(reason: String?) {
         ended = true
+        menu?.close()
+        clipboard.stop()
         keyboard(false)
         immersive(false)
         menuButton.visibility = View.GONE
@@ -260,6 +277,7 @@ class SessionView(
             dimMenuButtonLater()
             stats.visibility = if (app.prefs.stats) View.VISIBLE else View.GONE
             requestFocus()
+            app.askForNotifications()
             if (!activity.getSharedPreferences("sunna", 0).getBoolean("hinted", false)) {
                 activity.getSharedPreferences("sunna", 0).edit().putBoolean("hinted", true).apply()
                 val how = if (trackpad) "The screen is a trackpad: tap to click, two fingers to scroll." else "Tap to click, two fingers to scroll."
@@ -287,6 +305,7 @@ class SessionView(
             lastStatusAt = now
             runCatching { JSONObject(Native.status(session)) }.getOrNull()?.let { refresh(it) }
         }
+        clipboard.deliver()
         if (!ended) Choreographer.getInstance().postFrameCallback(this)
     }
 
@@ -295,12 +314,20 @@ class SessionView(
         val w = next.optInt("width")
         val h = next.optInt("height")
         if (w > 0 && h > 0 && (w != viewport.streamWidth || h != viewport.streamHeight)) {
+            val (oldW, oldH) = viewport.streamWidth to viewport.streamHeight
             viewport.streamWidth = w
             viewport.streamHeight = h
             surface.holder.setFixedSize(w, h)
             viewport.reset()
             placePicture()
-            if (!pointer.placed) pointer.moveTo(w / 2f, h / 2f)
+            // The same place on the host's screen, in the new stream's pixels.
+            if (!pointer.placed || oldW == 0 || oldH == 0) pointer.moveTo(w / 2f, h / 2f)
+            else pointer.moveTo(pointer.streamX * w / oldW, pointer.streamY * h / oldH)
+        }
+        val streamError = if (next.isNull("streamError")) null else next.optString("streamError")
+        if (streamError != lastStreamError) {
+            lastStreamError = streamError
+            if (streamError != null) app.notice.show("The computer kept its video as it was: $streamError")
         }
         val cursor = next.optLong("cursor")
         if (cursor != lastCursor) {
@@ -358,15 +385,56 @@ class SessionView(
         pointer.invalidate()
     }
 
+    /** The ••• button slides along the top edge, out of the way of what's
+     *  under it; a tap still opens the menu. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun View.draggableAlongTop() {
+        val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+        var downX = 0f
+        var startX = 0f
+        var dragging = false
+        setOnTouchListener { view, event ->
+            val room = (this@SessionView.width - view.width) / 2f - dpi(12f)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    startX = view.translationX
+                    dragging = false
+                    dimMenuButtonLater()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!dragging && kotlin.math.abs(event.rawX - downX) > slop) dragging = true
+                    if (dragging) view.translationX = (startX + event.rawX - downX).coerceIn(-room, room)
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragging) {
+                        if (room > 0) app.prefs.menuButtonAt = view.translationX / room
+                        placeChrome()
+                    } else {
+                        view.performClick()
+                    }
+                }
+            }
+            true
+        }
+    }
+
     private fun placeChrome() {
         val top = max(cutout.top, dpi(8f)) + dpi(6f)
+        val room = (width - dpi(52f)) / 2f - dpi(12f)
+        if (room > 0) menuButton.translationX = app.prefs.menuButtonAt * room
         (menuButton.layoutParams as LayoutParams).topMargin = top
+        // On the side the ••• button isn't, as wide as the room beside it.
+        val right = app.prefs.menuButtonAt < 0f
         (stats.layoutParams as LayoutParams).apply {
             topMargin = top
+            gravity = Gravity.TOP or if (right) Gravity.END else Gravity.START
             leftMargin = cutout.left + dpi(10f)
+            rightMargin = cutout.right + dpi(10f)
         }
-        // Clear of the menu button in the middle.
-        stats.maxWidth = (width / 2 - dpi(26f) - dpi(12f) - cutout.left - dpi(10f)).coerceAtLeast(dpi(120f))
+        val button = width / 2f + menuButton.translationX
+        val beside = if (right) width - button - cutout.right else button - cutout.left
+        stats.maxWidth = (beside - dpi(26f) - dpi(12f) - dpi(10f)).toInt().coerceAtLeast(dpi(120f))
         stats.setLineSpacing(0f, 1.15f)
         menuButton.requestLayout()
         stats.requestLayout()
@@ -418,13 +486,17 @@ class SessionView(
 
     override fun button(button: Int, down: Boolean) {
         if (session == 0L) return
-        if (down) pointer.pulse()
+        if (down) {
+            pointer.pulse()
+            keyInput.reset()
+        }
         Native.button(session, button, down)
     }
 
     override fun click(button: Int) {
         if (session == 0L) return
         pointer.pulse()
+        keyInput.reset()
         Native.button(session, button, true)
         Native.button(session, button, false)
     }
@@ -454,9 +526,11 @@ class SessionView(
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
     }
 
-    /** A mouse button pressed with the pointer's touch-down (the rest come as
-     *  button presses of their own), or -1. */
-    private var mouseHeld = -1
+    private fun mouseButtonPress(button: Int, down: Boolean) {
+        if (session == 0L) return
+        if (down && mouseDown.add(button)) Native.button(session, button, true)
+        if (!down && mouseDown.remove(button)) Native.button(session, button, false)
+    }
 
     private fun mouseButton(buttons: Int): Int = when {
         buttons and MotionEvent.BUTTON_PRIMARY != 0 -> 0
@@ -469,24 +543,23 @@ class SessionView(
 
     /** A mouse plugged into the phone: its own pointer, at its own place.
      *  A mouse's press comes as a touch-down and then a button press; some
-     *  (and adb) send only the touch-down: either way, one click. */
+     *  (and adb) send only the touch-down: either way, one press per button,
+     *  and each released when it's let go. */
     private fun mouse(event: MotionEvent): Boolean {
         if (session == 0L) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_MOVE -> moveTo(event.x, event.y)
             MotionEvent.ACTION_DOWN -> {
                 moveTo(event.x, event.y)
-                mouseHeld = mouseButton(event.buttonState)
-                Native.button(session, mouseHeld, true)
+                keyInput.reset()
+                mouseButtonPress(mouseButton(event.buttonState), true)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 moveTo(event.x, event.y)
-                if (mouseHeld >= 0) Native.button(session, mouseHeld, false)
-                mouseHeld = -1
+                for (button in mouseDown.toList()) mouseButtonPress(button, false)
             }
             MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
-                val button = mouseButton(event.actionButton)
-                if (button != mouseHeld) Native.button(session, button, event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS)
+                mouseButtonPress(mouseButton(event.actionButton), event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS)
             }
             MotionEvent.ACTION_SCROLL -> {
                 // The wheel scrolls what's under the mouse.
@@ -504,10 +577,17 @@ class SessionView(
 
     // ---- Keys --------------------------------------------------------------------------------
 
+    /** Keyboard suggestions on or off, for this session and the next. */
+    fun setSuggestions(on: Boolean) {
+        app.prefs.suggestions = on
+        keyInput.suggestions = on
+    }
+
     fun keyboard(show: Boolean, fromSystem: Boolean = false) {
         val imm = activity.getSystemService(InputMethodManager::class.java)
         keyboardUp = show
         if (show) {
+            keyInput.suggestions = app.prefs.suggestions
             keyInput.requestFocus()
             // Once the keyboard is connected to the newly focused view.
             post {
@@ -528,24 +608,38 @@ class SessionView(
         post { placePicture() }
     }
 
-    override fun typed(text: String) {
-        if (session == 0L) return
-        keyBar.withModifiers {
-            val skipped = Native.type(session, text)
-            if (skipped > 0 && !skippedNoted) {
-                skippedNoted = true
-                app.notice.show("Some characters can't be typed: Sunna types on a US keyboard layout.")
-            }
-        }
+    override fun typed(text: String): Int {
+        if (session == 0L) return 0
+        val skipped = keyBar.typing(text) { Native.type(session, it) }
+        if (skipped > 0) cantType()
+        return skipped
+    }
+
+    override fun cantType() {
+        if (skippedNoted) return
+        skippedNoted = true
+        app.notice.show("Some characters can't be typed: Sunna types on a US keyboard layout.")
+    }
+
+    /** A key from the bar above the keyboard; ones that move the host's
+     *  cursor start the keyboard's copy of the text over. */
+    private fun barKey(code: Int) {
+        if (code in NAVIGATION) keyInput.reset()
+        key(code)
     }
 
     override fun key(code: Int) {
         if (session == 0L) return
-        keyBar.withModifiers {
-            Native.macKey(session, code, true)
-            Native.macKey(session, code, false)
-        }
+        keyBar.withModifiers { plainKey(code) }
     }
+
+    override fun plainKey(code: Int) {
+        if (session == 0L) return
+        Native.macKey(session, code, true)
+        Native.macKey(session, code, false)
+    }
+
+    override val shortcut get() = keyBar.shortcut
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Keys from a keyboard (or anything else that sends them, adb and
@@ -554,7 +648,11 @@ class SessionView(
             KeyEvent.KEYCODE_VOLUME_MUTE, KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_APP_SWITCH)
         val action = event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP
         if (active && revealed && !system && action) {
-            if (Native.key(session, event.keyCode, event.action == KeyEvent.ACTION_DOWN, event.repeatCount > 0)) return true
+            val down = event.action == KeyEvent.ACTION_DOWN
+            if (Native.key(session, event.keyCode, down, event.repeatCount > 0)) {
+                if (down) keysDown += event.keyCode else keysDown -= event.keyCode
+                return true
+            }
         }
         return super.dispatchKeyEvent(event)
     }
@@ -611,10 +709,48 @@ class SessionView(
         Native.setStream(session, codec, w, h, app.prefs.bitrateMbps, app.prefs.fps, app.prefs.sound)
     }
 
-    fun pause() {}
+    fun pause() = releaseAll()
+
+    /** Sunna lost focus (another app, the notification shade): let go of
+     *  everything held on the host, since the releases won't reach us. */
+    fun releaseAll() {
+        touch.cancel()
+        if (session == 0L) return
+        for (code in keysDown) Native.key(session, code, false, false)
+        keysDown.clear()
+        for (button in mouseDown.toList()) mouseButtonPress(button, false)
+    }
+
+    /** Sunna is in front again: a copy made meanwhile in another app goes over. */
+    fun focused() = clipboard.pickUp()
+
+    /** Share the clipboard with the host or not (and from now on). */
+    fun shareClipboard(on: Boolean) {
+        app.prefs.clipboard = on
+        if (session != 0L) Native.setClipboardShared(session, on)
+        if (on) clipboard.start() else clipboard.stop()
+    }
+
+    val sharingClipboard: Boolean get() = clipboard.sharing
+
+    /** Type the clipboard's text key by key: for login screens and password
+     *  prompts that won't take a paste. */
+    fun typeClipboard() {
+        if (session == 0L) return
+        val text = clipboard.text()?.take(4000)
+        if (text.isNullOrEmpty()) {
+            app.notice.show("The clipboard has no text to type.")
+            return
+        }
+        val skipped = Native.type(session, text)
+        val plain = text.replace("\r\n", "\n")
+        val typed = plain.codePointCount(0, plain.length) - skipped
+        app.notice.show(if (skipped > 0) "Typing $typed characters · $skipped skipped (not on a US keyboard)" else "Typing $typed characters")
+    }
 
     /** The app is going away: leave at once, no animation. */
     fun destroy() {
+        clipboard.stop()
         ended = true
         if (session != 0L) Native.close(session)
         session = 0L
@@ -645,6 +781,8 @@ class SessionView(
     }
 
 }
+
+private val NAVIGATION = setOf(MacKey.LEFT, MacKey.RIGHT, MacKey.UP, MacKey.DOWN, MacKey.HOME, MacKey.END, MacKey.PAGE_UP, MacKey.PAGE_DOWN, MacKey.RETURN, MacKey.TAB, MacKey.ESCAPE)
 
 fun codecName(codec: String): String = when (codec) {
     "hevc" -> "HEVC"

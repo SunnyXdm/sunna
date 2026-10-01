@@ -1,7 +1,7 @@
 //! The viewer's side: packets in (some lost, late or bunched up), sound out.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Instant;
 
 use crate::{open_output, Decoder, Output, CHANNELS, FRAME_LEN, SAMPLE_RATE};
@@ -34,6 +34,9 @@ const SAMPLES_BETWEEN_DROPS: u64 = 20 * FRAME_LEN as u64; // 200 ms
 /// Longest gap Opus's loss concealment fills. Longer ones are the host not
 /// sending during silence: playback just resumes.
 const MAX_CONCEAL: u64 = 8;
+
+/// How often `pull` tries for the lock before it gives up on this callback.
+const PULL_TRIES: u32 = 200;
 
 /// Decoded sound waiting for the speakers.
 pub(crate) struct Ring {
@@ -83,8 +86,27 @@ impl Ring {
     }
 
     /// Fill `out` with the next sound, or silence while (re)buffering.
+    ///
+    /// This runs on the output's real-time thread, which mustn't wait on
+    /// another: if `push` holds the lock (for a copy of 10 ms of sound), try
+    /// again for a moment, then play silence this once rather than wait for
+    /// a thread that may not run again soon.
     pub(crate) fn pull(&self, out: &mut [i16]) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut tries = 0;
+        let mut inner = loop {
+            match self.inner.try_lock() {
+                Ok(inner) => break inner,
+                Err(TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(TryLockError::WouldBlock) if tries < PULL_TRIES => {
+                    tries += 1;
+                    std::hint::spin_loop();
+                }
+                Err(TryLockError::WouldBlock) => {
+                    out.fill(0);
+                    return;
+                }
+            }
+        };
         if !inner.playing {
             if inner.samples.len() < inner.target {
                 out.fill(0);
@@ -284,6 +306,22 @@ mod tests {
         ring.push(&[1000i16; FRAME_LEN]);
         ring.pull(&mut out);
         assert!(out.iter().all(|&s| s == 1000));
+    }
+
+    #[test]
+    fn a_held_lock_plays_silence_instead_of_waiting() {
+        let ring = ring_with(10);
+        let held = ring.inner.lock().unwrap();
+        let mut out = [1i16; 2 * CHANNELS];
+        std::thread::scope(|scope| {
+            scope.spawn(|| ring.pull(&mut out)).join().unwrap();
+        });
+        drop(held);
+        assert_eq!(out, [0; 2 * CHANNELS]);
+        // Nothing was taken: it plays once the lock is free.
+        let mut out = [0i16; 2 * CHANNELS];
+        ring.pull(&mut out);
+        assert_ne!(out, [0; 2 * CHANNELS]);
     }
 
     #[test]

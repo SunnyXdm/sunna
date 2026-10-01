@@ -21,6 +21,7 @@ class MainActivity : Activity(), App {
     private lateinit var root: FrameLayout
     private lateinit var home: HomeView
     private var session: SessionView? = null
+    private var settings: SettingsView? = null
     private val io = Executors.newCachedThreadPool()
     private var insets = Insets()
     private var backCallback: Any? = null
@@ -29,7 +30,7 @@ class MainActivity : Activity(), App {
         super.onCreate(savedInstanceState)
         Native.init(filesDir.absolutePath)
         Palette.load(this)
-        store = MachineStore(this)
+        store = MachineStore.get(this)
         prefs = Prefs(this)
         if (Build.VERSION.SDK_INT >= 30) {
             // Edge to edge (the default from Android 15).
@@ -51,6 +52,7 @@ class MainActivity : Activity(), App {
             insets = Insets.of(windowInsets)
             home.setInsets(insets.left, insets.top, insets.right, insets.bottom)
             for (i in 0 until root.childCount) (root.getChildAt(i) as? Sheet)?.setInsets(insets)
+            settings?.setInsets(insets)
             session?.dispatchApplyWindowInsets(windowInsets)
             windowInsets
         }
@@ -75,8 +77,16 @@ class MainActivity : Activity(), App {
 
     override fun onDestroy() {
         session?.destroy()
+        SessionService.stop(this)
+        Sheet.changed = null
+        SessionService.onDisconnect = null
         io.shutdown()
         super.onDestroy()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) session?.focused() else session?.releaseAll()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -95,6 +105,24 @@ class MainActivity : Activity(), App {
         root.post { editMachine(null, link = link.toString()) }
     }
 
+    /** Once, at the first session: the notification that keeps a session
+     *  reachable while you're in another app needs permission (Android 13+). */
+    override fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        val asked = getSharedPreferences("sunna", 0)
+        if (asked.getBoolean("asked_notifications", false)) return
+        asked.edit().putBoolean("asked_notifications", true).apply()
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // The session's notification was posted before it was allowed: again.
+        val granted = grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) session?.let { SessionService.start(this, it.machine.name) }
+    }
+
     override fun background(work: () -> Unit) {
         if (!io.isShutdown) io.execute(work)
     }
@@ -108,6 +136,8 @@ class MainActivity : Activity(), App {
         ) { closed, reason -> ended(closed, reason) }
         session = view
         root.addView(view, root.indexOfChild(notice), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        SessionService.onDisconnect = { session?.leave() }
+        SessionService.start(this, machine.name)
         home.pause()
         home.animate().alpha(0f).setDuration(450).start()
         view.post { view.start() }
@@ -117,6 +147,7 @@ class MainActivity : Activity(), App {
     private fun ended(view: SessionView, reason: String?) {
         root.removeView(view)
         if (session === view) session = null
+        SessionService.stop(this)
         home.alpha = 1f
         home.resume()
         if (!reason.isNullOrEmpty()) notice.show(reason)
@@ -145,7 +176,10 @@ class MainActivity : Activity(), App {
         }
         items += MenuPopup.Item("Remove…", R.drawable.ic_trash, danger = true) {
             confirm(this, root, "Remove “${machine.name}”?", "You can add it again with its address and key.", "Remove") {
-                store.remove(machine.id)
+                if (!store.remove(machine.id)) {
+                    notice.show("Couldn't remove it: the phone's storage may be full.")
+                    return@confirm
+                }
                 checks.remove(machine.id)
                 home.render()
             }.setInsets(insets)
@@ -155,11 +189,25 @@ class MainActivity : Activity(), App {
 
     // ---- Back ------------------------------------------------------------------------------
 
+    override fun openSettings() {
+        if (settings != null || session != null) return
+        settings = SettingsView(this, this) {
+            settings = null
+            updateBack()
+        }.also { it.open(root) }
+        notice.bringToFront()
+        updateBack()
+    }
+
     private fun topSheet(): Sheet? = (root.childCount - 1 downTo 0).map { root.getChildAt(it) }.firstOrNull { it is Sheet && it.isOpen } as? Sheet
 
     /** Back closes the sheet on top; in a session it opens the menu. */
     private fun handleBack(): Boolean {
         topSheet()?.let {
+            it.close()
+            return true
+        }
+        settings?.let {
             it.close()
             return true
         }
@@ -169,7 +217,7 @@ class MainActivity : Activity(), App {
 
     private fun updateBack() {
         if (Build.VERSION.SDK_INT < 33) return
-        val wanted = topSheet() != null || session != null
+        val wanted = topSheet() != null || session != null || settings != null
         val dispatcher = onBackInvokedDispatcher
         if (wanted && backCallback == null) {
             val callback = OnBackInvokedCallback { handleBack() }

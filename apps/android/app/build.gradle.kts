@@ -1,4 +1,18 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+// The release key lives outside the repository: it signs every update, so
+// keep a backup of it. A properties file names it (storeFile, storePassword,
+// keyAlias, keyPassword): -Psunna.signing=<file> or SUNNA_ANDROID_SIGNING, by
+// default ~/.sunna/android/signing.properties. Without one, release builds
+// are signed with the debug key.
+val signing: Properties? = run {
+    val path = providers.gradleProperty("sunna.signing").orNull
+        ?: System.getenv("SUNNA_ANDROID_SIGNING")
+        ?: "${System.getProperty("user.home")}/.sunna/android/signing.properties"
+    val file = File(path)
+    if (file.isFile) Properties().apply { file.inputStream().use { load(it) } } else null
+}
 
 plugins {
     id("com.android.application")
@@ -21,13 +35,23 @@ android {
         }
     }
 
+    signingConfigs {
+        if (signing != null) {
+            create("release") {
+                storeFile = File(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key until Sunna has a release key.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
