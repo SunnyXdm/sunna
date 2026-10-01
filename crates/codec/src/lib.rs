@@ -6,6 +6,8 @@
 //! AMD AMF, Intel QuickSync via libvpl, Apple VideoToolbox with
 //! `EnableLowLatencyRateControl`. Codec ladder: AV1 > HEVC > H.264.
 
+#[cfg(target_os = "android")]
+pub mod android;
 #[cfg(sunna_ffmpeg)]
 pub mod ffmpeg;
 pub mod h264;
@@ -291,6 +293,8 @@ pub fn make_decoder(codec: &str, width: u32, height: u32) -> anyhow::Result<Box<
         "hevc" => Ok(Box::new(videotoolbox::VtDecoder::new(Codec::Hevc))),
         #[cfg(target_os = "linux")]
         "h264" | "hevc" => linux_decoder(codec),
+        #[cfg(target_os = "android")]
+        "h264" | "hevc" => Ok(Box::new(android::MediaCodecDecoder::new(codec, width, height)?)),
         other => anyhow::bail!("no decoder for codec {other:?} on this platform"),
     }
 }

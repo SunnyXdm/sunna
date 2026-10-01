@@ -4,7 +4,7 @@
 //!
 //! Capture and playback are per platform: PulseAudio's simple API on Linux
 //! (loaded at run time, so nothing is needed to build; PipeWire provides it
-//! too), AudioQueue for playback on macOS. Tests and the loopback bench use a
+//! too), AudioQueue for playback on macOS, AAudio for playback on Android. Tests and the loopback bench use a
 //! synthetic tone and a raw-PCM file instead (see [`open_capture`] and
 //! [`Player::start`]).
 
@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "android")]
+mod aaudio;
 mod opus;
 mod player;
 #[cfg(target_os = "linux")]
@@ -112,7 +114,11 @@ pub(crate) fn open_output(ring: Arc<player::Ring>) -> anyhow::Result<Box<dyn Out
     {
         Ok(Box::new(macos::QueueOutput::start(ring)?))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    {
+        Ok(Box::new(aaudio::AAudioOutput::start(ring)?))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "android")))]
     {
         let _ = ring;
         anyhow::bail!("no audio output on this platform yet")
