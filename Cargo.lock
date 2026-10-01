@@ -4825,6 +4825,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunna-android"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "jni 0.21.1",
+ "serde_json",
+ "sunna-client",
+ "sunna-codec",
+ "sunna-proto",
+ "sunna-transport",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sunna-audio"
 version = "0.0.1"
 dependencies = [
@@ -4879,6 +4895,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bytes",
+ "serde",
  "sunna-audio",
  "sunna-capture",
  "sunna-clipboard",

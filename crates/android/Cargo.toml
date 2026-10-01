@@ -1,0 +1,23 @@
+[package]
+name = "sunna-android"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The Android app's native library (apps/android loads libsunna_android.so).
+# Build it with cargo-ndk: see apps/android/README.md.
+[lib]
+name = "sunna_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+jni = "0.21"
+serde_json.workspace = true
+sunna-client.workspace = true
+sunna-codec.workspace = true
+sunna-proto.workspace = true
+sunna-transport.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

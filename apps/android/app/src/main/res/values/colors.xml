@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#FF0D0E11</color>
+    <color name="text">#FFF2F2F4</color>
+    <color name="text_2">#FFA2A4AC</color>
+    <color name="text_3">#FF6D7079</color>
+    <color name="accent">#FF0A84FF</color>
+    <color name="icon_night">#FF191A3A</color>
+</resources>

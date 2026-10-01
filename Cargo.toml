@@ -15,9 +15,11 @@ members = [
     "apps/sunnad",
     "apps/sunna-cli",
     "apps/sunna",
+    "crates/android",
 ]
 # The Sunna app (Tauri) needs WebKitGTK to build on Linux; build it with
-# `cargo build -p sunna`.
+# `cargo build -p sunna`. The Android library builds with cargo-ndk
+# (apps/android/README.md).
 default-members = [
     "crates/proto",
     "crates/transport",

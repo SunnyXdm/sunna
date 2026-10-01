@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sunna's icon (apps/sunna/icons/icon.svg) as Android adaptive-icon layers:
+     a sun setting over still water. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="18.0" android:endX="0" android:endY="90.0">
+                <item android:offset="0" android:color="#FF2A2D5C" />
+                <item android:offset="0.5" android:color="#FF191A3A" />
+                <item android:offset="1" android:color="#FF0B0B16" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <group>
+        <clip-path android:pathData="M0,0h108v61.515h-108z" />
+        <path android:pathData="M0,0h108v61.515h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial" android:centerX="54" android:centerY="61.515" android:gradientRadius="37.573">
+                <item android:offset="0" android:color="#BFFF9D57" />
+                <item android:offset="0.45" android:color="#47E2587A" />
+                <item android:offset="1" android:color="#006F3FB0" />
+            </gradient>
+        </aapt:attr>
+        </path>
+    </group>
+    <path android:pathData="M31.155,30.058a0.476,0.476 0 1 0 0.952,0a0.476,0.476 0 1 0 -0.952,0z" android:fillColor="#8CFFFFFF" />
+    <path android:pathData="M38.614,24.641a0.357,0.357 0 1 0 0.714,0a0.357,0.357 0 1 0 -0.714,0z" android:fillColor="#66FFFFFF" />
+    <path android:pathData="M70.332,27.961a0.445,0.445 0 1 0 0.891,0a0.445,0.445 0 1 0 -0.891,0z" android:fillColor="#7FFFFFFF" />
+    <path android:pathData="M77.616,35.476a0.326,0.326 0 1 0 0.653,0a0.326,0.326 0 1 0 -0.653,0z" android:fillColor="#59FFFFFF" />
+    <path android:pathData="M62.412,23.068a0.326,0.326 0 1 0 0.653,0a0.326,0.326 0 1 0 -0.653,0z" android:fillColor="#59FFFFFF" />
+    <path android:pathData="M26.265,40.369a0.297,0.297 0 1 0 0.595,0a0.297,0.297 0 1 0 -0.595,0z" android:fillColor="#4CFFFFFF" />
+    <path android:pathData="M0,61.515h108v46.485h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="61.515" android:endX="0" android:endY="90.0">
+                <item android:offset="0" android:color="#FF241A3F" />
+                <item android:offset="1" android:color="#FF08080F" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

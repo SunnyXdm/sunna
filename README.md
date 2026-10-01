@@ -10,7 +10,7 @@
 
 Sunna shows another computer's screen on your Mac, plays its sound, and sends your keyboard, mouse, trackpad and clipboard back. It uses the hardware video encoders and decoders where they exist and sends small changes like typing as exact, lossless tiles ahead of the video, so text appears as fast as your network allows. There are no accounts and no cloud service: computers talk to each other directly, ideally over [Tailscale](https://tailscale.com).
 
-**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11); the app for Linux is new (see [Install the app on Linux](#install-the-app-on-linux)). Not yet: Windows, and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
+**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11); the app for Linux is new (see [Install the app on Linux](#install-the-app-on-linux)), and the Android app newer still (see [Android](#the-app-on-android)). Not yet: Windows, and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
 
 ## Quick start
 
@@ -67,6 +67,25 @@ What's different from the Mac:
 - **Modifier keys on a Mac host:** Ctrl works as ⌘ there (Ctrl+C copies, Ctrl+Tab… is ⌘Tab), and Super as ⌃. Set `SUNNA_SWAP_CTRL_CMD=0` to keep them as they are.
 - **Hotkeys** use Ctrl+Alt where the Mac uses ⌃⌥: Ctrl+Alt+M for the menu, Ctrl+Alt+F full screen, Ctrl+Alt+S stats, Ctrl+Alt+Q disconnect.
 - **Clipboard** goes through X11, which on a Wayland desktop means XWayland (on by default on GNOME, KDE and Hyprland).
+
+## The app on Android
+
+Your computers on a phone or tablet: the same Computers screen, and sessions full screen, with the phone's own video decoder drawing the picture. It's built from source for now (there's no store listing), and so far tested on the Android emulator (Android 16), not yet on a phone.
+
+```sh
+cd apps/android
+./gradlew assembleRelease       # needs the Android SDK and NDK, and Rust: see apps/android/README.md
+adb install app/build/outputs/apk/release/app-release.apk
+```
+
+Open a computer's `sunna://` link on the phone, or add it with **+** as on the Mac. During a session:
+
+- **Touch works two ways**, switched in the session menu. **Trackpad** (the default on phones): drag to move the pointer, tap to click, touch and hold then drag to drag; the zoomed picture follows the pointer. **Touch** (the default on tablets): tap where you want to click, drag to drag, touch and hold for a right click. In both, two fingers tap for a right click or drag to scroll, a pinch zooms the picture here (not the host's screen), and three fingers tap for the keyboard.
+- **The keyboard** has a row of keys above it that phones lack: esc, tab, the modifiers (named as the host names them: ⌃ ⌥ ⌘ on a Mac, Ctrl Alt Super on Linux), arrows, ⌦, home, end, page up and down, F1 to F12. A modifier holds for the next key; tap it twice to keep it down. Text is typed key by key on a US layout; characters that layout doesn't have are left out.
+- **A keyboard or mouse** connected to the phone works as on a computer: the mouse points and clicks where it is, and its wheel scrolls. On a Mac host, Ctrl acts as ⌘, as in the Linux app.
+- **Back** opens the session menu: the keyboard, Trackpad or Touch, sound, the stats bar, the host's shortcuts, the video settings, and Disconnect.
+
+Not yet on Android: sharing the clipboard, and **Find on Tailscale**.
 
 ## Share a Linux computer
 
@@ -227,7 +246,7 @@ A computer takes one viewer at a time; while someone else is connected, the app 
 
 ## Security and privacy
 
-- **Keys.** A host only accepts viewers that present its key. Keep keys secret; anyone with a computer's address and key can control it. The app keeps the computers you add, with their keys, in `~/.sunna/machines.json`, and this Mac's own key in `~/.sunna/sunna.env`, both readable only by you.
+- **Keys.** A host only accepts viewers that present its key. Keep keys secret; anyone with a computer's address and key can control it. The app keeps the computers you add, with their keys, in `~/.sunna/machines.json`, and this Mac's own key in `~/.sunna/sunna.env`, both readable only by you. The Android app keeps them in its private storage and leaves them out of backups.
 - **Encryption.** Connections use QUIC, encrypted with TLS 1.3. The app does **not yet verify the host's identity** (hosts use self-signed certificates), so on a network you don't control, someone in the middle could impersonate a host. Use Sunna over **Tailscale** (which authenticates both ends with WireGuard) or a network you trust, and never expose a host to the internet. `sunna-host setup` listens only on your tailnet when Tailscale is running, and warns you when it falls back to your local network. Pinning each host's certificate is planned.
 - **No cloud, no accounts.** Computers connect to each other directly. Nothing is sent anywhere else.
 - **Logs stay local.** The host logs to the system journal (Linux) or its Terminal window (Mac). The app logs only to its standard error, which macOS discards unless you start it from Terminal. Keystrokes and clipboard contents are never logged. (Development builds can also send logs to a collector you run, only when `SUNNA_LOG_URL` is set.)
@@ -238,6 +257,7 @@ A computer takes one viewer at a time; while someone else is connected, the app 
 | | |
 |---|---|
 | The app | macOS 13 or later; or Linux (X11 or Wayland) with WebKitGTK 4.1, and FFmpeg for decoding on the GPU |
+| The Android app | Android 10 or later, on ARM64 (or x86-64, as the emulator) |
 | A Mac host | macOS 13 or later; Tailscale; Screen Recording and Accessibility permission for the terminal it runs in |
 | A Linux host | x86-64 (ARM64 untested); an X11 desktop, or Xvfb with Plasma or XFCE for a virtual one; to build it, Rust, a C/C++ compiler and nasm |
 | Network | the host's UDP port 48800 reachable from the viewer; [Tailscale](https://tailscale.com) recommended |
@@ -257,10 +277,12 @@ cargo test                         # add --workspace to include the app
 | `apps/sunna` | the Mac app (Tauri): the launcher UI in `ui/`, and `sunna viewer`, the native session window |
 | `apps/sunnad` | the host daemon |
 | `apps/sunna-cli` | developer client: `view`, `connect` (headless), `bench` (loopback benchmark) |
+| `apps/android` | the Android app (Kotlin, no other libraries), built with Gradle; see its README |
+| `crates/android` | the Android app's native side: sessions, MediaCodec decoding, AAudio sound |
 | `crates/transport` | QUIC (quinn): media datagrams, reliable control stream, TLS |
 | `crates/proto` | wire messages, packetizing and reassembly, fast-lane tiles |
 | `crates/capture` | screen capture: macOS (CGDisplayStream), X11 (MIT-SHM); fast-lane tile detection |
-| `crates/codec` | encoders and decoders: VideoToolbox, NVENC, OpenH264 |
+| `crates/codec` | encoders and decoders: VideoToolbox, NVENC, OpenH264, FFmpeg, MediaCodec |
 | `crates/host`, `crates/client` | the host and client pipelines |
 | `crates/viewer` | the session window: presentation, keyboard capture, session menu |
 | `crates/input`, `crates/clipboard` | input injection and clipboard sync |
