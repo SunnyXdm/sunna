@@ -89,51 +89,10 @@ const ACCESSIBILITY_HELP: &str = "⌘Tab, ⌘Space and other shortcuts stay on t
 /// One line for the stats bar (⌃⌥S), Parsec-style.
 pub fn stats_text(live: &LiveStats) -> String {
     if live.codec.is_empty() {
-        return "connecting…".into();
+        return live.stats_line();
     }
-    let mut parts = vec![
-        format!(
-            "{} {}×{}",
-            live.codec.to_uppercase(),
-            live.width,
-            live.height
-        ),
-        format!("{} fps", live.fps),
-    ];
-    match &live.host {
-        Some(host) => parts.push(format!(
-            "{:.1} / {:.0} Mbps",
-            live.mbps,
-            host.target_kbps as f64 / 1000.0
-        )),
-        None => parts.push(format!("{:.1} Mbps", live.mbps)),
-    }
-    if let Some((p50, p95)) = live.latency_ms {
-        parts.push(format!("latency {p50:.0} ms (p95 {p95:.0})"));
-    }
-    if let Some(host) = &live.host {
-        parts.push(format!(
-            "encode {:.1} ms",
-            host.encode_us_p50 as f64 / 1000.0
-        ));
-    }
-    if let Some(decode) = live.decode_ms_p50 {
-        parts.push(format!("decode {decode:.1} ms"));
-    }
-    if let Some(rtt) = live.rtt_ms {
-        parts.push(format!("rtt {rtt:.0} ms"));
-    }
-    if live.dropped > 0 {
-        parts.push(format!("lost {}", live.dropped));
-    }
-    if let Some(sound) = live.audio.as_ref().filter(|_| live.audio_on) {
-        parts.push(format!("sound {} ms", sound.buffered_ms));
-    }
-    if live.tile_batches > 0 {
-        parts.push(format!("tiles {}/s", live.tile_batches));
-    }
-    parts.push(if cfg!(target_os = "linux") { "Ctrl+Alt+S hide" } else { "⌃⌥S hide" }.into());
-    parts.join("  ·  ")
+    let hide = if cfg!(target_os = "linux") { "Ctrl+Alt+S hide" } else { "⌃⌥S hide" };
+    format!("{}  ·  {hide}", live.stats_line())
 }
 
 /// Wake signal sent by the network thread after storing a frame.

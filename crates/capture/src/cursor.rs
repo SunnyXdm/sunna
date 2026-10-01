@@ -2,8 +2,11 @@
 //! (so it moves without delay) and gives it the host's shape: resize arrows
 //! over a window edge, the text beam over text, a hand over a link.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 
 /// One pointer shape, as the screen shows it.
@@ -27,6 +30,7 @@ const POLL: Duration = Duration::from_millis(30);
 
 /// Watch the pointer's shape from a thread of its own, calling `changed` with
 /// each new one, until `stop` is set.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_variables, unused_mut))]
 pub fn watch(
     stop: Arc<AtomicBool>,
     mut changed: impl FnMut(CursorImage) + Send + 'static,

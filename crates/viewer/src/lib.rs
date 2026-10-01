@@ -22,7 +22,7 @@ mod menu;
 mod menu_model;
 #[cfg(target_os = "macos")]
 mod remote_cursor;
-mod send_keys;
+use sunna_client::keys as send_keys;
 mod session;
 mod viewer;
 

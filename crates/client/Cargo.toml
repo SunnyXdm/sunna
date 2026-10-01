@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
+serde.workspace = true
 sunna-audio.workspace = true
 sunna-capture.workspace = true
 sunna-clipboard.workspace = true

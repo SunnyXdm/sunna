@@ -1,11 +1,9 @@
-//! Keys the viewer sends for the user from its menu: shortcuts this Mac
-//! would otherwise keep for itself (⌘Tab, Spotlight...), and text typed out
-//! key by key for places a paste can't reach (login screens, password
-//! prompts). Keycodes are Carbon virtual keycodes, as on the wire; a Linux
-//! host maps ⌘ to Super, ⌥ to Alt and ⌃ to Ctrl.
-
-// The menu that uses these is macOS-only; the tables are tested anywhere.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+//! Keys a viewer sends for the user from its menu: shortcuts the viewer's
+//! own computer would otherwise keep for itself (⌘Tab, Spotlight...), and
+//! text typed out key by key for places a paste can't reach (login screens,
+//! password prompts), or that a phone's on-screen keyboard types. Keycodes
+//! are Carbon virtual keycodes, as on the wire; a Linux host maps ⌘ to
+//! Super, ⌥ to Alt and ⌃ to Ctrl.
 
 use sunna_proto::messages::InputEvent;
 

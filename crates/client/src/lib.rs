@@ -14,6 +14,9 @@
 //! the lowest observed RTT, so cross-machine numbers are meaningful to within
 //! path asymmetry. Same-machine, the offset converges near zero.
 
+pub mod keys;
+pub mod reach;
+
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -174,6 +177,44 @@ pub struct LiveStats {
 }
 
 impl LiveStats {
+    /// One line of the session's numbers, Parsec-style, for a stats bar:
+    /// "HEVC 3360×2100  ·  60 fps  ·  12.3 / 20 Mbps  ·  latency 55 ms (p95 71)…".
+    pub fn stats_line(&self) -> String {
+        if self.codec.is_empty() {
+            return "connecting…".into();
+        }
+        let mut parts = vec![
+            format!("{} {}×{}", self.codec.to_uppercase(), self.width, self.height),
+            format!("{} fps", self.fps),
+        ];
+        match &self.host {
+            Some(host) => parts.push(format!("{:.1} / {:.0} Mbps", self.mbps, host.target_kbps as f64 / 1000.0)),
+            None => parts.push(format!("{:.1} Mbps", self.mbps)),
+        }
+        if let Some((p50, p95)) = self.latency_ms {
+            parts.push(format!("latency {p50:.0} ms (p95 {p95:.0})"));
+        }
+        if let Some(host) = &self.host {
+            parts.push(format!("encode {:.1} ms", host.encode_us_p50 as f64 / 1000.0));
+        }
+        if let Some(decode) = self.decode_ms_p50 {
+            parts.push(format!("decode {decode:.1} ms"));
+        }
+        if let Some(rtt) = self.rtt_ms {
+            parts.push(format!("rtt {rtt:.0} ms"));
+        }
+        if self.dropped > 0 {
+            parts.push(format!("lost {}", self.dropped));
+        }
+        if let Some(sound) = self.audio.as_ref().filter(|_| self.audio_on) {
+            parts.push(format!("sound {} ms", sound.buffered_ms));
+        }
+        if self.tile_batches > 0 {
+            parts.push(format!("tiles {}/s", self.tile_batches));
+        }
+        parts.join("  ·  ")
+    }
+
     fn stream_changed(&mut self, info: &SessionInfo) {
         self.epoch = info.epoch;
         self.codec = info.codec.clone();
@@ -204,13 +245,27 @@ pub struct ProbeResult {
     pub rtt: Duration,
 }
 
-/// Query a peer without starting capture or taking its viewer slot.
+static STATE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where this computer's own Sunna state lives: `~/.sunna`, unless an app
+/// without a home directory (Android) has said where, before anything else.
+pub fn set_state_dir(dir: std::path::PathBuf) {
+    let _ = STATE_DIR.set(dir);
+}
+
+fn state_dir() -> Option<std::path::PathBuf> {
+    STATE_DIR
+        .get()
+        .cloned()
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".sunna")))
+}
+
 /// This computer's id as a viewer: random, made once and kept in
 /// `~/.sunna/device-id`. Not a secret (the key is): it only tells a host
 /// that a viewer is the same computer as before.
 pub fn device_id() -> String {
-    let Some(home) = std::env::var_os("HOME") else { return String::new() };
-    let path = std::path::Path::new(&home).join(".sunna").join("device-id");
+    let Some(dir) = state_dir() else { return String::new() };
+    let path = dir.join("device-id");
     if let Ok(id) = std::fs::read_to_string(&path) {
         let id = id.trim();
         if !id.is_empty() {
@@ -239,6 +294,7 @@ async fn left(leave: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     }
 }
 
+/// Query a peer without starting capture or taking its viewer slot.
 pub async fn probe(
     addr: SocketAddr,
     server_name: &str,
