@@ -90,7 +90,8 @@ case "${1:-}" in
       # A virtual desktop has its own sound output; share that one.
       [ "$DISPLAY" = :0 ] || export SUNNA_AUDIO_SOURCE="${SUNNA_AUDIO_SOURCE:-sunna_desktop_${DISPLAY#:}.monitor}"
     fi
-    # What another computer needs to add this one in the Sunna app.
+    # What another computer or a phone needs to add this one in Sunna.
+    LINK="sunna://$IP?key=$SUNNA_TOKEN"
     cat <<EOF
 
   Sharing $NAME with Sunna (tailnet only). Ctrl-C to stop.
@@ -99,9 +100,12 @@ case "${1:-}" in
     Key       $SUNNA_TOKEN
 
   In the Sunna app on the other computer, choose Add a Computer and paste:
-    sunna://$IP?key=$SUNNA_TOKEN
+    $LINK
 
+  Or scan this with your phone's camera:
 EOF
+    printf '%s' "$LINK" | ./target/release/sunnad --qr || true
+    echo
     ./target/release/sunnad --source screen --listen "$IP:$PORT" --name "$NAME"
     ;;
   app)

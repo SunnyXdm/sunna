@@ -995,6 +995,27 @@ async function openSettings(opener) {
     row.hidden = false;
     row.querySelector(".link-text").textContent = `sunna://${me.address}?key=••••`;
     row.querySelector(".copy-link").addEventListener("click", (event) => copy(link, event.currentTarget));
+    row.querySelector(".show-qr").addEventListener("click", (event) => openQrSheet(me, event.currentTarget));
+  }
+}
+
+async function openQrSheet(machine, opener) {
+  const sheet = openSheet("qr-sheet-template", opener);
+  sheet.querySelector("h2").textContent = `Add “${machine.name}” on a Phone`;
+  sheet.querySelector(".close").addEventListener("click", () => closeSheet(sheet));
+  const done = sheet.querySelector(".done");
+  done.addEventListener("click", () => closeSheet(sheet));
+  done.focus();
+  try {
+    const svg = await invoke("qr_code", { text: `sunna://${machine.address}?key=${machine.key}` });
+    if (!sheet.isConnected || topSheet() !== sheet) return;
+    const card = sheet.querySelector(".qr-card");
+    card.innerHTML = svg;
+    card.setAttribute("aria-busy", "false");
+  } catch {
+    if (!sheet.isConnected || topSheet() !== sheet) return;
+    closeSheet(sheet);
+    toast("Couldn't make the QR code.");
   }
 }
 
@@ -1029,6 +1050,7 @@ function openMenu(id, { x, y, anchor }) {
     item("Connect", "i-arrow", "↵", () => connect(machine), { disabled: !ready }),
     item("Edit…", "i-edit", "⌘E", () => openMachineSheet({ machine, opener: tile })),
     item("Copy Address", "i-copy", "", () => copy(machine.address)),
+    item("Show QR Code", "i-qr", "", () => openQrSheet(machine, tile)),
     separator,
     item("Remove…", "i-trash", "⌫", () => confirmRemove(machine, tile), { danger: true }),
   );

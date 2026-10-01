@@ -359,6 +359,12 @@ cmd_link() {
   echo "  In the Sunna app, choose Add a Computer and paste:"
   echo "    $link"
   echo
+  # The link goes in on stdin: as an argument, its key would show in ps.
+  if printf 'sunna://' | "$(sunnad_path 2>/dev/null)" --qr >/dev/null 2>&1; then
+    echo "  Or scan this with your phone's camera:"
+    printf '%s' "$link" | "$(sunnad_path)" --qr 2>/dev/null || true
+    echo
+  fi
 }
 
 # Whether sessions get sound, and if not, what to do.

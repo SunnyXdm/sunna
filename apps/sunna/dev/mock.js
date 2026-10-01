@@ -75,6 +75,26 @@ async function check(address, key) {
 }
 
 const commands = {
+  // Just a preview; the Rust command makes the scannable code.
+  qr_code: () => {
+    let path = "";
+    for (let y = 0; y < 29; y++) {
+      for (let x = 0; x < 29; x++) {
+        const finder = [[0, 0], [22, 0], [0, 22]].find(([left, top]) =>
+          x >= left - 1 && x <= left + 7 && y >= top - 1 && y <= top + 7);
+        let dark;
+        if (finder) {
+          const dx = x - finder[0], dy = y - finder[1];
+          dark = dx >= 0 && dx < 7 && dy >= 0 && dy < 7 &&
+            (dx === 0 || dx === 6 || dy === 0 || dy === 6 || (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4));
+        } else {
+          dark = (x * y + x + y * 3) % 7 < 3;
+        }
+        if (dark) path += `M${x + 4} ${y + 4}h1v1h-1z`;
+      }
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 37 37" shape-rendering="crispEdges"><rect width="37" height="37" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+  },
   app_info: () => ({ version: "0.0.1", protocol: 3, computer: "Sunny's MacBook Air", platform: "macos" }),
   get_settings: () => ({ ...settings }),
   // ?access=no previews the Accessibility prompt flow.

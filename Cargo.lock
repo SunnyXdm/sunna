@@ -3781,6 +3781,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4811,6 +4817,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "sunna"
 version = "0.0.1"
 dependencies = [
+ "qrcode",
  "serde",
  "serde_json",
  "sunna-client",
@@ -5036,6 +5043,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "qrcode",
  "sunna-capture",
  "sunna-codec",
  "sunna-host",

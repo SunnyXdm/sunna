@@ -44,6 +44,7 @@ fn main() {
             reorder_machines,
             scan_tailscale,
             this_computer,
+            qr_code,
             connect,
             cancel_connect,
             get_settings,
@@ -163,6 +164,18 @@ async fn this_computer() -> ThisComputer {
         key,
         sharing,
     }
+}
+
+#[tauri::command]
+fn qr_code(text: String) -> Result<String, String> {
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .quiet_zone(true)
+        .module_dimensions(1, 1)
+        .dark_color(qrcode::render::svg::Color("#000"))
+        .light_color(qrcode::render::svg::Color("#fff"))
+        .build())
 }
 
 #[tauri::command]

@@ -65,6 +65,9 @@ winit = "0.30"
 clap = { version = "4", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 qoi = "0.4"
+# QR codes for sunna:// links (the app's and the host's), to add a computer
+# from a phone's camera.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 quinn = "0.11"
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

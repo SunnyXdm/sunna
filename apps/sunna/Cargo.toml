@@ -9,6 +9,7 @@ description = "Sunna: remote desktop that feels native"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+qrcode.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sunna-client.workspace = true

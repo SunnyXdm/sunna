@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+qrcode.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["env"] }
 sunna-capture.workspace = true

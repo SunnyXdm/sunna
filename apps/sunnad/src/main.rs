@@ -12,6 +12,7 @@
 
 mod about;
 
+use std::io::{IsTerminal, Read, Write};
 use std::net::SocketAddr;
 
 use clap::{Parser, ValueEnum};
@@ -32,6 +33,11 @@ enum Source {
 #[derive(Parser, Debug)]
 #[command(name = "sunnad", about = "Sunna headless host daemon")]
 struct Args {
+    /// Print the text on standard input (a sunna:// link) as a QR code and
+    /// exit. It's read from there, not given here, so the key in a link
+    /// doesn't show in the list of processes.
+    #[arg(long)]
+    qr: bool,
     /// Address to listen on. Loopback by default; beyond loopback, viewers
     /// must present the token (--token).
     #[arg(long, default_value = "127.0.0.1:48800")]
@@ -171,6 +177,13 @@ fn generate_token() -> anyhow::Result<String> {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.qr {
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        let text = text.trim();
+        anyhow::ensure!(!text.is_empty(), "nothing on standard input to make a QR code of");
+        return print_qr(text);
+    }
     let _telemetry = sunna_telemetry::init("host", sunna_telemetry::Remote::from_env());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -180,6 +193,42 @@ fn main() -> anyhow::Result<()> {
         tracing::error!("{error:#}");
     }
     result
+}
+
+fn print_qr(text: &str) -> anyhow::Result<()> {
+    let code = qrcode::QrCode::new(text.as_bytes())?;
+    let width = code.width();
+    let quiet = 2;
+    let size = width + 2 * quiet;
+    let dark = |x, y| {
+        x >= quiet
+            && y >= quiet
+            && x < width + quiet
+            && y < width + quiet
+            && code[(x - quiet, y - quiet)] == qrcode::Color::Dark
+    };
+    let mut stdout = std::io::stdout().lock();
+    let terminal = stdout.is_terminal();
+    for y in (0..size).step_by(2) {
+        if terminal {
+            // Explicit colors keep the white quiet zone on dark themes too.
+            write!(stdout, "\x1b[38;2;0;0;0;48;2;255;255;255m")?;
+        }
+        for x in 0..size {
+            let block = match (dark(x, y), dark(x, y + 1)) {
+                (false, false) => ' ',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (true, true) => '█',
+            };
+            write!(stdout, "{block}")?;
+        }
+        if terminal {
+            write!(stdout, "\x1b[0m")?;
+        }
+        writeln!(stdout)?;
+    }
+    Ok(())
 }
 
 async fn run(mut args: Args) -> anyhow::Result<()> {

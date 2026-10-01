@@ -22,6 +22,9 @@ Sunna shows another computer's screen on your Mac, plays its sound, and sends yo
 
      In the Sunna app, choose Add a Computer and paste:
        sunna://100.101.102.103?key=7f3a…
+
+     Or scan this with your phone's camera:
+     (a QR code)
    ```
 
 2. **Install the Sunna app on your Mac** ([details](#install-the-mac-app); on Linux, [`scripts/install-app-linux.sh`](#install-the-app-on-linux)):

@@ -1330,6 +1330,8 @@ code {
 .row-title { font-weight: 500; }
 .row-hint { font-size: 11.5px; color: var(--text-3); overflow-wrap: anywhere; }
 .link-text { font-family: var(--font-mono); font-size: 11px; }
+.link-row { flex-wrap: wrap; gap: 8px; }
+.link-actions { display: flex; gap: 6px; margin-left: auto; }
 .access-state {
   display: inline-flex;
   flex: none;
@@ -1356,6 +1358,20 @@ kbd {
 }
 .about { margin: 16px 4px 0; font-size: 11px; color: var(--text-3); }
 .about.credits { margin-top: 4px; }
+
+.qr-card {
+  width: min(260px, 100%);
+  aspect-ratio: 1;
+  margin: 12px auto 18px;
+  padding: 8px;
+  border-radius: 10px;
+  background: #fff;
+}
+.qr-card svg { display: block; width: 100%; height: 100%; }
+.qr-sheet h2 { overflow-wrap: anywhere; }
+.qr-sheet p { margin: 0; font-size: 12.5px; color: var(--text-2); }
+.qr-sheet .qr-warning { margin-top: 8px; font-size: 11.5px; color: var(--text-3); }
+.qr-sheet .sheet-footer { justify-content: flex-end; }
 
 .confirm-sheet {
   width: min(320px, calc(100vw - 40px));
