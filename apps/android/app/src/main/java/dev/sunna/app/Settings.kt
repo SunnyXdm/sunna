@@ -80,6 +80,7 @@ class SettingsView(context: Context, private val app: App, private val onClosed:
         body.addView(context.group(
             SwitchRow(context, "Sound", "Play the computer's sound on this phone", { app.prefs.sound }) { app.prefs.sound = it },
             SwitchRow(context, "Share the clipboard", "Copy on one, paste on the other, both ways", { app.prefs.clipboard }) { app.prefs.clipboard = it },
+            SwitchRow(context, "Keyboard button", "Next to ••• at the top of sessions, for the keyboard in one tap", { app.prefs.keyboardButton }) { app.prefs.keyboardButton = it },
             SwitchRow(context, "Keyboard suggestions", "Corrections and swipe typing from your keyboard; Sunna retypes what changes", { app.prefs.suggestions }) { app.prefs.suggestions = it },
             SwitchRow(context, "Stats bar", "Latency, frame rate and bitrate during sessions", { app.prefs.stats }) { app.prefs.stats = it },
         ), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dpi(12f) })

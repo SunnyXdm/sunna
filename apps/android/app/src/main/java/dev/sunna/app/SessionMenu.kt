@@ -14,7 +14,8 @@ import org.json.JSONObject
 
 /**
  * The session's menu: the keyboard, how touch works, sound, the host's own
- * shortcuts, the video, and Disconnect. Opened with ••• or Back.
+ * shortcuts, the video, and Disconnect. Opened with ••• or Back; closed with
+ * ×, Back, a drag down or a tap above it.
  */
 @SuppressLint("ViewConstructor")
 class SessionMenu(
@@ -29,27 +30,38 @@ class SessionMenu(
     private val detail = context.text(13.5f, Palette.TEXT_2)
     private val actions = ArrayList<() -> Unit>()
 
-    init {
-        val body = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpi(16f), 0, dpi(16f), dpi(4f))
-        }
+    // Some of the session stays in sight above the menu, to tap.
+    override val clearAbove = 0.14f
 
-        // Who this is.
-        body.addView(LinearLayout(context).apply {
+    init {
+        // Who this is, and × to close: above the part that scrolls, so it's
+        // always at hand.
+        val header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dpi(4f), 0, 0, dpi(16f))
+            setPadding(dpi(20f), 0, dpi(14f), dpi(14f))
             addView(Badge(context).apply { os = Os.of(check.os) }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)).apply { marginEnd = dpi(12f) })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(context.text(18f, Palette.TEXT, Type.bold).apply {
                     text = machine.name
                     maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                 })
                 addView(detail.apply { setPadding(0, dpi(3f), 0, 0) })
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        })
+            addView(FrameLayout(context).apply {
+                background = ripple(rounded(white(.08f), dp(18f)), dp(18f))
+                addView(context.icon(R.drawable.ic_close, Palette.TEXT_2, 16f), FrameLayout.LayoutParams(dpi(16f), dpi(16f), Gravity.CENTER))
+                contentDescription = "Close"
+                setOnClickListener { close() }
+            }, LinearLayout.LayoutParams(dpi(36f), dpi(36f)).apply { marginStart = dpi(12f) })
+        }
+
+        val body = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpi(16f), 0, dpi(16f), dpi(4f))
+        }
 
         // The four things reached for most.
         val quick = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
@@ -84,6 +96,7 @@ class SessionMenu(
         // The keyboard.
         body.addView(context.sectionTitle("Keyboard"))
         body.addView(context.group(
+            SwitchRow(context, "Keyboard button", "Next to ••• at the top, for the keyboard in one tap", { app.prefs.keyboardButton }) { session.showKeyboardButton(it) },
             SwitchRow(context, "Keyboard suggestions", "Corrections and swipe typing; Sunna retypes what changes", { app.prefs.suggestions }) { session.setSuggestions(it) },
         ))
 
@@ -115,6 +128,7 @@ class SessionMenu(
             isVerticalScrollBarEnabled = false
             addView(body)
         }
+        setContent(header)
         setContent(scroll)
         if (!mac) detail.text = check.os
     }

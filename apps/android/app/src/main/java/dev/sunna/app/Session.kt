@@ -3,7 +3,10 @@ package dev.sunna.app
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Color
+import android.content.res.ColorStateList
 import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.media.MediaCodecList
 import android.os.Build
 import android.os.SystemClock
@@ -24,6 +27,8 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONObject
 import kotlin.math.max
@@ -56,7 +61,8 @@ object Decoders {
 
 /**
  * A session: the host's screen, full screen, with the pointer drawn where it
- * is, fingers and keys going to the host, and a small button for the menu.
+ * is, fingers and keys going to the host, and small buttons at the top: the
+ * keyboard (unless turned off) and the menu.
  */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
 class SessionView(
@@ -74,6 +80,11 @@ class SessionView(
     private val keyInput = KeyInput(activity, this)
     private val mac = check.os.isEmpty() || check.os.lowercase().contains("mac")
     private val keyBar = KeyBar(activity, mac, { code, down -> if (session != 0L) Native.macKey(session, code, down) }, { barKey(it) }) { keyboard(false) }
+    /** The buttons at the top, in one pill that slides along the edge. */
+    private val chrome = LinearLayout(activity)
+    private val keyButton = FrameLayout(activity)
+    private val keyIcon = ImageView(activity)
+    private val divider = View(activity)
     private val menuButton = FrameLayout(activity)
     private val stats: TextView = activity.text(11.5f, Color.WHITE, Type.medium)
     private val launch = LaunchOverlay(activity, tile() ?: ScreenView(activity).apply { os = Os.of(check.os) }, machine.name) { leave() }
@@ -121,16 +132,31 @@ class SessionView(
             visibility = View.GONE
         }
         addView(stats, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+        keyButton.apply {
+            addView(keyIcon, LayoutParams(dpi(18f), dpi(18f), Gravity.CENTER))
+            contentDescription = "Keyboard"
+            setOnClickListener { keyboard(!keyboardUp) }
+            draggableAlongTop()
+        }
+        divider.setBackgroundColor(white(.16f))
         menuButton.apply {
-            background = ripple(rounded(0xB3141518.toInt(), dp(16f), white(.16f), dpi(1f)), dp(16f))
             addView(activity.icon(R.drawable.ic_more, Color.WHITE, 18f), LayoutParams(dpi(18f), dpi(18f), Gravity.CENTER))
             contentDescription = "Session menu"
             setOnClickListener { openMenu() }
             draggableAlongTop()
+        }
+        chrome.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(0xB3141518.toInt(), dp(16f), white(.16f), dpi(1f))
+            addView(keyButton, LinearLayout.LayoutParams(dpi(KEY_BUTTON), dpi(32f)))
+            addView(divider, LinearLayout.LayoutParams(dpi(1f), dpi(16f)))
+            addView(menuButton, LinearLayout.LayoutParams(dpi(MENU_BUTTON), dpi(32f)))
             alpha = 0f
             visibility = View.GONE
         }
-        addView(menuButton, LayoutParams(dpi(52f), dpi(32f), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        addView(chrome, LayoutParams(LayoutParams.WRAP_CONTENT, dpi(32f), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        applyKeyboardButton()
         keyBar.visibility = View.GONE
         addView(keyBar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         addView(launch, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -237,7 +263,7 @@ class SessionView(
         clipboard.stop()
         keyboard(false)
         immersive(false)
-        menuButton.visibility = View.GONE
+        chrome.visibility = View.GONE
         stats.visibility = View.GONE
         pointer.shown = false
         val to = tile()?.let { from ->
@@ -272,25 +298,26 @@ class SessionView(
         revealed = true
         placePicture()
         launch.reveal {
-            menuButton.visibility = View.VISIBLE
-            menuButton.animate().alpha(1f).setDuration(300).start()
-            dimMenuButtonLater()
+            chrome.visibility = View.VISIBLE
+            chrome.animate().alpha(1f).setDuration(300).start()
+            dimChromeLater()
             stats.visibility = if (app.prefs.stats) View.VISIBLE else View.GONE
             requestFocus()
             app.askForNotifications()
             if (!activity.getSharedPreferences("sunna", 0).getBoolean("hinted", false)) {
                 activity.getSharedPreferences("sunna", 0).edit().putBoolean("hinted", true).apply()
                 val how = if (trackpad) "The screen is a trackpad: tap to click, two fingers to scroll." else "Tap to click, two fingers to scroll."
-                app.notice.show("$how Tap ••• for the keyboard and menu.", durationMs = 6500)
+                val buttons = if (app.prefs.keyboardButton) "The buttons at the top: the keyboard, and ••• for the menu." else "Tap ••• for the keyboard and menu."
+                app.notice.show("$how $buttons", durationMs = 6500)
             }
         }
     }
 
-    private val dim = Runnable { menuButton.animate().alpha(0.55f).setDuration(600).start() }
+    private val dim = Runnable { chrome.animate().alpha(0.55f).setDuration(600).start() }
 
-    private fun dimMenuButtonLater() {
+    private fun dimChromeLater() {
         removeCallbacks(dim)
-        menuButton.animate().alpha(1f).setDuration(150).start()
+        chrome.animate().alpha(1f).setDuration(150).start()
         postDelayed(dim, 3000)
     }
 
@@ -385,8 +412,8 @@ class SessionView(
         pointer.invalidate()
     }
 
-    /** The ••• button slides along the top edge, out of the way of what's
-     *  under it; a tap still opens the menu. */
+    /** The buttons at the top slide along the edge together, out of the way
+     *  of what's under them; a tap still presses the one tapped. */
     @SuppressLint("ClickableViewAccessibility")
     private fun View.draggableAlongTop() {
         val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
@@ -394,36 +421,48 @@ class SessionView(
         var startX = 0f
         var dragging = false
         setOnTouchListener { view, event ->
-            val room = (this@SessionView.width - view.width) / 2f - dpi(12f)
+            val room = chromeRoom()
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
-                    startX = view.translationX
+                    startX = chrome.translationX
                     dragging = false
-                    dimMenuButtonLater()
+                    view.drawableHotspotChanged(event.x, event.y)
+                    view.isPressed = true
+                    dimChromeLater()
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!dragging && kotlin.math.abs(event.rawX - downX) > slop) dragging = true
-                    if (dragging) view.translationX = (startX + event.rawX - downX).coerceIn(-room, room)
+                    if (!dragging && kotlin.math.abs(event.rawX - downX) > slop) {
+                        dragging = true
+                        view.isPressed = false
+                    }
+                    if (dragging) chrome.translationX = (startX + event.rawX - downX).coerceIn(-room, room)
                 }
                 MotionEvent.ACTION_UP -> {
+                    view.isPressed = false
                     if (dragging) {
-                        if (room > 0) app.prefs.menuButtonAt = view.translationX / room
+                        if (room > 0) app.prefs.menuButtonAt = chrome.translationX / room
                         placeChrome()
                     } else {
                         view.performClick()
                     }
                 }
+                MotionEvent.ACTION_CANCEL -> view.isPressed = false
             }
             true
         }
     }
 
+    private fun chromeWidth(): Int = dpi(MENU_BUTTON) + if (keyButton.visibility == View.VISIBLE) dpi(KEY_BUTTON) + dpi(1f) else 0
+
+    /** How far the buttons can slide either way from the middle. */
+    private fun chromeRoom(): Float = (width - chromeWidth()) / 2f - dpi(12f)
+
     private fun placeChrome() {
         val top = max(cutout.top, dpi(8f)) + dpi(6f)
-        val room = (width - dpi(52f)) / 2f - dpi(12f)
-        if (room > 0) menuButton.translationX = app.prefs.menuButtonAt * room
-        (menuButton.layoutParams as LayoutParams).topMargin = top
+        val room = chromeRoom()
+        if (room > 0) chrome.translationX = app.prefs.menuButtonAt * room
+        (chrome.layoutParams as LayoutParams).topMargin = top
         // On the side the ••• button isn't, as wide as the room beside it.
         val right = app.prefs.menuButtonAt < 0f
         (stats.layoutParams as LayoutParams).apply {
@@ -432,12 +471,47 @@ class SessionView(
             leftMargin = cutout.left + dpi(10f)
             rightMargin = cutout.right + dpi(10f)
         }
-        val button = width / 2f + menuButton.translationX
-        val beside = if (right) width - button - cutout.right else button - cutout.left
-        stats.maxWidth = (beside - dpi(26f) - dpi(12f) - dpi(10f)).toInt().coerceAtLeast(dpi(120f))
+        val buttons = width / 2f + chrome.translationX
+        val beside = if (right) width - buttons - cutout.right else buttons - cutout.left
+        stats.maxWidth = (beside - chromeWidth() / 2f - dpi(12f) - dpi(10f)).toInt().coerceAtLeast(dpi(120f))
         stats.setLineSpacing(0f, 1.15f)
-        menuButton.requestLayout()
+        chrome.requestLayout()
         stats.requestLayout()
+    }
+
+    /** The keyboard button shown or not, as Settings say. */
+    private fun applyKeyboardButton() {
+        val shown = if (app.prefs.keyboardButton) View.VISIBLE else View.GONE
+        keyButton.visibility = shown
+        divider.visibility = shown
+        paintChrome()
+        placeChrome()
+    }
+
+    /** The keyboard button next to •••, for this session and the next. */
+    fun showKeyboardButton(on: Boolean) {
+        app.prefs.keyboardButton = on
+        applyKeyboardButton()
+    }
+
+    /** The keyboard button is lit while the keyboard is up (a tap puts it
+     *  away); each button's ripple keeps to its end of the pill. */
+    private fun paintChrome() {
+        val both = keyButton.visibility == View.VISIBLE
+        keyButton.background = RippleDrawable(ColorStateList.valueOf(white(.12f)),
+            if (keyboardUp) pillShape(Palette.accent, left = true, right = false) else null, pillShape(Color.WHITE, left = true, right = false))
+        keyIcon.setImageResource(if (keyboardUp) R.drawable.ic_keyboard_hide else R.drawable.ic_keyboard)
+        keyIcon.imageTintList = ColorStateList.valueOf(if (keyboardUp) Color.BLACK else Color.WHITE)
+        keyButton.contentDescription = if (keyboardUp) "Hide the keyboard" else "Keyboard"
+        menuButton.background = RippleDrawable(ColorStateList.valueOf(white(.12f)), null, pillShape(Color.WHITE, left = !both, right = true))
+    }
+
+    /** A shape for part of the pill: rounded on the sides given. */
+    private fun pillShape(color: Int, left: Boolean, right: Boolean) = GradientDrawable().apply {
+        setColor(color)
+        val l = if (left) dp(16f) else 0f
+        val r = if (right) dp(16f) else 0f
+        cornerRadii = floatArrayOf(l, l, r, r, r, r, l, l)
     }
 
     private fun placeKeyBar(ime: Int) {
@@ -457,7 +531,7 @@ class SessionView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!active || !revealed) return true
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return mouse(event)
-        dimMenuButtonLater()
+        dimChromeLater()
         return touch.onTouchEvent(event)
     }
 
@@ -605,6 +679,7 @@ class SessionView(
             }
             keyBar.visibility = View.GONE
         }
+        paintChrome()
         post { placePicture() }
     }
 
@@ -664,10 +739,15 @@ class SessionView(
         if (keyboardUp) keyboard(false)
         val host = parent as? FrameLayout ?: return
         menu = SessionMenu(activity, host, app, this, machine, check, mac).also {
+            // Full screen again once it's gone (unless the session is ending).
+            it.onClosing = { post { if (active && menu?.isOpen != true) systemBars(false) } }
             it.onClosed = { menu = null }
             it.update(status)
             it.open()
         }
+        // Android's bars while the menu is up: in full screen, a first swipe
+        // from the edge only shows them, so Back took two.
+        systemBars(true)
     }
 
     /** Back: the menu (where Disconnect is), or closes it. */
@@ -760,27 +840,41 @@ class SessionView(
         if (active) immersive(true)
     }
 
+    /** Full screen for the session (Android's bars out of the way, except
+     *  while the menu is up), and the screen kept on. */
     private fun immersive(on: Boolean) {
+        systemBars(!on || menu?.isOpen == true)
+        val window = activity.window
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    /** Android's status and navigation bars. Hidden, a swipe from an edge
+     *  shows them for a moment instead of reaching Android, so swipes near
+     *  the edges stay with the session. */
+    private fun systemBars(show: Boolean) {
         val window = activity.window
         if (Build.VERSION.SDK_INT >= 30) {
             val controller = window.insetsController ?: return
-            if (on) {
+            if (show) {
+                controller.show(WindowInsets.Type.systemBars())
+            } else {
                 controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 controller.hide(WindowInsets.Type.systemBars())
-            } else {
-                controller.show(WindowInsets.Type.systemBars())
             }
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or if (on) {
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or if (show) 0 else {
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                } else 0
+                }
         }
-        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
 }
+
+/** Widths of the buttons at the top, in dp. */
+private const val KEY_BUTTON = 48f
+private const val MENU_BUTTON = 52f
 
 private val NAVIGATION = setOf(MacKey.LEFT, MacKey.RIGHT, MacKey.UP, MacKey.DOWN, MacKey.HOME, MacKey.END, MacKey.PAGE_UP, MacKey.PAGE_DOWN, MacKey.RETURN, MacKey.TAB, MacKey.ESCAPE)
 

@@ -286,6 +286,11 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("suggestions", false)
         set(value) = prefs.edit().putBoolean("suggestions", value).apply()
 
+    /** A keyboard button next to the session's •••. */
+    var keyboardButton: Boolean
+        get() = prefs.getBoolean("keyboard_button", true)
+        set(value) = prefs.edit().putBoolean("keyboard_button", value).apply()
+
     /** Where the session's ••• button sits along the top: -1 (left) to 1 (right). */
     var menuButtonAt: Float
         get() = prefs.getFloat("menu_button_at", 0f)

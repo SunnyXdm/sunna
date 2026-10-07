@@ -15,7 +15,9 @@ import android.view.WindowInsetsAnimation
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 /** Window insets as the screens use them: the system bars (and cutout), and
  *  the on-screen keyboard. */
@@ -35,7 +37,7 @@ data class Insets(val left: Int = 0, val top: Int = 0, val right: Int = 0, val b
 
 /**
  * A card that rises from the bottom over a dimmed screen (a narrower card on
- * wide screens), kept above the keyboard as it slides. Drag the top down, tap
+ * wide screens), kept above the keyboard as it slides. Drag it down, tap
  * outside or go back to close it.
  */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
@@ -46,7 +48,17 @@ open class Sheet(context: Context, private val host: FrameLayout) : FrameLayout(
     private var insets = Insets()
     private var imeNow = 0
     private var closing = false
+    private val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
+    private var dragging = false
+    private var tracker: VelocityTracker? = null
+    /** Told as it starts closing, and when it's gone. */
+    var onClosing: (() -> Unit)? = null
     var onClosed: (() -> Unit)? = null
+    /** How much of the screen to keep clear above a tall card, as a
+     *  fraction of its height: room to tap outside it. */
+    protected open val clearAbove = 0f
     val isOpen: Boolean get() = parent != null && !closing
 
     companion object {
@@ -65,7 +77,6 @@ open class Sheet(context: Context, private val host: FrameLayout) : FrameLayout(
         grabber.addView(View(context).apply { background = rounded(white(.22f), dp(3f)) }, LayoutParams(dpi(38f), dpi(5f), Gravity.CENTER))
         card.addView(grabber, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpi(22f)))
         addView(card, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
-        dragToClose()
         if (Build.VERSION.SDK_INT >= 30) {
             setWindowInsetsAnimationCallback(object : WindowInsetsAnimation.Callback(DISPATCH_MODE_STOP) {
                 override fun onProgress(insets: WindowInsets, running: MutableList<WindowInsetsAnimation>): WindowInsets {
@@ -112,7 +123,9 @@ open class Sheet(context: Context, private val host: FrameLayout) : FrameLayout(
     /** Room for the card: below the status bar, above the keyboard. */
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-        val room = MeasureSpec.getSize(heightMeasureSpec) - insets.top - dpi(12f) - (card.layoutParams as LayoutParams).bottomMargin
+        val height = MeasureSpec.getSize(heightMeasureSpec)
+        val above = max(insets.top + dpi(12f), (height * clearAbove).toInt())
+        val room = height - above - (card.layoutParams as LayoutParams).bottomMargin
         if (room > 0 && card.measuredHeight > room) {
             card.measure(MeasureSpec.makeMeasureSpec(card.measuredWidth, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(room, MeasureSpec.EXACTLY))
         }
@@ -139,6 +152,7 @@ open class Sheet(context: Context, private val host: FrameLayout) : FrameLayout(
     open fun close() {
         if (closing || parent == null) return
         closing = true
+        onClosing?.invoke()
         hideKeyboard()
         card.animate().translationY(card.height.toFloat() + dp(40f)).setDuration(260).setInterpolator(Motion.easeIn).start()
         scrim.animate().alpha(0f).setDuration(260).withEndAction {
@@ -153,37 +167,87 @@ open class Sheet(context: Context, private val host: FrameLayout) : FrameLayout(
         imm?.hideSoftInputFromWindow(windowToken, 0)
     }
 
-    private fun dragToClose() {
-        var startY = 0f
-        var tracker: VelocityTracker? = null
-        grabber.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startY = event.rawY
-                    tracker = VelocityTracker.obtain().also { it.addMovement(event) }
+    /** A downward drag anywhere on the card closes it, unless what's under
+     *  the finger can still scroll up: then that scrolls. */
+    override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                dragging = false
+                downX = event.x
+                downY = event.y
+                tracker?.recycle()
+                tracker = if (!closing && inCard(event.x, event.y)) VelocityTracker.obtain().also { it.addMovement(event) } else null
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val tracker = tracker ?: return false
+                tracker.addMovement(event)
+                val dy = event.y - downY
+                if (dy > slop && dy > abs(event.x - downX) &&
+                    !scrollsUp(card, downX - card.left - card.translationX, downY - card.top - card.translationY)) {
+                    dragging = true
+                    downY = event.y
                     card.animate().cancel()
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    tracker?.addMovement(event)
-                    val dy = event.rawY - startY
-                    card.translationY = if (dy > 0) dy else dy / 4
-                    scrim.alpha = 1f - (max(0f, dy) / max(1, card.height)).coerceIn(0f, 1f) * 0.8f
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    tracker?.addMovement(event)
-                    tracker?.computeCurrentVelocity(1000)
-                    val velocity = tracker?.yVelocity ?: 0f
-                    tracker?.recycle()
-                    tracker = null
-                    if (card.translationY > card.height * 0.28f || velocity > dp(900f)) close()
-                    else {
-                        card.animate().translationY(0f).setDuration(Motion.BOUNCY).setInterpolator(Motion.bouncy).start()
-                        scrim.animate().alpha(1f).setDuration(200).start()
-                    }
+                    scrim.animate().cancel()
+                    return true
                 }
             }
-            true
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                tracker?.recycle()
+                tracker = null
+            }
         }
+        return false
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!dragging) return super.onTouchEvent(event)
+        tracker?.addMovement(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> follow(event)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                dragging = false
+                // Where the finger let go: a quick flick may not have moved
+                // it there yet.
+                if (event.actionMasked == MotionEvent.ACTION_UP) follow(event)
+                val velocity = tracker?.let {
+                    it.computeCurrentVelocity(1000)
+                    it.yVelocity
+                } ?: 0f
+                tracker?.recycle()
+                tracker = null
+                val far = card.translationY > min(card.height * 0.28f, dp(160f))
+                if (event.actionMasked == MotionEvent.ACTION_UP && (far || velocity > dp(900f))) close()
+                else {
+                    card.animate().translationY(0f).setDuration(Motion.BOUNCY).setInterpolator(Motion.bouncy).start()
+                    scrim.animate().alpha(1f).setDuration(200).start()
+                }
+            }
+        }
+        return true
+    }
+
+    private fun follow(event: MotionEvent) {
+        val dy = event.y - downY
+        card.translationY = if (dy > 0) dy else dy / 4
+        scrim.alpha = 1f - (max(0f, dy) / max(1, card.height)).coerceIn(0f, 1f) * 0.8f
+    }
+
+    private fun inCard(x: Float, y: Float): Boolean =
+        x >= card.left + card.translationX && x < card.right + card.translationX &&
+            y >= card.top + card.translationY && y < card.bottom + card.translationY
+
+    /** Whether the view at (x, y), or one inside it there, can scroll up. */
+    private fun scrollsUp(view: View, x: Float, y: Float): Boolean {
+        if (view.canScrollVertically(-1)) return true
+        if (view !is ViewGroup) return false
+        for (i in view.childCount - 1 downTo 0) {
+            val child = view.getChildAt(i)
+            if (child.visibility != View.VISIBLE) continue
+            val cx = x + view.scrollX - child.left - child.translationX
+            val cy = y + view.scrollY - child.top - child.translationY
+            if (cx >= 0 && cy >= 0 && cx < child.width && cy < child.height && scrollsUp(child, cx, cy)) return true
+        }
+        return false
     }
 }
 
