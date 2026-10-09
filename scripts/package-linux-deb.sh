@@ -29,6 +29,14 @@ mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/sunna" "$ROOT/usr/share
 install -m 755 target/release/sunnad "$ROOT/usr/bin/sunnad"
 install -m 755 scripts/sunna-host "$ROOT/usr/bin/sunna-host"
 install -m 755 scripts/linux-desktop.sh "$ROOT/usr/share/sunna/linux-desktop.sh"
+mkdir -p "$ROOT/usr/share/applications"
+cat >"$ROOT/usr/share/applications/dev.sunna.Host.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Sunna
+NoDisplay=true
+Exec=/usr/bin/sunnad
+EOF
 install -m 644 README.md "$ROOT/usr/share/doc/sunna-host/README.md"
 SIZE_KB="$(du -sk "$ROOT/usr" | cut -f1)"
 # The newest glibc sunnad was linked against: the package asks for at least
@@ -50,7 +58,7 @@ Priority: optional
 Description: Sunna host: share this computer with the Sunna app
  Streams this computer's desktop to the Sunna app on a Mac, with the
  keyboard, mouse and clipboard sent back. Run "sunna-host setup" after
- installing: it shares the X11 desktop you're logged into, or a separate
+ installing: it shares your X11 or GNOME/KDE Wayland desktop, or a separate
  virtual desktop on machines without a screen, and starts by itself from
  then on. Build $COMMIT.
 EOF

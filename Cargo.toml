@@ -7,6 +7,7 @@ members = [
     "crates/codec",
     "crates/input",
     "crates/clipboard",
+    "crates/portal",
     "crates/host",
     "crates/client",
     "crates/telemetry",
@@ -30,6 +31,7 @@ default-members = [
     "crates/client",
     "crates/telemetry",
     "crates/clipboard",
+    "crates/portal",
     "crates/viewer",
     "crates/audio",
     "apps/sunnad",
@@ -49,6 +51,7 @@ sunna-capture = { path = "crates/capture" }
 sunna-codec = { path = "crates/codec" }
 sunna-input = { path = "crates/input" }
 sunna-clipboard = { path = "crates/clipboard" }
+sunna-portal = { path = "crates/portal" }
 sunna-host = { path = "crates/host" }
 sunna-client = { path = "crates/client" }
 sunna-telemetry = { path = "crates/telemetry" }

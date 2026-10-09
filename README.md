@@ -10,7 +10,7 @@
 
 Sunna shows another computer's screen on your Mac, plays its sound, and sends your keyboard, mouse, trackpad and clipboard back. It uses the hardware video encoders and decoders where they exist and sends small changes like typing as exact, lossless tiles ahead of the video, so text appears as fast as your network allows. There are no accounts and no cloud service: computers talk to each other directly, ideally over [Tailscale](https://tailscale.com).
 
-**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11); the app for Linux is new (see [Install the app on Linux](#install-the-app-on-linux)), and the Android app newer still (see [Android](#the-app-on-android)). Not yet: Windows, and sharing a Wayland desktop (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
+**Status: early, and in daily use by its developer.** It works well Mac → Mac and Mac → Linux (X11); sharing a GNOME desktop on Wayland is new (tested on GNOME 46, 49 and 50, not yet on a real laptop); the app for Linux is new (see [Install the app on Linux](#install-the-app-on-linux)), and the Android app newer still (see [Android](#the-app-on-android)). Not yet: Windows and sharing other Wayland desktops (see [Linux](#share-a-linux-computer)). Read [Security](#security-and-privacy) before using it outside your own network.
 
 ## Quick start
 
@@ -124,12 +124,12 @@ The package runs on the release it was built on and newer ones: build it on Ubun
 
 | Mode | What you see | Use it for |
 |---|---|---|
-| `desktop` | the X11 desktop you're logged into | a PC or laptop you also use directly |
-| `virtual` | a separate desktop that runs without a screen (Xvfb with Plasma or XFCE) | servers and VMs, and machines whose own desktop is Wayland |
+| `desktop` | the X11 or GNOME/KDE Wayland desktop you're logged into | a PC or laptop you also use directly |
+| `virtual` | a separate desktop that runs without a screen (Xvfb with Plasma or XFCE) | servers and VMs, and other Wayland desktops |
 
-`sunna-host setup` picks for you: `desktop` if you run it in a terminal on an X11 desktop, otherwise `virtual` (over SSH, for example). Choose explicitly with `--desktop` or `--virtual`.
+`sunna-host setup` picks for you: `desktop` if you run it in a terminal on an X11 or GNOME/KDE Wayland desktop, otherwise `virtual` (over SSH, for example). Choose explicitly with `--desktop` or `--virtual`.
 
-**Wayland:** Sunna can't capture a Wayland desktop yet; that includes Ubuntu's default session, and GNOME, Plasma or Hyprland on Wayland. Either log in with an X11 session (on Ubuntu, pick "Ubuntu on Xorg" on the login screen) or use a virtual desktop. Wayland support is planned.
+**Wayland:** GNOME (including Ubuntu's default desktop) can be shared in `desktop` mode, and KDE Plasma should work the same way (not tested yet). Run `sunna-host setup --desktop` at the computer to approve sharing once. In GNOME's Remote Desktop dialog, switch on **Allow Remote Interaction**, keep **Remember This Selection** on, choose the screen, and click **Share**. Later connections use the saved permission. GNOME shows an orange sharing indicator while connected; **Stop** ends the viewer session. If permission is revoked, approve it again at the computer. Someone must be logged in; this does not share the login screen. Other Wayland desktops, including Hyprland, still need `sunna-host setup --virtual`.
 
 **A virtual desktop** needs Xvfb and a desktop environment; `sunna-host setup` tells you what's missing (on Debian and Ubuntu: `sudo apt install xvfb x11-utils dbus-x11 xfce4`). It uses Plasma if that's installed, otherwise XFCE. It keeps running after you disconnect, with the apps you opened in it, like a real computer would, and restarting the host doesn't close it. `sunna-host desktop-stop` stops it, its apps and the host; `sunna-host start` brings both back.
 
@@ -249,7 +249,7 @@ A computer takes one viewer at a time; while someone else is connected, the app 
 | ⌘Tab and ⌘Space stay on your Mac | Allow them in Sunna's Settings → **System shortcuts**, then reconnect. ⌃⌥G also switches them between your Mac and the remote. |
 | On Wi-Fi, the video hitches about once a second | That's the Mac's AirDrop radio (AWDL) scanning. `sudo ifconfig awdl0 down` turns it off, and AirDrop with it, until macOS turns it back on or you run `sudo ifconfig awdl0 up`. |
 | Choppy video from a Linux host without an NVIDIA GPU | Choose **30 fps** or a lower resolution in the session menu. If the host was built before nasm was installed, run the install script again: it rebuilds the encoder. |
-| A Linux desktop won't share | It's probably a Wayland session: log in with an X11 session, or run `sunna-host setup --virtual`. |
+| A Linux desktop won't share | On GNOME/KDE Wayland, run `sunna-host setup --desktop` at the computer and approve sharing. Other Wayland desktops need `sunna-host setup --virtual`. |
 | Anything else | The host's log: `sunna-host logs` on Linux, or the Terminal window on a Mac. The app's log: quit Sunna and run `/Applications/Sunna.app/Contents/MacOS/Sunna` in Terminal. |
 
 ## Security and privacy

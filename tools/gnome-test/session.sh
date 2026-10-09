@@ -11,7 +11,10 @@ pipewire > /tmp/pipewire.log 2>&1 &
 sleep 1
 wireplumber > /tmp/wireplumber.log 2>&1 &
 sleep 1
-gnome-shell --headless --virtual-monitor ${SIZE:-1920x1080} --unsafe-mode --no-x11 > /tmp/gnome-shell.log 2>&1 &
+flags="--headless --virtual-monitor ${SIZE:-1920x1080} --unsafe-mode"
+gnome-shell --help 2>&1 | grep -q -- "--no-x11" && flags="$flags --no-x11"
+gnome-shell --help 2>&1 | grep -q -- "--wayland" && flags="$flags --wayland"
+gnome-shell $flags > /tmp/gnome-shell.log 2>&1 &
 for i in $(seq 60); do [ -S $XDG_RUNTIME_DIR/wayland-0 ] && break; sleep 0.5; done
 cat > /tmp/env.sh <<ENV
 export XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS

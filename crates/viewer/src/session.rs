@@ -76,6 +76,9 @@ fn why_it_ended(reason: Option<sunna_transport::quinn::ConnectionError>) -> Stri
         Some(ConnectionError::ApplicationClosed(close)) if close.reason.starts_with(b"replaced") => {
             "replaced: a newer session from this Mac took over".into()
         }
+        Some(ConnectionError::ApplicationClosed(close)) if !close.reason.is_empty() => {
+            String::from_utf8_lossy(&close.reason).into_owned()
+        }
         _ => "the host ended the session".into(),
     }
 }

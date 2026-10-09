@@ -1,6 +1,6 @@
 # Sharing a GNOME desktop on Wayland
 
-Status (2026-10-09): designed, and the whole path proven by hand on GNOME 51 (below); not in `sunnad` yet. This is how it will work, what was verified and how, and what's still open.
+Status (2026-10-09): built (`crates/portal`, `sunnad --authorize`, `sunna-host setup --desktop` on Wayland) and working end to end on GNOME 46, 49 and 50 in the test bed (below). Not yet run on a real laptop, nor on KDE.
 
 ## Why it needs its own path
 
@@ -68,7 +68,7 @@ With `cursor_mode = metadata`, each frame can carry the pointer's position and, 
 
 ## Verified
 
-On GNOME 51.0 (mutter 51.0, xdg-desktop-portal 1.22.1, xdg-desktop-portal-gnome 51.0, PipeWire 1.6.9), in the test bed below, with `tools/gnome-test/gnome-poc.py`:
+**The portal itself**, on GNOME 51.0 (mutter 51.0, xdg-desktop-portal 1.22.1, xdg-desktop-portal-gnome 51.0, PipeWire 1.6.9), with `tools/gnome-test/gnome-poc.py`:
 
 | | |
 |---|---|
@@ -81,25 +81,36 @@ On GNOME 51.0 (mutter 51.0, xdg-desktop-portal 1.22.1, xdg-desktop-portal-gnome 
 | Keyboard | Super opened the overview; typing "files" searched for it |
 | While shared | GNOME's orange indicator in the top bar |
 
-Not yet checked: the lock screen (does the stream continue, do keys reach the password field), Stop in the indicator (the `Closed` signal, and whether the token survives it), several screens, and the cursor and damage metadata on real frames. The dialog said "An app wants to share your screen" even though Sunna had registered its name; that's to look into.
+**Sunna's implementation**, with `sunnad` in the test bed and `sunna-cli connect --click X,Y --type TEXT` as the viewer (it clicks and types like the apps do), on GNOME 46.0, 49.0 and 50.1 (Ubuntu 24.04, 25.10 and 26.04's own packages):
+
+| | |
+|---|---|
+| `sunnad --authorize` | the dialog came up; after Share it said whether keyboard and pointer were granted (one run where the switch was missed said "not granted", as it should), and saved the token, mode 600 |
+| A session | started silently from the token: `portal capture (PipeWire)`, keyboard and pointer, cursor metadata, 1920×1080; frames at the viewer about 40 ms after capture with software H.264 |
+| Input | Sunna's click on Activities opened the overview and its typing searched for "files", on all three |
+| Stop in GNOME's indicator | the session ended with "Sharing was stopped on the computer", sent to the viewer as the reason; the next connection started silently, so Stop doesn't revoke the permission |
+
+Two bugs that only a real GNOME showed, both fixed: negotiated format values come wrapped in a choice of one, and mutter now and then gives a frame's stride in pixels rather than bytes (during the overview's animation); the chunk's size is right, so it's used then.
+
+Not yet checked: a real laptop (display scaling, several screens, the lock screen), KDE with this code, and how the pointer's shapes look in a viewer. On a real desktop the clipboard goes through Xwayland (`DISPLAY`), which GNOME keeps in step with Wayland's; the test bed has no Xwayland. The dialog says "An app wants to share your screen" even though Sunna registers its name: to look into.
 
 ## GNOME versions
 
 | Ubuntu | GNOME | Xorg session | Through the portal |
 |---|---|---|---|
 | 22.04 | 42 | yes | not tested |
-| 24.04 | 46 | yes (Wayland is the default) | not tested |
-| 25.10 | 49 | no | not tested |
-| 26.04 | 50 | no | not tested |
-| (Arch, now) | 51 | no | verified |
+| 24.04 | 46 | yes (Wayland is the default) | works; its portal (1.18) has no Registry, and the permission is remembered anyway |
+| 25.10 | 49 | no | works |
+| 26.04 | 50 | no | works |
+| (Arch) | 51 | no | the portal works (gnome-poc.py) |
 
-Remembered remote-desktop permissions arrived in GNOME's portal after screen-cast ones (GNOME 42); which release first had them decides whether older GNOMEs ask on every connection. The test bed will run Ubuntu's own GNOME for each row before this ships. If a version can't remember, the fallback is one portal session for as long as the host runs, approved once per login.
+All of them remember the permission, so no fallback (a portal session for as long as the host runs) is needed for these.
 
 ## The test bed
 
-`tools/gnome-test/` runs GNOME Shell headless in a Docker container, isolated from the machine's own sessions, with PipeWire, the GNOME portal and a mock logind (`python-dbusmock`, as GNOME's own tests do; GNOME 51 won't start without logind). GNOME runs in unsafe mode so the helpers can take screenshots (`shot.sh`) and click or type (`click.sh`, `key.sh`) through virtual input devices, which is how the dialog gets approved.
+`tools/gnome-test/` runs GNOME Shell headless in a Docker container, isolated from the machine's own sessions, with PipeWire, the GNOME portal and a mock logind (`python-dbusmock`, as GNOME's own tests do; GNOME 51 won't start without logind). `up.sh` uses Arch's newest GNOME, or `UBUNTU=24.04`, `25.10` or `26.04` for Ubuntu's own. GNOME runs in unsafe mode so the helpers can take screenshots (`shot.sh`) and click or type (`click.sh`, `key.sh`) through virtual input devices, which is how the dialog gets approved: from the overview, click the dialog's preview, then the switch, then Share.
 
-Known quirk: in the container, GNOME Shell crashes when the dialog closes after Share (`meta_window_unmanage: assertion failed: (window->display->focus_window != window)`), but only after the session has started and the token is stored. Restarting GNOME Shell and the portal, then starting with the token, works. Real sessions, with a real keyboard and logind, don't do this.
+The helpers stamp every event with the current time: an event stamped ahead makes mutter refuse focus changes that come before it, and it asserts (`meta_window_unmanage: focus_window != window`) when the dialog then closes.
 
 ## Not covered
 
@@ -107,9 +118,8 @@ Known quirk: in the container, GNOME Shell crashes when the dialog closes after 
 - **Hyprland and other wlroots desktops**: their portal has screen cast but no remote desktop, so input would need wlroots' own virtual pointer and keyboard protocols.
 - **The login screen**: GNOME's Remote Login (RDP from GDM) is a different, privileged system.
 
-## Plan
+## Next
 
-1. `sunna-capture`: the portal session (with `zbus`, pure Rust, so building needs no new system packages), the PipeWire source, the cursor metadata. `sunna-input`: the portal injector. `sunnad`: choosing the path, sharing the portal session, the token file, `--authorize`.
-2. `sunna-host`, the `.desktop` file, the package and the installer; README.
-3. Test in the test bed on GNOME 51, then Ubuntu 26.04, 25.10 and 24.04 images; then on a real laptop.
-4. Later: the fast lane from damage metadata, DMA-BUF to NVENC, KDE without the dialog.
+1. On a real laptop: display scaling (the portal's coordinates against the frame's pixels), several screens, the lock screen, the clipboard.
+2. KDE with this code.
+3. Later: the fast lane from damage metadata, DMA-BUF to NVENC, KDE without the dialog.

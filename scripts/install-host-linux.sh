@@ -29,6 +29,17 @@ place() {
 place target/release/sunnad "$BIN/sunnad"
 place scripts/sunna-host "$BIN/sunna-host"
 place scripts/linux-desktop.sh "$DATA/linux-desktop.sh"
+APPLICATIONS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$APPLICATIONS"
+# Desktop Entry Exec uses double quotes, with shell metacharacters escaped.
+DESKTOP_EXEC="$(printf '%s' "$BIN/sunnad" | sed 's/[\\`$"]/\\&/g; s/%/%%/g')"
+cat >"$APPLICATIONS/dev.sunna.Host.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Sunna
+NoDisplay=true
+Exec="$DESKTOP_EXEC"
+EOF
 echo "Installed sunnad and sunna-host in $BIN."
 case ":$PATH:" in
   *":$BIN:"*) ;;

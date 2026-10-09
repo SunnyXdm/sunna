@@ -1,9 +1,9 @@
 //! sunnad — the headless Sunna host daemon.
 //!
 //! `--source screen` streams the real display: on macOS (requires the Screen
-//! Recording permission for the process that launches sunnad) or an X11
-//! display on Linux (`DISPLAY`). `--source synthetic` streams a test pattern.
-//! Input is injected on macOS (Accessibility permission) and X11 (XTEST).
+//! Recording permission for the process that launches sunnad) or a portal (Wayland) or X11
+//! display on Linux. `--source synthetic` streams a test pattern.
+//! Input follows the same desktop through Accessibility, the portal, or XTEST.
 //!
 //! Access control is a shared session token (`--token` / `SUNNA_TOKEN`; one
 //! is generated and printed if missing when listening beyond loopback). TLS is
@@ -25,14 +25,17 @@ use sunna_transport::Server;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Source {
     Synthetic,
-    /// Capture the screen: the main display on macOS, the X11 display in
-    /// $DISPLAY on Linux.
+    /// Capture the screen: the main display on macOS, the portal on Wayland,
+    /// or the X11 display in $DISPLAY.
     Screen,
 }
 
 #[derive(Parser, Debug)]
 #[command(name = "sunnad", about = "Sunna headless host daemon")]
 struct Args {
+    /// Approve Wayland desktop sharing at this computer, save permission, and exit.
+    #[arg(long)]
+    authorize: bool,
     /// Print the text on standard input (a sunna:// link) as a QR code and
     /// exit. It's read from there, not given here, so the key in a link
     /// doesn't show in the list of processes.
@@ -112,7 +115,11 @@ fn resolve_dimensions(args: &Args) -> anyhow::Result<(u32, u32)> {
             }
             #[cfg(target_os = "linux")]
             {
-                let (native_w, native_h) = sunna_capture::linux::main_display_pixel_size()?;
+                let (native_w, native_h) = if sunna_portal::use_portal() {
+                    sunna_portal::session::display_size().unwrap_or((1920, 1080))
+                } else {
+                    sunna_capture::linux::main_display_pixel_size()?
+                };
                 Ok((
                     args.width.unwrap_or(native_w).max(2) & !1,
                     args.height.unwrap_or(native_h).max(2) & !1,
@@ -151,6 +158,15 @@ fn make_source_factory(source: Source) -> sunna_host::SourceFactory {
             }
             #[cfg(target_os = "linux")]
             {
+                if sunna_portal::use_portal() {
+                    return Box::new(move |stream| {
+                        Ok(Box::new(sunna_portal::PortalSource::new(
+                            Some(stream.width),
+                            Some(stream.height),
+                            stream.fps,
+                        )?) as Box<dyn FrameSource>)
+                    });
+                }
                 Box::new(move |stream| {
                     Ok(Box::new(sunna_capture::linux::ScreenSource::new(
                         Some(stream.width),
@@ -167,6 +183,20 @@ fn make_source_factory(source: Source) -> sunna_host::SourceFactory {
     }
 }
 
+fn make_injector_factory(_source: Source) -> sunna_host::InjectorFactory {
+    #[cfg(target_os = "linux")]
+    if _source == Source::Screen && sunna_portal::use_portal() {
+        return Box::new(|| match sunna_portal::PortalInjector::new() {
+            Ok(injector) => Box::new(injector),
+            Err(error) => {
+                tracing::warn!(%error, "portal input unavailable");
+                Box::new(sunna_input::LogInjector)
+            }
+        });
+    }
+    Box::new(make_injector)
+}
+
 /// 128 random bits as hex, from the OS RNG.
 fn generate_token() -> anyhow::Result<String> {
     use std::io::Read;
@@ -181,8 +211,17 @@ fn main() -> anyhow::Result<()> {
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
         let text = text.trim();
-        anyhow::ensure!(!text.is_empty(), "nothing on standard input to make a QR code of");
+        anyhow::ensure!(
+            !text.is_empty(),
+            "nothing on standard input to make a QR code of"
+        );
         return print_qr(text);
+    }
+    if args.authorize {
+        #[cfg(target_os = "linux")]
+        return sunna_portal::authorize();
+        #[cfg(not(target_os = "linux"))]
+        anyhow::bail!("--authorize is for Linux desktop portals");
     }
     let _telemetry = sunna_telemetry::init("host", sunna_telemetry::Remote::from_env());
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -283,7 +322,7 @@ async fn run(mut args: Args) -> anyhow::Result<()> {
             config,
             make_source_factory(args.source),
             Box::new(move |stream| make_encoder(&stream.codec, stream.width, stream.height, stream.fps, stream.bitrate_bps)),
-            Box::new(make_injector),
+            make_injector_factory(args.source),
         ) => result,
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("shutting down");

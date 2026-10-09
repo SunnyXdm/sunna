@@ -57,10 +57,10 @@ def prop(iface, name):
 
 t0 = time.time()
 try:
-    dbus.Interface(portal, "org.freedesktop.host.portal.Registry").Register(APP_ID, {})
+    dbus.Interface(portal, "org.freedesktop.host.portal.Registry").Register(APP_ID, dbus.Dictionary({}, signature="sv"))
     print("registered as", APP_ID, flush=True)
-except dbus.DBusException as error:
-    print("Registry:", error.get_dbus_message(), flush=True)
+except Exception as error:  # older portals (before 1.19) don't have the Registry
+    print("Registry:", getattr(error, "get_dbus_message", lambda: error)(), flush=True)
 rd = dbus.Interface(portal, "org.freedesktop.portal.RemoteDesktop")
 sc = dbus.Interface(portal, "org.freedesktop.portal.ScreenCast")
 print("RemoteDesktop v%d devices=%d, ScreenCast v%d sources=%d cursor_modes=%d" % (

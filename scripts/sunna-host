@@ -15,9 +15,10 @@
 #                               (the key is left out)
 #
 # setup options:
-#   --desktop        share the X11 desktop you're logged into
+#   --desktop        share your X11 or GNOME/KDE Wayland desktop
+#                    (Wayland: approve once here at the computer)
 #   --virtual        share a separate desktop that runs without a screen
-#                    (servers, or when your desktop is Wayland)
+#                    (servers, or other Wayland desktops)
 #   --listen WHERE   tailscale (default when Tailscale is up), lan, or IP[:PORT]
 #   --name NAME      how this computer is called in the app (default: hostname)
 #   --key KEY        use this key instead of making one
@@ -176,7 +177,7 @@ write_autostart() {
 Type=Application
 Name=Sunna host
 Comment=Share this desktop with the Sunna app
-Exec=sh -c 'systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE; systemctl --user restart $UNIT'
+Exec=sh -c 'systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS; systemctl --user restart $UNIT'
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
@@ -206,6 +207,13 @@ install_hint() {
   fi
 }
 
+wayland_desktop_supported() {
+  case "${XDG_CURRENT_DESKTOP:-}" in
+    *GNOME* | *gnome* | *KDE* | *kde*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 cmd_setup() {
   local mode="" listen="" name="" key="" size=""
   while [ $# -gt 0 ]; do
@@ -227,11 +235,12 @@ cmd_setup() {
   if [ -z "$mode" ]; then
     mode="${SUNNA_MODE:-}"
     if [ -z "$mode" ]; then
-      if [ "$session" = x11 ] && [ -n "${DISPLAY:-}" ]; then mode=desktop; else mode=virtual; fi
+      if { [ "$session" = x11 ] && [ -n "${DISPLAY:-}" ]; } ||
+        { [ "$session" = wayland ] && wayland_desktop_supported; }; then mode=desktop; else mode=virtual; fi
     fi
   fi
   if [ "$mode" = desktop ] && [ "$session" = wayland ]; then
-    die "this desktop is a Wayland session, which Sunna can't share yet. Log in with an X11 session (e.g. \"Ubuntu on Xorg\"), or use sunna-host setup --virtual"
+    wayland_desktop_supported || die "Wayland desktop sharing needs GNOME or KDE. For this desktop, use sunna-host setup --virtual"
   fi
   SUNNA_MODE="$mode"
   SUNNA_NAME="${name:-${SUNNA_NAME:-$(hostname)}}"
@@ -276,13 +285,16 @@ cmd_setup() {
     echo "      yet, so prefer Tailscale on networks you don't control (sunna-host setup --listen tailscale)."
   fi
 
+  if [ "$mode" = desktop ] && [ "$session" = wayland ]; then
+    "$(sunnad_path)" --authorize || die "sharing wasn't approved; run sunna-host setup --desktop again at the computer"
+  fi
   write_config
   write_units
   systemctl_user daemon-reload
   if [ "$mode" = desktop ]; then
     systemctl_user disable "$UNIT" >/dev/null 2>&1 || true
     write_autostart
-    systemctl_user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE 2>/dev/null || true
+    systemctl_user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
   else
     rm -f "$AUTOSTART"
     systemctl_user enable "$UNIT" >/dev/null
@@ -301,7 +313,7 @@ cmd_setup() {
       echo
       if [ "$mode" = virtual ]; then
         echo "  Sharing $SUNNA_NAME with Sunna: a virtual desktop on $SUNNA_DISPLAY (not your screen)."
-        [ "$session" = wayland ] && echo "  (Your own desktop is Wayland, which Sunna can't share yet.)"
+        [ "$session" = wayland ] && echo "  (Your own Wayland desktop is separate.)"
         local sound
         sound="$(sound_status)"
         case "$sound" in off*) echo "  Sound is $sound." ;; esac
@@ -332,11 +344,10 @@ cmd_run() {
   if [ "$SUNNA_MODE" = virtual ]; then
     # sunna-desktop.service has started it (the unit waits for that).
     export DISPLAY="$SUNNA_DISPLAY"
+    export SUNNA_CAPTURE=x11
     # Share the virtual desktop's own sound output (linux-desktop.sh).
     export SUNNA_AUDIO_SOURCE="${SUNNA_AUDIO_SOURCE:-sunna_desktop_${SUNNA_DISPLAY#:}.monitor}"
   else
-    [ "${XDG_SESSION_TYPE:-}" = wayland ] &&
-      die "the desktop is a Wayland session, which Sunna can't share yet: log in with X11, or run sunna-host setup --virtual"
     export DISPLAY="${DISPLAY:-$SUNNA_DISPLAY}"
   fi
   exec "$(sunnad_path)" --source screen --listen "$addr" --name "$SUNNA_NAME"
@@ -401,6 +412,13 @@ cmd_status() {
   echo "  Mode       $SUNNA_MODE ($SUNNA_DISPLAY)"
   echo "  Listening  $(listen_address || true)"
   echo "  Sound      $(sound_status)"
+  if [ "$SUNNA_MODE" = desktop ] && [ "${XDG_SESSION_TYPE:-}" = wayland ]; then
+    if [ -f "$CONFIG_DIR/portal-token" ]; then
+      echo "  Wayland    sharing approved (saved permission; the desktop can revoke it)"
+    else
+      echo "  Wayland    no saved approval (sunna-host setup --desktop at the computer)"
+    fi
+  fi
   if [ "$state" = active ]; then
     # The host logs a line every second while a viewer is connected.
     if journalctl --user -u "$UNIT" --since "-5s" -o cat 2>/dev/null | grep -q "host window"; then
@@ -432,7 +450,8 @@ cmd_uninstall() {
   # A per-user install (scripts/install-host-linux.sh) put these here.
   local data="${XDG_DATA_HOME:-$HOME/.local/share}/sunna"
   if [ "$HERE" = "$HOME/.local/bin" ]; then
-    rm -f "$HOME/.local/bin/sunnad" "$data/linux-desktop.sh"
+    rm -f "$HOME/.local/bin/sunnad" "$data/linux-desktop.sh" \
+      "${XDG_DATA_HOME:-$HOME/.local/share}/applications/dev.sunna.Host.desktop"
     rmdir "$data" 2>/dev/null || true
     echo "Uninstalled. (Settings kept in $CONFIG_DIR unless you used --purge.)"
     rm -f "$SELF"

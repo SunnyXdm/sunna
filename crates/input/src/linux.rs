@@ -219,7 +219,7 @@ impl InputInjector for X11Injector {
 }
 
 /// macOS virtual keycode (Carbon `kVK_*`) → Linux evdev `KEY_*` code.
-fn evdev_from_mac(vk: u16, command_as_ctrl: bool) -> Option<u16> {
+pub fn evdev_from_mac(vk: u16, command_as_ctrl: bool) -> Option<u16> {
     Some(match vk {
         0x00 => 30, // A
         0x01 => 31, // S

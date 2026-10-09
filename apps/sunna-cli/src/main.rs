@@ -74,6 +74,15 @@ enum Command {
         /// With --set-stream-after: then turn sound on or off.
         #[arg(long, action = clap::ArgAction::Set)]
         set_audio: Option<bool>,
+        /// To test a host's input: click at X,Y (fractions of its screen)...
+        #[arg(long, value_name = "X,Y", value_parser = parse_point)]
+        click: Option<(f32, f32)>,
+        /// ...then type TEXT, key by key on a US layout, as the apps do.
+        #[arg(long = "type", value_name = "TEXT")]
+        type_text: Option<String>,
+        /// Seconds into the session for --click and --type.
+        #[arg(long, default_value_t = 2)]
+        input_after: u64,
     },
     /// In-process loopback benchmark: host + client, one report.
     Bench {
@@ -96,6 +105,16 @@ enum Command {
         #[arg(long, default_value_t = 0.0)]
         simulate_loss: f64,
     },
+}
+
+fn parse_point(value: &str) -> Result<(f32, f32), String> {
+    let (x, y) = value.split_once(',').ok_or("expected X,Y")?;
+    let x: f32 = x.trim().parse().map_err(|_| "X isn't a number")?;
+    let y: f32 = y.trim().parse().map_err(|_| "Y isn't a number")?;
+    if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err("X and Y are fractions of the screen, 0 to 1".into());
+    }
+    Ok((x, y))
 }
 
 fn parse_size(value: &str) -> Result<(u32, u32), String> {
@@ -165,10 +184,44 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             fast_lane,
             audio,
             set_audio,
+            click,
+            type_text,
+            input_after,
         } => {
             tracing::warn!("dev TLS: server certificate is NOT verified");
             let client = connect_insecure(addr, &server_name).await?;
-            let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+            if click.is_some() || type_text.is_some() {
+                tokio::spawn(async move {
+                    use sunna_proto::messages::{InputEvent, MouseButton};
+                    tokio::time::sleep(Duration::from_secs(input_after)).await;
+                    if let Some((x, y)) = click {
+                        let _ = input_tx.send(InputEvent::MouseMoveAbs { x, y });
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        for pressed in [true, false] {
+                            let _ = input_tx.send(InputEvent::MouseButton { button: MouseButton::Left, pressed });
+                            tokio::time::sleep(Duration::from_millis(60)).await;
+                        }
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                    }
+                    if let Some(text) = type_text {
+                        let (keys, skipped) = sunna_client::keys::type_text(&text);
+                        if skipped > 0 {
+                            tracing::warn!(skipped, "characters not on a US keyboard left out");
+                        }
+                        // Paced like the apps' typing.
+                        for key in keys {
+                            for event in key {
+                                let _ = input_tx.send(event);
+                            }
+                            tokio::time::sleep(Duration::from_millis(8)).await;
+                        }
+                    }
+                    tracing::info!("sent the test input");
+                    // Kept open until the session ends.
+                    std::future::pending::<()>().await;
+                });
+            }
             let settings = sunna_proto::messages::StreamSettings {
                 codec, max_size, max_bitrate_kbps: bitrate_kbps, fps, fast_lane, audio: set_audio.or(Some(audio)),
             };

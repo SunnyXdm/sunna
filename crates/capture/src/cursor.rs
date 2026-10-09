@@ -28,6 +28,29 @@ pub struct CursorImage {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const POLL: Duration = Duration::from_millis(30);
 
+/// A capture backend can supply shapes without opening an X connection.
+#[cfg(target_os = "linux")]
+pub type Provider = Arc<dyn Fn() -> Option<CursorImage> + Send + Sync>;
+#[cfg(target_os = "linux")]
+static PROVIDER: std::sync::Mutex<Option<Provider>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+pub struct ProviderGuard(Provider);
+#[cfg(target_os = "linux")]
+pub fn register_provider(provider: Provider) -> ProviderGuard {
+    *PROVIDER.lock().unwrap() = Some(provider.clone());
+    ProviderGuard(provider)
+}
+#[cfg(target_os = "linux")]
+impl Drop for ProviderGuard {
+    fn drop(&mut self) {
+        let mut provider = PROVIDER.lock().unwrap();
+        if provider.as_ref().is_some_and(|p| Arc::ptr_eq(p, &self.0)) {
+            *provider = None;
+        }
+    }
+}
+
 /// Watch the pointer's shape from a thread of its own, calling `changed` with
 /// each new one, until `stop` is set.
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_variables, unused_mut))]
@@ -36,34 +59,51 @@ pub fn watch(
     mut changed: impl FnMut(CursorImage) + Send + 'static,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     #[cfg(target_os = "linux")]
-    let mut shapes = linux::Shapes::open()?;
+    let mut shapes = if PROVIDER.lock().unwrap().is_some() {
+        None
+    } else {
+        Some(linux::Shapes::open()?)
+    };
     #[cfg(target_os = "macos")]
     let mut shapes = macos::Shapes::open()?;
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("pointer shapes aren't available on this system");
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    Ok(std::thread::Builder::new().name("sunna-cursor".into()).spawn(move || {
-        let mut last = None;
-        while !stop.load(Ordering::Relaxed) {
-            match shapes.next() {
-                Ok(Some(image)) if last != Some(image.id) => {
-                    last = Some(image.id);
-                    changed(image);
+    Ok(std::thread::Builder::new()
+        .name("sunna-cursor".into())
+        .spawn(move || {
+            let mut last = None;
+            while !stop.load(Ordering::Relaxed) {
+                #[cfg(target_os = "linux")]
+                let next = match &mut shapes {
+                    Some(shapes) => shapes.next(),
+                    None => Ok(PROVIDER
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .and_then(|provider| provider())),
+                };
+                #[cfg(target_os = "macos")]
+                let next = shapes.next();
+                match next {
+                    Ok(Some(image)) if last != Some(image.id) => {
+                        last = Some(image.id);
+                        changed(image);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "pointer shapes stopped");
+                        return;
+                    }
                 }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "pointer shapes stopped");
-                    return;
-                }
+                std::thread::sleep(POLL);
             }
-            std::thread::sleep(POLL);
-        }
-    })?)
+        })?)
 }
 
 /// FNV-1a: a stable id for a shape from its pixels and hot spot.
-#[cfg(any(target_os = "macos", test))]
-fn shape_id(width: usize, height: usize, hot: (u16, u16), rgba: &[u8]) -> u64 {
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub fn shape_id(width: usize, height: usize, hot: (u16, u16), rgba: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let header = [width as u64, height as u64, hot.0 as u64, hot.1 as u64];
     for byte in header.iter().flat_map(|value| value.to_le_bytes()).chain(rgba.iter().copied()) {

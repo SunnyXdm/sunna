@@ -234,6 +234,9 @@ fn why_it_ended(reason: Option<sunna_transport::quinn::ConnectionError>) -> Stri
     match reason {
         Some(ConnectionError::TimedOut) => friendly("lost the connection"),
         Some(ConnectionError::ApplicationClosed(close)) if close.reason.starts_with(b"replaced") => friendly("replaced"),
+        Some(ConnectionError::ApplicationClosed(close)) if !close.reason.is_empty() => {
+            String::from_utf8_lossy(&close.reason).into_owned()
+        }
         _ => friendly("the host ended the session"),
     }
 }

@@ -26,7 +26,7 @@ const SHIP_INTERVAL: Duration = Duration::from_secs(1);
 /// What goes to the collector unless `SUNNA_REMOTE_LOG` overrides it.
 const DEFAULT_REMOTE_FILTER: &str = "info,sunna_host=debug,sunna_client=debug,\
      sunna_capture=debug,sunna_codec=debug,sunna_input=debug,sunna_transport=debug,\
-     sunnad=debug,sunna_cli=debug";
+     sunna_portal=debug,sunnad=debug,sunna_cli=debug,zbus=error";
 
 /// Where to ship logs: the collector base URL (`http://host:port`) and its token.
 #[derive(Debug, Clone)]
@@ -87,7 +87,7 @@ impl Drop for Guard {
 /// "viewer", "bench"...). Returns a guard to hold until exit.
 pub fn init(role: &str, remote: Option<Remote>) -> Guard {
     let stderr_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,zbus=error"));
     let stderr = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(stderr_filter);

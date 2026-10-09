@@ -477,7 +477,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         }
         other => anyhow::bail!("expected Hello or Probe, got {other:?}"),
     };
-    let slot = SessionSlot(Arc::clone(&host));
+    let slot = Arc::new(SessionSlot(Arc::clone(&host)));
     let _awake = KeepAwake::start();
     let wants_audio = settings.audio.unwrap_or(true);
     let (width, height) = fit_within((config.width, config.height), None);
@@ -496,6 +496,8 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             .apply((builder.config.width, builder.config.height), &settings)
             .and_then(|mut stream| {
                 let source = (builder.new_source)(&stream)?;
+                stream.width = source.width();
+                stream.height = source.height();
                 let encoder =
                     open_encoder(&builder.new_encoder, &mut stream, &builder.config.codec)?;
                 stream.fast_lane &= source.supports_tiles();
@@ -567,7 +569,10 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
     if let Err(error) = &cursor_watch {
         tracing::info!(%error, "no pointer shapes this session");
     }
+    // Attach input while the source is still here; portal backends share a session.
+    let mut injector = (host.new_injector)();
     let media_thread = {
+        let slot = Arc::clone(&slot);
         let connection = connection.clone();
         let stop = Arc::clone(&stop);
         let signals = Arc::clone(&signals);
@@ -580,7 +585,6 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             )
         })
     };
-    let mut injector = (host.new_injector)();
     let result = control_loop(
         connection,
         control,
@@ -819,6 +823,8 @@ fn media_loop(
                 .apply((host.config.width, host.config.height), &settings)
                 .and_then(|mut next| {
                     let source = (host.new_source)(&next)?;
+                    next.width = source.width();
+                    next.height = source.height();
                     let encoder = open_encoder(&host.new_encoder, &mut next, &host.config.codec)?;
                     next.fast_lane &= source.supports_tiles();
                     Ok((next, source, encoder))
@@ -932,6 +938,7 @@ fn submit_loop(
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "frame source failed, stopping media loop");
+                connection.close(1u32.into(), error.to_string().as_bytes());
                 stop.store(true, Ordering::Relaxed);
                 break;
             }
