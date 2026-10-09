@@ -5,3 +5,4 @@
 /apps/sunna/gen
 # Built apps and packages (scripts/install-*.sh)
 /dist
+__pycache__/
