@@ -38,6 +38,7 @@ NoDisplay=true
 Exec=/usr/bin/sunnad
 EOF
 install -m 644 README.md "$ROOT/usr/share/doc/sunna-host/README.md"
+install -m 644 docs/host-linux.md "$ROOT/usr/share/doc/sunna-host/host-linux.md"
 SIZE_KB="$(du -sk "$ROOT/usr" | cut -f1)"
 # The newest glibc sunnad was linked against: the package asks for at least
 # that, so it only installs where it can run.

@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-[ "$(uname)" = Linux ] || { echo "This installs the Linux host; on a Mac see README.md." >&2; exit 1; }
+[ "$(uname)" = Linux ] || { echo "This installs the Linux host; on a Mac see docs/host-mac.md." >&2; exit 1; }
 . scripts/linux-build-env.sh
 check_build_tools
 
