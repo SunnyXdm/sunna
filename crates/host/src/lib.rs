@@ -328,8 +328,10 @@ impl KeepAwake {
 impl Drop for KeepAwake {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
-            // The whole group: the lock holder and what it runs.
-            let _ = std::process::Command::new("kill").arg("-TERM").arg(format!("-{}", child.id())).status();
+            // The whole group: the lock holder and what it runs. "--" is
+            // load-bearing: procps 4 reads a bare "-<pgid>" as -1, every
+            // process of this user, the whole desktop session included.
+            let _ = std::process::Command::new("kill").args(["-TERM", "--", &format!("-{}", child.id())]).status();
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -1599,5 +1601,33 @@ mod tests {
         // No fallback left: the error surfaces.
         let mut stream = StreamConfig { codec: "hevc".into(), ..stream };
         assert!(open_encoder(&factory, &mut stream, "hevc").is_err());
+    }
+
+    /// If this regresses, ending the lock signals every process of this user
+    /// (this test runner too): run it in a sandbox when touching KeepAwake.
+    #[cfg(unix)]
+    #[test]
+    fn ending_keep_awake_stops_only_its_own_group() {
+        use std::process::Command;
+        let mut bystander = Command::new("sleep").arg("60").spawn().unwrap();
+        // Like systemd-inhibit and the tail it runs: a holder and its child.
+        let mut holder = Command::new("sh");
+        holder.args(["-c", "sleep 60 & wait"]);
+        std::os::unix::process::CommandExt::process_group(&mut holder, 0);
+        let holder = holder.spawn().unwrap();
+        let group = format!("-{}", holder.id());
+        std::thread::sleep(Duration::from_millis(200));
+
+        drop(KeepAwake(Some(holder)));
+
+        let alive = || Command::new("kill").args(["-0", "--", &group]).stderr(std::process::Stdio::null()).status().unwrap().success();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!alive(), "the lock's group must be gone");
+        assert!(matches!(bystander.try_wait(), Ok(None)), "a process outside the group must be left alone");
+        let _ = bystander.kill();
+        let _ = bystander.wait();
     }
 }
