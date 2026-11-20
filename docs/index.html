@@ -7,21 +7,47 @@
 <meta name="description" content="Sunna opens your Mac or Linux computer from another computer or an Android phone, directly over your own network. No accounts, and nothing passes through a server of ours.">
 <link rel="icon" href="/images/icon.png">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/InterVariable.woff2">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/home.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="mast">
-<a class="brand" href="/">
-<img src="/images/icon.png" width="32" height="32" alt="">Sunna</a>
-<nav><a href="/guides/">Guides</a><a href="https://github.com/SunnyXdm/sunna">GitHub ↗</a>
-</nav>
+<a class="brand" href="/"><img src="/images/icon.png" width="28" height="28" alt="">Sunna</a>
+<nav><a href="/guides/">Guides</a><a href="https://github.com/SunnyXdm/sunna">GitHub <span aria-hidden="true">↗</span></a></nav>
 </header>
 <main id="main">
-<section class="hero">
-<h1>Use any of your computers from the one in front of you.</h1>
-<p>Sunna is a remote desktop for machines you own. Click a computer and you’re at its screen, with its sound, your keyboard and your clipboard. Your devices talk to each other directly: no accounts, and nothing passes through a server of ours.</p>
-<a class="action" href="/guides/">Get started <span aria-hidden="true">→</span></a>
+
+<section class="sky">
+<p class="label">Remote desktop for your own computers</p>
+<h1>Your other computers, <em>right&nbsp;here.</em></h1>
+<p class="lede">Click a computer and you’re at its screen, with its sound, your keyboard and your clipboard. Your devices connect to each other directly: no accounts, and nothing passes through a server of ours.</p>
+<div class="install">
+<input type="radio" name="install" id="install-host" checked>
+<input type="radio" name="install" id="install-app">
+<div class="tabs">
+<label for="install-host">To share a computer</label>
+<label for="install-app">To reach one</label>
+<span class="where">Linux · x86-64</span>
+</div>
+<div class="command">
+<pre><code><span class="prompt" aria-hidden="true">$ </span>curl -fsSL --proto '=https' --proto-redir '=https' \
+  https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &amp;&amp;
+  test -s sunna-install.sh &amp;&amp; sh sunna-install.sh host</code></pre>
+<button type="button" class="copy" hidden>Copy</button>
+</div>
+<div class="command">
+<pre><code><span class="prompt" aria-hidden="true">$ </span>curl -fsSL --proto '=https' --proto-redir '=https' \
+  https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &amp;&amp;
+  test -s sunna-install.sh &amp;&amp; sh sunna-install.sh app</code></pre>
+<button type="button" class="copy" hidden>Copy</button>
+</div>
+<p class="note">A signed download into your home folder: no root, no compiler. There’s also a <a href="#downloads">.deb, an .rpm and an Android APK</a>.</p>
+</div>
+<div class="sun" aria-hidden="true"><i></i></div>
+</section>
+<div class="water" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<section class="film">
 <figure>
 <video id="film" controls muted loop playsinline preload="none" width="1280" height="862" poster="/images/recordings/poster.webp" aria-label="Clicking the computer named ubuntu in the app, running tests in its terminal, then disconnecting back to the app">
 <source media="(min-width: 800px) and (min-resolution: 1.6dppx)" src="/images/recordings/hero-2x.webm" type="video/webm">
@@ -33,197 +59,238 @@
 </figure>
 <details class="closeup">
 <summary>Watch the terminal up close</summary>
-<video controls muted playsinline preload="none" width="834" height="456" poster="/images/recordings/closeup.webp" src="/images/recordings/closeup.mp4">
-</video></details>
+<video controls muted playsinline preload="none" width="834" height="456" poster="/images/recordings/closeup.webp" src="/images/recordings/closeup.mp4"></video>
+</details>
+<dl class="facts">
+<div><dt>Accounts</dt><dd>None. There is nothing to sign up for.</dd></div>
+<div><dt>Servers of ours</dt><dd>None. Your devices talk to each other directly.</dd></div>
+<div><dt>Encryption</dt><dd>TLS 1.3 over QUIC, between your two devices.</dd></div>
+<div><dt>Identity</dt><dd>The app checks it’s your computer before it sends anything.</dd></div>
+</dl>
 </section>
-<section class="steps">
-<h2>Set it up once</h2>
-<ol>
-<li><h3>Share a computer</h3><p>On the computer you want to reach, turn on sharing. You get a link, and a QR code for your phone.</p></li>
-<li><h3>Add it on your other devices</h3><p>Paste the link into the app, or scan the code. The link carries that computer’s identity, and the app checks it before it sends anything.</p></li>
-<li><h3>Open it</h3><p>When the computer shows Ready, click or tap it. Its desktop opens full screen, and Disconnect in the session menu brings you back.</p></li></ol>
-</section>
-<section class="feature">
-<div class="visual">
-<fieldset class="switcher gallery">
+
+<section class="chapter">
+<header>
+<p class="label"><b>01</b> Your computers</p>
+<h2>Every computer, as you left it.</h2>
+<div class="say">
+<p>Each computer shows what was on its screen when you left, and whether you can reach it now. Gallery puts them side by side; Devices, Wall, Space and Type arrange the same computers four other ways.</p>
+<p class="small">The picture is taken once, as you leave a session, and stays on your device. You can blur it or turn it off.</p>
+</div>
+</header>
+<fieldset class="switcher">
 <legend class="sr">Computers view</legend>
-<input type="radio" name="gallery" id="gallery-radio" checked>
-<input type="radio" name="gallery" id="devices-radio" >
-<input type="radio" name="gallery" id="wall-radio" >
-<input type="radio" name="gallery" id="space-radio" >
-<input type="radio" name="gallery" id="type-radio" >
+<input type="radio" name="view" id="view-gallery" checked>
+<input type="radio" name="view" id="view-devices">
+<input type="radio" name="view" id="view-wall">
+<input type="radio" name="view" id="view-space">
+<input type="radio" name="view" id="view-type">
+<div class="tabs">
+<label for="view-gallery">Gallery</label>
+<label for="view-devices">Devices</label>
+<label for="view-wall">Wall</label>
+<label for="view-space">Space</label>
+<label for="view-type">Type</label>
+</div>
 <div class="panels">
-<div class="panel">
-<img loading="lazy" width="1960" height="1320" src="/images/recordings/gallery.webp" alt="Gallery: six sample computers side by side, each with its name and whether it can be reached">
-</div>
-<div class="panel">
-<img loading="lazy" width="1960" height="1320" src="/images/recordings/devices.webp" alt="Devices: the same sample computers, one at a time">
-</div>
-<div class="panel">
-<img loading="lazy" width="1960" height="1320" src="/images/recordings/wall.webp" alt="Wall: the same sample computers filling the window">
-</div>
-<div class="panel">
-<img loading="lazy" width="1960" height="1320" src="/images/recordings/space.webp" alt="Space: the same sample computers floating at different depths">
-</div>
-<div class="panel">
-<img loading="lazy" width="1960" height="1320" src="/images/recordings/type.webp" alt="Type: the same sample computers listed by name">
-</div>
-</div>
-<div class="labels">
-<label for="gallery-radio">Gallery</label>
-<label for="devices-radio">Devices</label>
-<label for="wall-radio">Wall</label>
-<label for="space-radio">Space</label>
-<label for="type-radio">Type</label>
+<div class="panel"><img loading="lazy" width="1960" height="1320" src="/images/recordings/gallery.webp" alt="Gallery: six sample computers side by side, each with its name and whether it can be reached"></div>
+<div class="panel"><img loading="lazy" width="1960" height="1320" src="/images/recordings/devices.webp" alt="Devices: the same sample computers, one at a time"></div>
+<div class="panel"><img loading="lazy" width="1960" height="1320" src="/images/recordings/wall.webp" alt="Wall: the same sample computers filling the window"></div>
+<div class="panel"><img loading="lazy" width="1960" height="1320" src="/images/recordings/space.webp" alt="Space: the same sample computers floating at different depths"></div>
+<div class="panel"><img loading="lazy" width="1960" height="1320" src="/images/recordings/type.webp" alt="Type: the same sample computers listed by name"></div>
 </div>
 </fieldset>
-</div>
-<div class="copy">
-<h2>Every computer, as you left it</h2>
-<p>Each computer shows what was on its screen when you left, and whether you can reach it now. Gallery puts them side by side; Devices, Wall, Space and Type arrange the same computers four other ways.</p>
-<p class="caption">The picture is taken once, as you leave a session, and stays on your device. You can blur it or turn it off.</p>
-</div>
 </section>
-<section class="feature reverse">
-<div class="visual">
+
+<section class="chapter setup">
+<header>
+<p class="label"><b>02</b> Setting up</p>
+<h2>Set it up once. Sharing is one switch.</h2>
+</header>
+<div class="split">
 <figure>
 <video id="sharing-film" muted playsinline preload="none" width="500" height="612" poster="/images/recordings/sharing-poster.webp" src="/images/recordings/sharing.mp4" aria-label="Turning on Share this computer in Settings"></video>
 <figcaption>Settings in the Sunna app on Linux. The address is a sample.</figcaption>
 </figure>
-</div>
-<div class="copy">
-<h2>Sharing is one switch</h2>
-<p>On Linux, open Settings and turn on Share this computer. It stays shared after you close the window, and hands you the link to paste on your other devices.</p>
-<p class="caption">The same switch is written for the Mac and is waiting for its first test on one.</p>
-</div>
-</section>
-<section class="feature">
-<div class="visual">
-<fieldset class="switcher updates-menu">
-<legend class="sr">Update stage</legend>
-<input type="radio" name="updates-menu" id="updates-menu-radio" checked>
-<input type="radio" name="updates-menu" id="progress-radio" >
-<input type="radio" name="updates-menu" id="finished-radio">
-<div class="panels">
-<div class="panel">
-<img loading="lazy" width="720" height="352" src="/images/recordings/updates-menu.webp" alt="The Updates menu in the app’s toolbar, listing the computers that have an update">
-</div>
-<div class="panel">
-<img loading="lazy" width="720" height="352" src="/images/recordings/progress.webp" alt="The computer named archlinux reads Updating…">
-</div>
-<div class="panel">
-<img loading="lazy" width="720" height="352" src="/images/recordings/finished.webp" alt="The computer named archlinux reads Updated to 0.2.0">
-</div>
-</div>
-<div class="labels">
-<label for="updates-menu-radio">Updates</label>
-<label for="progress-radio">Updating</label>
-<label for="finished-radio">Finished</label>
-</div>
-</fieldset>
-</div>
-<div class="copy">
-<h2>Update a computer without going to it</h2>
-<p>The app shows which of your computers are behind, and updates one when you ask. That computer checks the release’s signature, switches version in one step, and goes back if the new one doesn’t start. It never restarts while someone is connected.</p>
-<p class="caption">Built and tested. It starts working with the first public release.</p>
+<ol class="steps">
+<li>
+<h3>Share a computer</h3>
+<p>On the computer you want to reach, open Settings and turn on Share this computer. It stays shared after you close the window.</p>
+<p class="small">The switch works on Linux today. It is written for the Mac and waiting for its first test on one.</p>
+</li>
+<li>
+<h3>Add it on your other devices</h3>
+<p>Sharing gives you a link, and a QR code for your phone. Paste the link into the app, or scan the code.</p>
+<pre class="link"><code>sunna://100.101.102.103?key=7f3a…&amp;id=Qm9v…</code></pre>
+<p class="small">The link carries that computer’s identity and the key that lets you in. Treat it like a password.</p>
+</li>
+<li>
+<h3>Open it</h3>
+<p>When the computer shows Ready, click or tap it. Its desktop opens full screen, and Disconnect in the session menu brings you back.</p>
+</li>
+</ol>
 </div>
 </section>
-<section class="feature reverse">
-<div class="visual">
-<fieldset class="switcher machine-greeter">
-<legend class="sr">Before and after signing in</legend>
-<input type="radio" name="machine-greeter" id="machine-greeter-radio" checked>
-<input type="radio" name="machine-greeter" id="same-viewer-desktop-radio" >
-<div class="panels">
-<div class="panel">
-<img loading="lazy" width="640" height="400" src="/images/recordings/machine-greeter.webp" alt="A login screen with a clock, three accounts and a password field">
-<p class="caption">A test machine’s login screen (SDDM) after a reboot, seen through Sunna.</p>
-</div>
-<div class="panel">
-<img loading="lazy" width="640" height="400" src="/images/recordings/same-viewer-desktop.webp" alt="Mountain wallpaper on the signed-in desktop">
-<p class="caption">The same machine a moment later, signed in. The session never dropped.</p>
-</div>
-</div>
-<div class="labels">
-<label for="machine-greeter-radio">Login screen</label>
-<label for="same-viewer-desktop-radio">Signed in</label>
-</div>
-</fieldset>
-</div>
-<div class="copy">
-<h2>Restart it, then sign in from here</h2>
-<p>Set up for the whole machine, a Linux host starts before anyone signs in. After a reboot you see the login screen, type your password, and land on your desktop in the same session.</p>
-<p class="caption">Experimental. Proven with LightDM and SDDM in test machines, not yet on real hardware.</p>
-</div>
-</section>
-<section class="feature">
-<div class="visual">
-<figure class="lanes">
-        <div class="lane fast">
-          <span class="name">Fast lane</span>
-          <span class="track"><span class="bar" style="--from: 2; --to: 2.4"></span></span>
-          <span class="value">2 ms</span>
-        </div>
-        <div class="lane">
-          <span class="name">Video</span>
-          <span class="track"><span class="bar" style="--from: 35; --to: 37"></span></span>
-          <span class="value">35–37 ms</span>
-        </div>
-        <div class="axis" aria-hidden="true"><span>0</span><span>10</span><span>20</span><span>30</span><span>40 ms</span>
-</div>
-        <p class="method">How long a typed letter took to go from capture to the viewer: the median over each second of typing into a terminal. The host was a 6-core cloud VM with no GPU, encoding H.264 on its CPU; the viewer ran on the same machine, so there's no network time in either.</p>
-      </figure>
-</div>
-<div class="copy">
-<h2>Typing that keeps up</h2>
+
+<section class="chapter">
+<header>
+<p class="label"><b>03</b> Typing</p>
+<h2>Typing that keeps up.</h2>
+<div class="say">
 <p>Video takes time to encode, most of all on a computer without a GPU. So Sunna sends small changes, like the letter you just typed, as exact image tiles on a lane of their own, ahead of the video.</p>
 </div>
-</section>
-<section class="platforms" id="platforms" aria-labelledby="platform-title">
-      <div>
-<h2 id="platform-title">What runs where</h2>
-<p>Reach a Mac or a Linux computer from a Mac, a Linux computer or an Android phone. A Linux computer can share an X11 desktop, GNOME on Wayland, or a server with no screen.</p>
-<p class="caption">Mac to Mac and Mac to Linux are in daily use. The Linux and Android apps are newer.</p>
+</header>
+<figure class="race">
+<div class="lane fast">
+<p class="time">2<span>ms</span></p>
+<p class="what"><b>Fast lane</b> The letter, as an exact image tile.</p>
+<span class="track"><span class="bar" style="--to:2.4"></span></span>
 </div>
-      <table><caption class="visually-hidden">Platform support and setup guides</caption>
-        <thead><tr><th scope="col"><span class="visually-hidden">Platform</span></th><th scope="col">Connect from it</th><th scope="col">Connect to it</th></tr></thead>
-        <tbody>
-          <tr><th scope="row">Mac</th><td><a href="/guides/app-mac.html">Mac app</a></td><td><a href="/guides/host-mac.html">Share a Mac</a></td></tr>
-          <tr><th scope="row">Linux</th><td><a href="/guides/app-linux.html">Linux app</a></td><td><a href="/guides/host-linux.html">Share a Linux computer</a></td></tr>
-          <tr><th scope="row">Windows</th><td>Planned</td><td>Experimental</td></tr>
-          <tr><th scope="row">Android</th><td><a href="/guides/app-android.html">Android app</a></td><td>No</td></tr>
-        </tbody>
-      </table>
-    </section>
-    <section class="setup">
-<h2>Get Sunna</h2>
-<p>Today you build Sunna from source, and each guide has the one script that does it. Signed downloads and a one-line installer are built and tested; they arrive with the first release.</p>
-<ol>
+<div class="lane">
+<p class="time">35<span>ms</span></p>
+<p class="what"><b>Video</b> The same letter, in the next encoded frame.</p>
+<span class="track"><span class="bar" style="--to:36"></span></span>
+</div>
+<figcaption>How long a typed letter took to go from capture to the viewer: the median over each second of typing into a terminal (video measured 35 to 37 ms). The host was a 6-core cloud VM with no GPU, encoding H.264 on its CPU; the viewer ran on the same machine, so there’s no network time in either.</figcaption>
+</figure>
+</section>
+
+<section class="chapter">
+<header>
+<p class="label"><b>04</b> After a restart</p>
+<h2>Restart it, then sign in from here.</h2>
+<div class="say">
+<p>Set up for the whole machine, a Linux host starts before anyone signs in. After a reboot you see the login screen, type your password, and land on your desktop in the same session.</p>
+<p class="small">Experimental. Proven with LightDM and SDDM in test machines, not yet on real hardware.</p>
+</div>
+</header>
+<div class="pair">
+<figure>
+<img loading="lazy" width="640" height="400" src="/images/recordings/machine-greeter.webp" alt="A login screen with a clock, three accounts and a password field">
+<figcaption><b>Before</b> A test machine’s login screen (SDDM) after a reboot, seen through Sunna.</figcaption>
+</figure>
+<figure>
+<img loading="lazy" width="640" height="400" src="/images/recordings/same-viewer-desktop.webp" alt="Mountain wallpaper on the signed-in desktop">
+<figcaption><b>After</b> The same machine a moment later, signed in. The session never dropped.</figcaption>
+</figure>
+</div>
+</section>
+
+<section class="chapter">
+<header>
+<p class="label"><b>05</b> Updates</p>
+<h2>Update a computer without going to it.</h2>
+<div class="say">
+<p>The app shows which of your computers are behind, and updates one when you ask.</p>
+<p class="small">Works for a computer set up with the install command. One installed from a package updates with the rest of its system.</p>
+</div>
+</header>
+<div class="split updates">
+<fieldset class="switcher">
+<legend class="sr">Update stage</legend>
+<input type="radio" name="update" id="update-menu" checked>
+<input type="radio" name="update" id="update-progress">
+<input type="radio" name="update" id="update-finished">
+<div class="tabs">
+<label for="update-menu">Updates</label>
+<label for="update-progress">Updating</label>
+<label for="update-finished">Finished</label>
+</div>
+<div class="panels">
+<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/updates-menu.webp" alt="The Updates menu in the app’s toolbar, listing the computers that have an update"></div>
+<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/progress.webp" alt="The computer named archlinux reads Updating…"></div>
+<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/finished.webp" alt="The computer named archlinux reads Updated to 0.2.0"></div>
+</div>
+</fieldset>
+<dl class="list">
+<div><dt>Signed</dt><dd>The computer checks the release’s signature before it installs anything.</dd></div>
+<div><dt>One step</dt><dd>It switches version in a single step that can’t half-happen.</dd></div>
+<div><dt>A way back</dt><dd>If the new version doesn’t start, it returns to the one before.</dd></div>
+<div><dt>Never mid-session</dt><dd>It waits until nobody is connected before it restarts.</dd></div>
+</dl>
+</div>
+</section>
+
+<section class="chapter" id="platforms">
+<header>
+<p class="label"><b>06</b> Platforms</p>
+<h2>What runs where.</h2>
+<div class="say">
+<p>Reach a Mac or a Linux computer from a Mac, a Linux computer or an Android phone. A Linux computer can share an X11 desktop, GNOME on Wayland, or a server with no screen.</p>
+<p class="small">Mac to Mac and Mac to Linux are in daily use. The Linux and Android apps are newer.</p>
+</div>
+</header>
+<table><caption class="sr">Platform support and setup guides</caption>
+<thead><tr><th scope="col"><span class="sr">Platform</span></th><th scope="col">Connect from it</th><th scope="col">Connect to it</th></tr></thead>
+<tbody>
+<tr><th scope="row">Mac</th><td><a href="/guides/app-mac.html">Mac app</a></td><td><a href="/guides/host-mac.html">Share a Mac</a></td></tr>
+<tr><th scope="row">Linux</th><td><a href="/guides/app-linux.html">Linux app</a></td><td><a href="/guides/host-linux.html">Share a Linux computer</a></td></tr>
+<tr><th scope="row">Android</th><td><a href="/guides/app-android.html">Android app</a></td><td>No</td></tr>
+<tr><th scope="row">Windows</th><td>Planned</td><td>Experimental</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="chapter" id="downloads">
+<header>
+<p class="label"><b>07</b> Downloads</p>
+<h2>Downloads, by system.</h2>
+<div class="say">
+<p>Every download is signed. A package updates with the rest of your system; the install command and the Android app update themselves.</p>
+<p class="small">The Linux downloads are for x86-64 processors. On a Mac and on ARM Linux you build Sunna from source for now.</p>
+</div>
+</header>
+<table><caption class="sr">Downloads for each system</caption>
+<thead><tr><th scope="col"><span class="sr">System</span></th><th scope="col">The app</th><th scope="col">The host</th></tr></thead>
+<tbody>
+<tr><th scope="row">Ubuntu, Debian</th><td><a href="/download/sunna.deb">sunna.deb</a></td><td><a href="/download/sunna-host.deb">sunna-host.deb</a></td></tr>
+<tr><th scope="row">Fedora</th><td><a href="/download/sunna.rpm">sunna.rpm</a></td><td><a href="/download/sunna-host.rpm">sunna-host.rpm</a></td></tr>
+<tr><th scope="row">Any Linux</th><td colspan="2"><a href="#main">The install command</a> at the top of this page</td></tr>
+<tr><th scope="row">Android</th><td><a href="/download/sunna.apk">sunna.apk</a></td><td>No</td></tr>
+<tr><th scope="row">Mac</th><td><a href="/guides/app-mac.html">Build from source</a></td><td><a href="/guides/host-mac.html">Build from source</a></td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="chapter get">
+<header>
+<p class="label"><b>08</b> What you need</p>
+<h2>Three things to have.</h2>
+</header>
+<ol class="parts">
 <li>
 <h3>Your network</h3>
-<p>Sunna works on any network you trust. With Tailscale, free for personal use, your computers are reachable from anywhere and closed to everyone else. Keep a host off the public internet.</p><a href="https://tailscale.com/">Tailscale ↗</a></li>
+<p>Sunna works on any network you trust. With Tailscale, free for personal use, your computers are reachable from anywhere and closed to everyone else. Keep a host off the public internet.</p>
+<p class="links"><a href="https://tailscale.com/">Tailscale <span aria-hidden="true">↗</span></a></p>
+</li>
 <li>
 <h3>The computer you’ll reach</h3>
-<p>Install the host on it and turn on sharing.</p><a href="/guides/host-linux.html">Linux guide</a> · <a href="/guides/host-mac.html">Mac guide</a></li>
+<p>Install the host on it and turn on sharing.</p>
+<p class="links"><a href="/guides/host-linux.html">Linux guide</a><a href="/guides/host-mac.html">Mac guide</a></p>
+</li>
 <li>
 <h3>The device you’ll use</h3>
-<p>Install the app, then add the computer by its link.</p><a href="/guides/app-mac.html">Mac guide</a> · <a href="/guides/app-linux.html">Linux guide</a> · <a href="/guides/app-android.html">Android guide</a></li>
+<p>Install the app, then add the computer by its link.</p>
+<p class="links"><a href="/guides/app-mac.html">Mac guide</a><a href="/guides/app-linux.html">Linux guide</a><a href="/guides/app-android.html">Android guide</a></p>
+</li>
 </ol>
 </section>
-  </main>
-  <footer class="end"><a href="/guides/using.html">Using Sunna</a><a href="/guides/security.html">Security &amp; privacy</a><a href="/guides/troubleshooting.html">Troubleshooting</a>
+
+</main>
+<footer class="end">
+<a class="brand" href="/"><img src="/images/icon.png" width="22" height="22" alt="">Sunna</a>
+<nav><a href="/guides/using.html">Using Sunna</a><a href="/guides/security.html">Security &amp; privacy</a><a href="/guides/troubleshooting.html">Troubleshooting</a><a href="https://github.com/SunnyXdm/sunna">GitHub <span aria-hidden="true">↗</span></a></nav>
 </footer>
 <script>
-const films = [document.querySelector('#film')];
-const sharing = document.querySelector('#sharing-film');
 const motion = matchMedia('(prefers-reduced-motion: reduce)');
+const film = document.querySelector('#film');
+const sharing = document.querySelector('#sharing-film');
 function playback() {
-  for (const film of films) {
-    film.autoplay = !motion.matches;
-    film.controls = motion.matches;
-    if (motion.matches) { film.pause(); film.load(); }
-    else film.play().catch(() => { film.controls = true; });
-  }
+  film.autoplay = !motion.matches;
+  film.controls = motion.matches;
+  if (motion.matches) { film.pause(); film.load(); }
+  else film.play().catch(() => { film.controls = true; });
+  sharing.controls = motion.matches;
 }
 motion.addEventListener('change', playback);
 playback();
@@ -231,11 +298,28 @@ playback();
 if ('IntersectionObserver' in window) {
   new IntersectionObserver(([entry]) => {
     if (motion.matches) return;
-    if (entry.isIntersecting) {
-      sharing.currentTime = 0;
-      sharing.play().catch(() => {});
-    } else sharing.pause();
+    if (entry.isIntersecting) { sharing.currentTime = 0; sharing.play().catch(() => {}); }
+    else sharing.pause();
   }, { threshold: 0.6 }).observe(sharing);
+}
+// Copy an install command, without its prompt.
+for (const box of document.querySelectorAll('.command')) {
+  const button = box.querySelector('.copy');
+  const code = box.querySelector('code').cloneNode(true);
+  code.querySelector('.prompt')?.remove();
+  button.hidden = false;
+  button.addEventListener('click', async () => {
+    const text = code.textContent;
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const area = Object.assign(document.createElement('textarea'), { value: text });
+      area.style.cssText = 'position:fixed;opacity:0';
+      document.body.append(area); area.select();
+      try { document.execCommand('copy'); } finally { area.remove(); }
+    }
+    button.textContent = 'Copied';
+    setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+  });
 }
 </script>
 </body>

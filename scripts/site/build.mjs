@@ -15,7 +15,7 @@ mkdirSync(guides, { recursive: true });
 // Copy exactly the homepage media plus the images used in the guides.
 const homepage = readFileSync(join(docs, 'index.html'), 'utf8');
 const media = [...homepage.matchAll(/(?:src|poster)="\/(images\/[^"]+)"/g)].map(match => match[1]);
-for (const entry of new Set(['index.html', 'style.css', 'images/icon.png', 'images/gallery.webp', 'images/devices.webp', 'images/wall.webp', ...media])) {
+for (const entry of new Set(['index.html', 'home.css', 'style.css', 'images/icon.png', 'images/gallery.webp', 'images/devices.webp', 'images/wall.webp', ...media])) {
   cpSync(join(docs, entry), join(out, entry), { recursive: true });
 }
 
