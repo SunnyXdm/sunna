@@ -19,7 +19,22 @@ by an administrator.
 
 ## Install
 
-**On an x86-64 computer**, install the signed download. No compiler is needed:
+**On an x86-64 computer**, pick one of three downloads. None needs a compiler.
+
+On **Ubuntu or Debian**, download [sunna.deb](https://sunna.sunnydx.dev/download/sunna.deb) and open it, or:
+
+```sh
+curl -fLO https://sunna.sunnydx.dev/download/sunna.deb
+sudo apt install ./sunna.deb
+```
+
+On **Fedora**:
+
+```sh
+sudo dnf install https://sunna.sunnydx.dev/download/sunna.rpm
+```
+
+On **any other Linux, or without root**, install into your home folder:
 
 ```sh
 curl -fsSL --proto '=https' --proto-redir '=https' https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &&
@@ -47,6 +62,20 @@ use your distribution's FFmpeg for GPU decoding. No compiler is needed to instal
 The installer adds Sunna to the app menu and `~/.local/bin`. It stores versions
 in `~/.local/share/sunna/app/versions`, separately from the host. The app checks
 at launch and daily, then stages a verified download. In Settings → Updates, Automatically switches at the next launch. Ask first waits for Restart to update. Never leaves checks to you. Disconnect an active viewer before restarting.
+
+## What the package installs
+
+The `.deb` and `.rpm` install the app for every user of the computer, with
+WebKitGTK 4.1 pulled in by the package manager. They are tested on Ubuntu 22.04
+and 24.04, Debian 13 and Fedora 42. **Share this computer** uses the host
+package if it is installed, and otherwise downloads the signed host into your
+home folder.
+
+The package adds Sunna's package source, so new versions arrive with your
+system's updates: `/etc/apt/sources.list.d/sunna.sources` on Ubuntu and Debian,
+`/etc/yum.repos.d/sunna.repo` on Fedora, both pointing at `sunna.sunnydx.dev`.
+Delete that file if you would rather update by hand. Settings → Updates reads
+**Updated by your system** for a copy installed this way.
 
 For development, use `scripts/install-app-linux.sh` with Rust, a C compiler,
 WebKitGTK development files and optional FFmpeg development files. It uses the

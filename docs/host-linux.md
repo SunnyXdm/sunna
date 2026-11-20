@@ -84,7 +84,22 @@ no administrator access.
 
 ## 2. Install
 
-**On an x86-64 computer**, install the signed download. No compiler is needed. As the user who will share the desktop, run:
+**On an x86-64 computer**, pick one of three downloads. None needs a compiler.
+
+On **Ubuntu or Debian**, install the package:
+
+```sh
+curl -fLO https://sunna.sunnydx.dev/download/sunna-host.deb
+sudo apt install ./sunna-host.deb
+```
+
+On **Fedora**:
+
+```sh
+sudo dnf install https://sunna.sunnydx.dev/download/sunna-host.rpm
+```
+
+On **any other Linux, or without root**, install into your home folder. As the user who will share the desktop, run:
 
 ```sh
 curl -fsSL --proto '=https' --proto-redir '=https' https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &&
@@ -115,8 +130,27 @@ the commands become links. Settings and host keys are kept. A host already
 running an older build needs one restart to load the new supervisor. Pass `--restart` after host when installing to restart and verify the migrated service. To choose the time yourself, run `~/.local/bin/sunna-host migrate-service` afterwards.
 
 For development, `scripts/install-host-linux.sh` still builds from source and
-installs into the same layout. A `.deb` uses `apt` for updates; it does not
-replace system files through the self-updater.
+installs into the same layout.
+
+### What the package installs
+
+The `.deb` and `.rpm` put `sunnad` and `sunna-host` in `/usr/bin` and the rest
+under `/usr/lib/sunna-host`. They are tested on Ubuntu 22.04 and 24.04,
+Debian 13 and Fedora 42.
+
+The package also adds Sunna's package source, so new versions arrive with your
+system's updates: `/etc/apt/sources.list.d/sunna.sources` on Ubuntu and Debian,
+`/etc/yum.repos.d/sunna.repo` on Fedora, both pointing at `sunna.sunnydx.dev`
+and checked against a signing key the package installs. Delete that file if you
+would rather update by hand; an upgrade does not put it back. Removing the last
+Sunna package removes the source and the key.
+
+An upgrade does not restart a host that is sharing. Run `sunna-host restart`
+when nobody is connected to switch to the new version. `sunna-host update`
+does nothing for a package: `apt` or `dnf` updates it.
+
+A background desktop for a server needs a few system packages, which
+`sunna-host setup --virtual` names if they are missing.
 
 ## 3. Set it up
 

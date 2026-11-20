@@ -6,11 +6,15 @@ Your computers on a phone or tablet: the same Computers screen as on the Mac, an
 
 ## Install
 
-Build the APK from source using the [Android build guide](../apps/android/README.md). From `apps/android`, run `./gradlew assembleDebug`. With USB debugging enabled and the phone connected, install it with:
+On the phone, open [sunna.sunnydx.dev/download/sunna.apk](https://sunna.sunnydx.dev/download/sunna.apk) and then the downloaded file. Android asks once to let your browser install apps, and then to confirm the install. Sunna isn't on Google Play.
+
+To build it yourself, follow the [Android build guide](../apps/android/README.md). From `apps/android`, run `./gradlew assembleDebug`. With USB debugging enabled and the phone connected, install it with:
 
 ```sh
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+A copy you built yourself is signed with your own key, so the downloaded APK can't replace it: uninstall one before installing the other.
 
 Connect the phone to the host's trusted network or tailnet, then add the computer below.
 
