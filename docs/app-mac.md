@@ -4,24 +4,40 @@ The app lists your computers with a live preview of each one and opens sessions 
 
 [← Back to the README](../README.md)
 
-## Install
+## Build and install
 
-You need macOS 13 or later (tested on Apple silicon), the Xcode command line tools (`xcode-select --install`) and [Rust](https://rustup.rs).
+To build locally:
 
 ```sh
 git clone https://github.com/SunnyXdm/sunna.git && cd sunna
 scripts/install-mac-app.sh
 ```
 
-This builds **Sunna.app**, installs it in `/Applications` (or `~/Applications`) and opens it. To update: `git pull` and run the script again.
+That needs Rust and the Xcode command line tools (`xcode-select --install`).
 
-**The first time,** the script makes a code-signing certificate for Sunna in your login keychain, and macOS asks for your password once to trust it. If macOS then asks whether `codesign` may use its key, choose **Always Allow**. Why: macOS remembers permissions by an app's signature, so with this certificate the permissions you give Sunna stay through every update. No Apple developer account is involved.
+## Signed installations (in testing)
 
-## One permission
+The installer verifies the release, then signs the bundle using this Mac's
+**Sunna Local Code Signing** identity. If needed it creates that identity in
+the login keychain, following the source installer's procedure. macOS asks you
+to trust the certificate and allow codesign to use its key. Updates reuse that
+identity to preserve Accessibility and Screen Recording permissions. There is
+no paid Apple developer identity or notarization.
 
-Sunna needs **Accessibility** for one thing: sending ⌘Tab, ⌘Space and other system shortcuts to the other computer. Without it, those stay on your Mac and everything else works. Sunna's Settings → **System shortcuts** shows whether it's allowed, and **Allow…** asks for it.
+Versions live in `~/.local/share/sunna/app`; `/Applications/Sunna.app` (or
+`~/Applications/Sunna.app` when needed) points
+through the atomic `current` link. A previous ordinary bundle is retained on
+first migration. The installer uses `~/Applications` when `/Applications` is not writable.
+Settings → Updates offers Automatically, Ask first and Never. Automatically applies a staged release on the next launch. Ask first waits for Restart to update. Local signing, permission preservation,
+Gatekeeper behavior, relaunch and rollback still need proof on macOS.
+
+## Permissions
+
+For viewing, Sunna uses **Accessibility** for sending ⌘Tab, ⌘Space and other system shortcuts to the other computer. Without it, those stay on your Mac and everything else works. Sunna's Settings → **System shortcuts** shows whether it's allowed, and **Allow…** asks for it.
 
 If System Settings shows Sunna as allowed but Sunna says it isn't, that entry is from an older build: remove it with **Reset** there, then allow Sunna again.
+
+For hosting, Screen Recording allows the picture and system sound, and Accessibility allows remote input. The sharing buttons ask the running menu bar host to request its own grants. The host checks for a screen frame before reporting that it can share. Permission attribution across updates still needs verification on a Mac. Close the window to leave only the host. [Share a Mac](host-mac.md)
 
 ## Next
 
@@ -34,4 +50,4 @@ If System Settings shows Sunna as allowed but Sunna says it isn't, that entry is
 
 ## Remove it
 
-Quit Sunna and move it to the Trash. Your computers and their keys are in `~/.sunna`; delete that folder to remove them too.
+Turn sharing off first to remove its login agent. Quit Sunna and move it to the Trash. Your computers and their keys are in `~/.sunna`; delete that folder to remove them too.

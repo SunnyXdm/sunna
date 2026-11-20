@@ -1,63 +1,164 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sunna: your other computers, on your Mac</title>
-  <meta name="description" content="Sunna is a fast, native remote desktop for Mac and Linux. It connects straight to your own computers, with no accounts and no cloud service.">
-  <meta name="theme-color" content="#0b0c10">
-  <link rel="icon" href="images/icon.png">
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sunna · Remote desktop for your own computers</title>
+<meta name="description" content="Sunna opens your Mac or Linux computer from another computer or an Android phone, directly over your own network. No accounts, and nothing passes through a server of ours.">
+<link rel="icon" href="/images/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/InterVariable.woff2">
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header class="nav">
-    <a class="brand" href="#top"><img src="images/icon.png" alt="" width="30" height="30"><span>Sunna</span></a>
-    <nav>
-      <a href="#details">Details</a>
-      <a href="#install">Install</a>
-      <a href="#questions">Questions</a>
-      <a href="https://github.com/SunnyXdm/sunna">GitHub</a>
-    </nav>
-  </header>
-
-  <main id="top">
-    <section class="hero">
-      <h1>Your other computers,<br>on your Mac.</h1>
-      <p class="lede">Sunna is a fast, native remote desktop for Mac and Linux. It connects straight to your own computers, with no accounts and no cloud service.</p>
-      <div class="actions">
-        <a class="button primary" href="#install">Install Sunna</a>
-        <a class="button" href="https://github.com/SunnyXdm/sunna">Source on GitHub</a>
-      </div>
-      <p class="fine">The app runs on macOS 13 or later, and on Linux. It connects to Macs and Linux computers.</p>
-      <div class="stage">
-        <img class="shot" src="images/hover.png" width="1060" height="740" alt="The Sunna app: five computers, each shown as its own screen, lit when it can be reached">
-      </div>
-    </section>
-
-    <section class="row">
-      <div class="row-text">
-        <h2>Add a computer by its address and key.</h2>
-        <p>Type the address and key, or paste the link the computer printed when you shared it. The preview lights up as soon as the computer answers, with its name, its system and the round trip in milliseconds.</p>
-        <p>Sunna never scans your network on its own. If you use Tailscale, <em>Find on Tailscale</em> lists the computers on your tailnet that are sharing.</p>
-      </div>
-      <img class="shot" src="images/add.png" width="1060" height="740" loading="lazy" alt="Adding a computer: the preview shows the Ubuntu machine it found, 40 ms away">
-    </section>
-
-    <section class="row flip">
-      <div class="row-text">
-        <h2>Click, and you're there.</h2>
-        <p>The computer's screen grows to fill the window and the session opens full screen, in a native window: smooth trackpad scrolling, your ⌘ shortcuts sent across, and the clipboard shared both ways, text and images.</p>
-        <p><kbd>⌃⌥M</kbd> opens the session menu: shortcuts for the other computer's system, video settings, and a way to type your clipboard into password prompts that won't take a paste.</p>
-      </div>
-      <img class="shot" src="images/connecting.png" width="1060" height="740" loading="lazy" alt="Connecting to archlinux: its boot screen, with a progress bar and Starting video">
-    </section>
-
-    <section class="row">
-      <div class="row-text">
-        <h2>Typing that keeps up.</h2>
-        <p>Video takes time to encode, most of all on a computer without a supported GPU. So Sunna also sends small changes, like the letter you just typed, as exact image tiles on a lane of their own, ahead of the video.</p>
-      </div>
-      <figure class="lanes">
+<a class="skip" href="#main">Skip to content</a>
+<header class="mast">
+<a class="brand" href="/">
+<img src="/images/icon.png" width="32" height="32" alt="">Sunna</a>
+<nav><a href="/guides/">Guides</a><a href="https://github.com/SunnyXdm/sunna">GitHub ↗</a>
+</nav>
+</header>
+<main id="main">
+<section class="hero">
+<h1>Use any of your computers from the one in front of you.</h1>
+<p>Sunna is a remote desktop for machines you own. Click a computer and you’re at its screen, with its sound, your keyboard and your clipboard. Your devices talk to each other directly: no accounts, and nothing passes through a server of ours.</p>
+<a class="action" href="/guides/">Get started <span aria-hidden="true">→</span></a>
+<figure>
+<video id="film" controls muted loop playsinline preload="none" width="1280" height="862" poster="/images/recordings/poster.webp" aria-label="Clicking the computer named ubuntu in the app, running tests in its terminal, then disconnecting back to the app">
+<source media="(min-width: 800px) and (min-resolution: 1.6dppx)" src="/images/recordings/hero-2x.webm" type="video/webm">
+<source media="(min-width: 800px) and (min-resolution: 1.6dppx)" src="/images/recordings/hero-2x.mp4" type="video/mp4">
+<source src="/images/recordings/hero.webm" type="video/webm">
+<source src="/images/recordings/hero.mp4" type="video/mp4">
+</video>
+<figcaption>A recording of the app, with sample computers. The session is real: Sunna connected to an Ubuntu machine, running Sunna’s own protocol tests.</figcaption>
+</figure>
+<details class="closeup">
+<summary>Watch the terminal up close</summary>
+<video controls muted playsinline preload="none" width="834" height="456" poster="/images/recordings/closeup.webp" src="/images/recordings/closeup.mp4">
+</video></details>
+</section>
+<section class="steps">
+<h2>Set it up once</h2>
+<ol>
+<li><h3>Share a computer</h3><p>On the computer you want to reach, turn on sharing. You get a link, and a QR code for your phone.</p></li>
+<li><h3>Add it on your other devices</h3><p>Paste the link into the app, or scan the code. The link carries that computer’s identity, and the app checks it before it sends anything.</p></li>
+<li><h3>Open it</h3><p>When the computer shows Ready, click or tap it. Its desktop opens full screen, and Disconnect in the session menu brings you back.</p></li></ol>
+</section>
+<section class="feature">
+<div class="visual">
+<fieldset class="switcher gallery">
+<legend class="sr">Computers view</legend>
+<input type="radio" name="gallery" id="gallery-radio" checked>
+<input type="radio" name="gallery" id="devices-radio" >
+<input type="radio" name="gallery" id="wall-radio" >
+<input type="radio" name="gallery" id="space-radio" >
+<input type="radio" name="gallery" id="type-radio" >
+<div class="panels">
+<div class="panel">
+<img loading="lazy" width="1960" height="1320" src="/images/recordings/gallery.webp" alt="Gallery: six sample computers side by side, each with its name and whether it can be reached">
+</div>
+<div class="panel">
+<img loading="lazy" width="1960" height="1320" src="/images/recordings/devices.webp" alt="Devices: the same sample computers, one at a time">
+</div>
+<div class="panel">
+<img loading="lazy" width="1960" height="1320" src="/images/recordings/wall.webp" alt="Wall: the same sample computers filling the window">
+</div>
+<div class="panel">
+<img loading="lazy" width="1960" height="1320" src="/images/recordings/space.webp" alt="Space: the same sample computers floating at different depths">
+</div>
+<div class="panel">
+<img loading="lazy" width="1960" height="1320" src="/images/recordings/type.webp" alt="Type: the same sample computers listed by name">
+</div>
+</div>
+<div class="labels">
+<label for="gallery-radio">Gallery</label>
+<label for="devices-radio">Devices</label>
+<label for="wall-radio">Wall</label>
+<label for="space-radio">Space</label>
+<label for="type-radio">Type</label>
+</div>
+</fieldset>
+</div>
+<div class="copy">
+<h2>Every computer, as you left it</h2>
+<p>Each computer shows what was on its screen when you left, and whether you can reach it now. Gallery puts them side by side; Devices, Wall, Space and Type arrange the same computers four other ways.</p>
+<p class="caption">The picture is taken once, as you leave a session, and stays on your device. You can blur it or turn it off.</p>
+</div>
+</section>
+<section class="feature reverse">
+<div class="visual">
+<figure>
+<video id="sharing-film" muted playsinline preload="none" width="500" height="612" poster="/images/recordings/sharing-poster.webp" src="/images/recordings/sharing.mp4" aria-label="Turning on Share this computer in Settings"></video>
+<figcaption>Settings in the Sunna app on Linux. The address is a sample.</figcaption>
+</figure>
+</div>
+<div class="copy">
+<h2>Sharing is one switch</h2>
+<p>On Linux, open Settings and turn on Share this computer. It stays shared after you close the window, and hands you the link to paste on your other devices.</p>
+<p class="caption">The same switch is written for the Mac and is waiting for its first test on one.</p>
+</div>
+</section>
+<section class="feature">
+<div class="visual">
+<fieldset class="switcher updates-menu">
+<legend class="sr">Update stage</legend>
+<input type="radio" name="updates-menu" id="updates-menu-radio" checked>
+<input type="radio" name="updates-menu" id="progress-radio" >
+<input type="radio" name="updates-menu" id="finished-radio">
+<div class="panels">
+<div class="panel">
+<img loading="lazy" width="720" height="352" src="/images/recordings/updates-menu.webp" alt="The Updates menu in the app’s toolbar, listing the computers that have an update">
+</div>
+<div class="panel">
+<img loading="lazy" width="720" height="352" src="/images/recordings/progress.webp" alt="The computer named archlinux reads Updating…">
+</div>
+<div class="panel">
+<img loading="lazy" width="720" height="352" src="/images/recordings/finished.webp" alt="The computer named archlinux reads Updated to 0.2.0">
+</div>
+</div>
+<div class="labels">
+<label for="updates-menu-radio">Updates</label>
+<label for="progress-radio">Updating</label>
+<label for="finished-radio">Finished</label>
+</div>
+</fieldset>
+</div>
+<div class="copy">
+<h2>Update a computer without going to it</h2>
+<p>The app shows which of your computers are behind, and updates one when you ask. That computer checks the release’s signature, switches version in one step, and goes back if the new one doesn’t start. It never restarts while someone is connected.</p>
+<p class="caption">Built and tested. It starts working with the first public release.</p>
+</div>
+</section>
+<section class="feature reverse">
+<div class="visual">
+<fieldset class="switcher machine-greeter">
+<legend class="sr">Before and after signing in</legend>
+<input type="radio" name="machine-greeter" id="machine-greeter-radio" checked>
+<input type="radio" name="machine-greeter" id="same-viewer-desktop-radio" >
+<div class="panels">
+<div class="panel">
+<img loading="lazy" width="640" height="400" src="/images/recordings/machine-greeter.webp" alt="A login screen with a clock, three accounts and a password field">
+<p class="caption">A test machine’s login screen (SDDM) after a reboot, seen through Sunna.</p>
+</div>
+<div class="panel">
+<img loading="lazy" width="640" height="400" src="/images/recordings/same-viewer-desktop.webp" alt="Mountain wallpaper on the signed-in desktop">
+<p class="caption">The same machine a moment later, signed in. The session never dropped.</p>
+</div>
+</div>
+<div class="labels">
+<label for="machine-greeter-radio">Login screen</label>
+<label for="same-viewer-desktop-radio">Signed in</label>
+</div>
+</fieldset>
+</div>
+<div class="copy">
+<h2>Restart it, then sign in from here</h2>
+<p>Set up for the whole machine, a Linux host starts before anyone signs in. After a reboot you see the login screen, type your password, and land on your desktop in the same session.</p>
+<p class="caption">Experimental. Proven with LightDM and SDDM in test machines, not yet on real hardware.</p>
+</div>
+</section>
+<section class="feature">
+<div class="visual">
+<figure class="lanes">
         <div class="lane fast">
           <span class="name">Fast lane</span>
           <span class="track"><span class="bar" style="--from: 2; --to: 2.4"></span></span>
@@ -68,117 +169,74 @@
           <span class="track"><span class="bar" style="--from: 35; --to: 37"></span></span>
           <span class="value">35–37 ms</span>
         </div>
-        <div class="axis" aria-hidden="true"><span>0</span><span>10</span><span>20</span><span>30</span><span>40 ms</span></div>
-        <figcaption>How long a typed letter took to go from capture to the viewer: the median over each second of typing into a terminal. The host was a 6-core cloud VM with no GPU, encoding H.264 on its CPU; the viewer ran on the same machine, so there's no network time in either.</figcaption>
+        <div class="axis" aria-hidden="true"><span>0</span><span>10</span><span>20</span><span>30</span><span>40 ms</span>
+</div>
+        <p class="method">How long a typed letter took to go from capture to the viewer: the median over each second of typing into a terminal. The host was a 6-core cloud VM with no GPU, encoding H.264 on its CPU; the viewer ran on the same machine, so there's no network time in either.</p>
       </figure>
+</div>
+<div class="copy">
+<h2>Typing that keeps up</h2>
+<p>Video takes time to encode, most of all on a computer without a GPU. So Sunna sends small changes, like the letter you just typed, as exact image tiles on a lane of their own, ahead of the video.</p>
+</div>
+</section>
+<section class="platforms" id="platforms" aria-labelledby="platform-title">
+      <div>
+<h2 id="platform-title">What runs where</h2>
+<p>Reach a Mac or a Linux computer from a Mac, a Linux computer or an Android phone. A Linux computer can share an X11 desktop, GNOME on Wayland, or a server with no screen.</p>
+<p class="caption">Mac to Mac and Mac to Linux are in daily use. The Linux and Android apps are newer.</p>
+</div>
+      <table><caption class="visually-hidden">Platform support and setup guides</caption>
+        <thead><tr><th scope="col"><span class="visually-hidden">Platform</span></th><th scope="col">Connect from it</th><th scope="col">Connect to it</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Mac</th><td><a href="/guides/app-mac.html">Mac app</a></td><td><a href="/guides/host-mac.html">Share a Mac</a></td></tr>
+          <tr><th scope="row">Linux</th><td><a href="/guides/app-linux.html">Linux app</a></td><td><a href="/guides/host-linux.html">Share a Linux computer</a></td></tr>
+          <tr><th scope="row">Windows</th><td>Planned</td><td>Experimental</td></tr>
+          <tr><th scope="row">Android</th><td><a href="/guides/app-android.html">Android app</a></td><td>No</td></tr>
+        </tbody>
+      </table>
     </section>
-
-    <section class="details" id="details">
-      <h2>Details</h2>
-      <dl>
-        <div><dt>Video</dt><dd>HEVC or H.264, encoded by the Mac's media engine, an NVIDIA GPU (GTX 10-series or newer, driver 530+) or the CPU, and decoded by your Mac's. The bitrate follows your network.</dd></div>
-        <div><dt>Fast lane</dt><dd>Small changes sent as lossless tiles ahead of the video. On by default for Linux hosts that encode on the CPU.</dd></div>
-        <div><dt>Network</dt><dd>QUIC over UDP port 48800, encrypted with TLS 1.3. Computers connect to each other directly; <a href="https://tailscale.com">Tailscale</a> recommended.</dd></div>
-        <div><dt>Input</dt><dd>Keyboard, mouse and trackpad. ⌘Tab and other system shortcuts go to the other computer once Sunna has Accessibility access.</dd></div>
-        <div><dt>Sound</dt><dd>What's playing on the other computer, as Opus: 128 kbps stereo in 10 ms packets, each carrying a copy of the one before, so a lost packet costs nothing. Play Sound in the session menu turns it on and off.</dd></div>
-        <div><dt>Clipboard</dt><dd>Text and images, both ways. One click turns it off for a session.</dd></div>
-        <div><dt>Share</dt><dd>Macs with macOS 13 or later. Linux PCs and servers with an X11 desktop, or a virtual desktop running Plasma or XFCE.</dd></div>
-        <div><dt>View from</dt><dd>A Mac with macOS 13 or later, or a Linux PC (X11 or Wayland).</dd></div>
-        <div><dt>Privacy</dt><dd>No accounts and no cloud service. Logs stay on your computers, and keystrokes and clipboard contents are never logged.</dd></div>
-        <div><dt>When idle</dt><dd>With nobody connected, a host uses no CPU and keeps one UDP port open.</dd></div>
-      </dl>
-    </section>
-
-    <section class="install" id="install">
-      <h2>Install</h2>
-      <p class="lede">The install scripts build Sunna on your own computer in a few minutes; there are no prebuilt downloads yet. Each one needs <a href="https://rustup.rs">Rust</a>, plus the tools its step names.</p>
-
-      <div class="step">
-        <div class="step-text">
-          <span class="num">1</span>
-          <h3>Share a Linux computer</h3>
-          <p>Ubuntu, Debian, Arch, Fedora and others. It installs for your user, with no root needed, then shares the X11 desktop you're logged into, or a separate virtual desktop on servers and on machines whose desktop is Wayland. It starts by itself from then on.</p>
-          <p class="note">It also needs a C/C++ compiler and nasm: <code>sudo apt install build-essential nasm</code> on Debian and Ubuntu; elsewhere the script names the packages. On Debian and Ubuntu you can make a package instead: <code>scripts/package-linux-deb.sh</code>.</p>
-        </div>
-        <pre><code>git clone https://github.com/SunnyXdm/sunna.git
-cd sunna
-scripts/install-host-linux.sh</code></pre>
-      </div>
-
-      <div class="step">
-        <div class="step-text">
-          <span class="num or">or</span>
-          <h3>Share a Mac</h3>
-          <p>For now a Mac host runs in a Terminal window, and needs Tailscale. Put a long random key in <code>~/.sunna/sunna.env</code> as <code>SUNNA_TOKEN=…</code>, then run the host. The first time, macOS asks to give your terminal Screen Recording and Accessibility access.</p>
-        </div>
-        <pre><code>git clone https://github.com/SunnyXdm/sunna.git
-cd sunna
-scripts/run.sh host</code></pre>
-      </div>
-
-      <div class="step">
-        <div class="step-text">
-          <span class="num">2</span>
-          <h3>Install the app on your Mac</h3>
-          <p>It builds <strong>Sunna.app</strong>, puts it in Applications and opens it. Run it again to update.</p>
-          <p class="note">It also needs the Xcode command line tools: <code>xcode-select --install</code>.</p>
-        </div>
-        <div class="step-code">
-          <img class="app-icon" src="images/icon.png" width="96" height="96" alt="Sunna's app icon">
-          <pre><code>git clone https://github.com/SunnyXdm/sunna.git
-cd sunna
-scripts/install-mac-app.sh</code></pre>
-        </div>
-      </div>
-
-      <div class="step">
-        <div class="step-text">
-          <span class="num">3</span>
-          <h3>Add the computer</h3>
-          <p>Sharing prints the computer's address, key and link. In Sunna, choose <em>Add a Computer</em> (<kbd>⌘N</kbd>) and paste the link. On Linux, <code>sunna-host link</code> shows it again.</p>
-        </div>
-        <pre class="output"><code>    Address   100.101.102.103
-    Key       7f3a…
-
-  In the Sunna app, choose Add a Computer and paste:
-    sunna://100.101.102.103?key=7f3a…</code></pre>
-      </div>
-    </section>
-
-    <section class="questions" id="questions">
-      <h2>Questions</h2>
-      <details>
-        <summary>Is it secure?</summary>
-        <p>A computer only accepts viewers that present its key, and connections are encrypted (QUIC with TLS 1.3). The app doesn't check the host's identity yet, though, so use Sunna over <a href="https://tailscale.com">Tailscale</a> or a network you trust, and never expose a host to the internet. Checking each host's certificate is planned.</p>
-      </details>
-      <details>
-        <summary>Can I share a Wayland desktop?</summary>
-        <p>Not yet. That includes Ubuntu's default session, and GNOME, Plasma or Hyprland on Wayland. Log in with an X11 session (on Ubuntu, "Ubuntu on Xorg"), or share a virtual desktop instead. Wayland support is planned.</p>
-      </details>
-      <details>
-        <summary>What about Windows, or viewing from Linux?</summary>
-        <p>Viewing from Linux works: <code>scripts/install-app-linux.sh</code> installs the app, which decodes on the GPU and sends Alt+Tab and Super to the other computer while it's focused. Windows isn't ready, either to share or to view from.</p>
-      </details>
-      <details>
-        <summary>How fast is it?</summary>
-        <p>It depends on your network and on how the host encodes video: Apple's media engine and NVIDIA GPUs are quick, a CPU is slower, and the fast lane keeps typing quick either way. In a session, <kbd>⌃⌥S</kbd> shows the stats bar with the latency, frame rate and bitrate of your own setup.</p>
-      </details>
-      <details>
-        <summary>Does it use my computer when nobody's connected?</summary>
-        <p>A waiting host uses no CPU and keeps one UDP port open. A virtual desktop keeps running with the apps you opened in it, like a real computer would; <code>sunna-host desktop-stop</code> stops it.</p>
-      </details>
-      <details>
-        <summary>Why isn't there a download?</summary>
-        <p>Prebuilt downloads aren't published yet. Until they are, the install scripts build Sunna on your own computer, which takes a few minutes.</p>
-      </details>
-    </section>
+    <section class="setup">
+<h2>Get Sunna</h2>
+<p>Today you build Sunna from source, and each guide has the one script that does it. Signed downloads and a one-line installer are built and tested; they arrive with the first release.</p>
+<ol>
+<li>
+<h3>Your network</h3>
+<p>Sunna works on any network you trust. With Tailscale, free for personal use, your computers are reachable from anywhere and closed to everyone else. Keep a host off the public internet.</p><a href="https://tailscale.com/">Tailscale ↗</a></li>
+<li>
+<h3>The computer you’ll reach</h3>
+<p>Install the host on it and turn on sharing.</p><a href="/guides/host-linux.html">Linux guide</a> · <a href="/guides/host-mac.html">Mac guide</a></li>
+<li>
+<h3>The device you’ll use</h3>
+<p>Install the app, then add the computer by its link.</p><a href="/guides/app-mac.html">Mac guide</a> · <a href="/guides/app-linux.html">Linux guide</a> · <a href="/guides/app-android.html">Android guide</a></li>
+</ol>
+</section>
   </main>
-
-  <footer class="footer">
-    <img src="images/icon.png" alt="" width="22" height="22">
-    <span>Sunna</span>
-    <a href="https://github.com/SunnyXdm/sunna">GitHub</a>
-    <a href="https://github.com/SunnyXdm/sunna#readme">Documentation</a>
-  </footer>
+  <footer class="end"><a href="/guides/using.html">Using Sunna</a><a href="/guides/security.html">Security &amp; privacy</a><a href="/guides/troubleshooting.html">Troubleshooting</a>
+</footer>
+<script>
+const films = [document.querySelector('#film')];
+const sharing = document.querySelector('#sharing-film');
+const motion = matchMedia('(prefers-reduced-motion: reduce)');
+function playback() {
+  for (const film of films) {
+    film.autoplay = !motion.matches;
+    film.controls = motion.matches;
+    if (motion.matches) { film.pause(); film.load(); }
+    else film.play().catch(() => { film.controls = true; });
+  }
+}
+motion.addEventListener('change', playback);
+playback();
+// The sharing film plays once, from the start, each time it comes into view.
+if ('IntersectionObserver' in window) {
+  new IntersectionObserver(([entry]) => {
+    if (motion.matches) return;
+    if (entry.isIntersecting) {
+      sharing.currentTime = 0;
+      sharing.play().catch(() => {});
+    } else sharing.pause();
+  }, { threshold: 0.6 }).observe(sharing);
+}
+</script>
 </body>
 </html>

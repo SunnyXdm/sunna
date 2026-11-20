@@ -1,33 +1,13 @@
 # Share a Mac
 
-Run the host on a Mac you want to use from another device. For now it runs in a Terminal window: it shares while the window is open and the Mac is awake. An installable Mac host is planned.
+Install Sunna.app with `scripts/install-mac-app.sh`, open Settings and turn on **Share this computer** under **This computer**. Use **Screen Recording…** to allow the picture and system sound and **Accessibility…** to allow mouse and keyboard input. On macOS 15 or later, allow local network access if prompted. Use the link or QR code in Settings to add the Mac on your viewer. The link contains its key.
 
-[← Back to the README](../README.md)
+Close the window. The background host owns the menu bar item. Its menu shows the listening address, whether permission is missing, and who is connected. **Open Sunna** brings back the window. **Stop Sharing** removes the login agent. **Quit Sunna Host** pauses the agent until the next login or until you enable sharing again.
 
-## You need
+Sunna prefers the Mac’s assigned Tailscale IPv4 address. Otherwise it uses the local IPv4 interface selected by the default route. If Tailscale comes up after login, automatic mode retries with increasing delays up to two minutes and moves the listener once the viewer disconnects. Choose a trusted network. [Network security](security.md)
 
-- macOS 13 or later
-- the Xcode command line tools: `xcode-select --install`
-- [Rust](https://rustup.rs)
-- [Tailscale](https://tailscale.com), connected: the Mac host listens only on its Tailscale address
+Sharing starts when this user logs in to the graphical desktop. After a reboot someone must unlock FileVault, if enabled, and log in. A connected session asks macOS to prevent idle system sleep. Sharing alone lets the Mac sleep normally.
 
-## Start sharing
+For foreground scripts, run `~/.local/bin/sunna host` or `scripts/run.sh host`. Use `sunna host --help` for options, including `--listen tailscale`, `--listen lan`, or an explicit `--listen IP:PORT`. CLI mode can use a private `SUNNA_TOKEN` environment variable or the key in Sunna’s Settings. The app switch and menu can stop a foreground host. The LaunchAgent always reads this Mac’s saved key. Restart sharing after changing the key or an explicitly selected interface.
 
-```sh
-# Once: make this Mac's key (leaves an existing one alone).
-grep -qs '^SUNNA_TOKEN=' ~/.sunna/sunna.env || (mkdir -p ~/.sunna && umask 077 && echo "SUNNA_TOKEN=$(openssl rand -hex 16)" >> ~/.sunna/sunna.env)
-
-git clone https://github.com/SunnyXdm/sunna.git && cd sunna
-scripts/run.sh host
-```
-
-It builds the host (the first time takes a few minutes), then prints the address, key, link and a QR code. Add the Mac in the app with the link, or scan the code with your phone. It shares until you press Ctrl-C or close the window.
-
-**The first time,** macOS asks for **Screen Recording** and **Accessibility** for your terminal app (Terminal, iTerm…). Allow both in System Settings → Privacy & Security, quit the terminal completely, and run `scripts/run.sh host` again. Screen Recording is for the picture and the sound; Accessibility is for the mouse and keyboard.
-
-## Good to know
-
-- **The key** is the same one the Sunna app on this Mac shows in Settings as this computer's key. Its Settings also show the link and its QR code.
-- **Sound** is shared too, through the same Screen Recording permission. It's new and not yet tested on a real Mac: if a session has no sound, the Terminal window says why.
-- **Updating:** `git pull`, then `scripts/run.sh host` again.
-- **On Wi-Fi, the video hitches about once a second?** That's AirDrop's radio (AWDL). `SUNNA_KEEP_AWDL_DOWN=1 scripts/run.sh host` holds it off for the session (it asks for your password once).
+The LaunchAgent is `~/Library/LaunchAgents/dev.sunna.host.plist`. Its stderr log is `~/Library/Logs/Sunna/host.stderr`. The prebuilt release and the background host still need a real Mac test, including unattended permission renewal and idle resource use. [Mac verification procedure](dev/mac-host-test.md)

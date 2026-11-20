@@ -6,3 +6,9 @@
 # Built apps and packages (scripts/install-*.sh)
 /dist
 __pycache__/
+
+/site/node_modules/
+/scripts/site/node_modules/
+# Screenshots written by the checks in apps/sunna/dev
+/apps/sunna/dev/design/shots-app/
+/apps/sunna/dev/design/proto/shots/

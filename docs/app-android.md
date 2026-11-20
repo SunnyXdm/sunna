@@ -6,17 +6,32 @@ Your computers on a phone or tablet: the same Computers screen as on the Mac, an
 
 ## Install
 
-There's no store listing yet, so the app is built from source on a computer, then installed on the phone. Building needs JDK 17, the Android SDK and NDK, and Rust with the Android targets: [apps/android/README.md](../apps/android/README.md) lists the exact versions and setup.
+Build the APK from source using the [Android build guide](../apps/android/README.md). From `apps/android`, run `./gradlew assembleDebug`. With USB debugging enabled and the phone connected, install it with:
 
 ```sh
-cd apps/android
-./gradlew assembleRelease
-adb install app/build/outputs/apk/release/app-release.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Without `adb`, copy `app-release.apk` to the phone and open it; Android asks you to allow installing apps from that source. To update, install the new APK over the old one: your computers are kept, as long as it was signed with the same key.
+Connect the phone to the host's trusted network or tailnet, then add the computer below.
 
-The phone must be on the same network as your computers, or on Tailscale with them.
+## Signed installations (in testing)
+
+In Sunna, Settings → **Check for updates** verifies the signed manifest and
+downloads the APK. Sunna also checks once a day when it launches. Before handing
+the APK to Android, it verifies the hash, package name, version and signing key.
+Android's **Allow from this source** setting is required for Sunna, and the
+system installer asks you to confirm each update.
+
+The first sideload establishes the Android signing identity your device trusts for future updates.
+A debug installation or an app signed with another key cannot be updated by the
+release APK. Sunna explains this instead of asking Android to replace it. Keep
+your computers' links before uninstalling an incompatible build: uninstalling
+deletes its stored computers. Devices must be on the same network as the hosts,
+or on Tailscale with them.
+
+For source builds and SDK setup, see [apps/android/README.md](../apps/android/README.md).
+See [verification](update-verification.md) for the build and off-device test
+results; the permission and package-installer flow still needs a device test.
 
 ## Add a computer
 

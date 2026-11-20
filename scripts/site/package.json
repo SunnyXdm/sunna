@@ -1,0 +1,9 @@
+{
+  "name": "sunna-docs-build",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "markdown-it": "14.1.1",
+    "thumbhash": "0.1.1"
+  }
+}

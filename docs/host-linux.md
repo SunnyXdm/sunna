@@ -1,8 +1,25 @@
 # Share a Linux computer
 
-Install the host on a Linux computer you want to use from somewhere else: your desktop from your laptop, a home server from your phone. Once set up, it runs as a service, so it's there whenever you connect, and it uses no CPU while nobody is connected.
+Install the host on a Linux computer you want to use from somewhere else: your desktop from your laptop, a home server from your phone. Once set up, it runs as a service, so it's there whenever you connect, and it checks desktop availability while it waits for a viewer.
 
 [← Back to the README](../README.md)
+
+## Share this computer from the Linux app
+
+Open **Settings → Share this computer** at the desktop you want to reach.
+Sunna installs the signed host if needed and starts it with your graphical
+session. On GNOME or KDE Wayland, approve the desktop’s permission request.
+Settings shows the address and offers **Copy** and **Show QR Code**. The link
+includes the connection key. Share it privately. See [Network security](security.md).
+
+Closing Sunna leaves sharing on. Turn the switch off to stop the host and
+its automatic start. The switch also controls a user host configured with
+`sunna-host setup`. A system host that shares the login screen is managed
+by an administrator.
+
+`sunna-host status --json` exposes local status for the app. While sharing,
+its `link` field contains the connection key. Keep the output out of logs and
+support reports.
 
 ## 1. Pick what to share
 
@@ -16,32 +33,81 @@ Not sure which session you're in? Run `echo $XDG_SESSION_TYPE` in a terminal on 
 
 If you don't choose, `sunna-host setup` picks for you: your own desktop when you run it in a terminal on it, a background desktop otherwise (over SSH, for example).
 
-## 2. Install
+### Whole-machine sharing (experimental signed Linux host)
 
-There are no downloads yet, so you build the host on the computer itself (a few minutes). It's tested on x86-64; ARM64 should build but hasn't been tried. You need [Rust](https://rustup.rs), a C/C++ compiler and nasm (without nasm, video encoding is 3–4× slower). On Debian and Ubuntu:
+A build containing the system installer can share the active local session on
+`seat0` from boot. Run `sunna-host setup --system` when that installer is
+available, or run the corresponding signed installer with `host --system`. Choose
+`--listen tailscale`, `--listen lan`, or a numeric socket address such as
+`--listen '[::1]:48800'`. The unit resolves the named network at startup.
+With Tailscale selected, it retries if the interface comes up late.
+
+The signed host lives under `/opt/sunna/host`. Its system unit starts the
+recovery supervisor outside the version directories. The key and settings
+live under `/etc/sunna`. Run the installer as the owner of an existing
+per-user desktop host to migrate it. The installer keeps a generated-format
+key, rotates other keys, and waits for a frame or an explicitly reported empty
+seat before enabling the system unit and removing the old settings. An
+unsuccessful setup restores the previous unit, settings and service state.
+If the seat has a selected session that Sunna cannot share, migration waits
+for a usable frame and restores the previous configuration on timeout. After rotation, re-share the link from
+`/opt/sunna/host/current/bin/sunna-host link`.
+
+**Anyone with the sharing key can try passwords at the login screen.** Use
+the private link to pair with the host’s identity. Current viewers verify that
+identity during connection and prove possession of the sharing key. A
+proof-required host refuses older viewers. Use your tailnet to limit who can
+reach the login screen.
+
+The host watches logind’s active-session notifications. Switching away and
+back retires the original worker and closes its viewer connection.
+The desktop viewer keeps its window and reconnects to negotiate the new
+screen size. An older viewer can reconnect manually. Each connection has
+its own video history, audio encoder, clipboard and input destination.
+Session workers supply the remote pointer shape. Sound and clipboard are
+suppressed on greeters. A media IPC failure triggers worker replacement.
+
+System mode shares only `seat0`. It has no fast-lane tiles or separate
+virtual desktop. Sharing pauses if one account has multiple graphical
+sessions because its portal and sound server can belong to either desktop.
+See the [guest measurements and verification limits](../tools/login-test/evidence/REPORT.md).
+
+On the GNOME 46, 49 and 50 GDM Wayland greeters, Mutter refused both session
+requests. Sunna reports that its login screen cannot be shared. A machine owner can select a supported X11 login manager or configure
+automatic login if appropriate for the physical security of the computer.
+Installation leaves login-manager configuration to its owner. To grant the
+system host access to a Wayland user desktop, sign in locally as that user,
+run `/opt/sunna/host/current/bin/sunnad --authorize` in a graphical terminal
+and approve the screen and remote interaction in the portal. Each user grants
+their own permission. Existing per-user desktop and virtual modes require
+no administrator access.
+
+## 2. Build and install
+
+Install Git, Rust and a C/C++ compiler, plus NASM on x86-64. As the user who will share the desktop, run:
 
 ```sh
-sudo apt install build-essential nasm
-```
-
-Then, **as the user whose desktop you want to share** (not root):
-
-```sh
-git clone https://github.com/SunnyXdm/sunna.git && cd sunna
+git clone https://github.com/SunnyXdm/sunna.git
+cd sunna
 scripts/install-host-linux.sh
 ```
 
-This installs `sunnad` (the host) and `sunna-host` (the command that runs it) into `~/.local/bin`, then runs `sunna-host setup`. To update later: `git pull` and run the script again. Your settings and key are kept.
+The script builds the host and runs setup. Pass `--desktop` or `--virtual` to the script to choose explicitly. The setup section below describes the prompts.
 
-**Or as a Debian/Ubuntu package**, for example to install it on several machines:
+### Signed installations (in testing)
 
-```sh
-scripts/package-linux-deb.sh                # makes dist/sunna-host_<version>-<build>_<arch>.deb
-sudo apt install ./dist/sunna-host_*.deb
-sunna-host setup                            # as the user whose desktop to share
-```
+The planned signed installer needs no Rust toolchain. The host and its helper scripts live under
+`~/.local/share/sunna/host/versions`; `current` points to the selected version,
+and commands in `~/.local/bin` point through it. The app has a separate
+`sunna/app` directory, so updating one cannot roll back the other.
 
-A package runs on the release it was built on and newer ones (build on Ubuntu 22.04 to cover Ubuntu 22.04+ and Debian 12+).
+Old source installations in `~/.local/bin` are saved as a previous version before
+the commands become links. Settings and host keys are kept. A host already
+running an older build needs one restart to load the new supervisor. Pass `--restart` after host when installing to restart and verify the migrated service. To choose the time yourself, run `~/.local/bin/sunna-host migrate-service` afterwards.
+
+For development, `scripts/install-host-linux.sh` still builds from source and
+installs into the same layout. A `.deb` uses `apt` for updates; it does not
+replace system files through the self-updater.
 
 ## 3. Set it up
 
@@ -71,17 +137,46 @@ KDE Plasma on Wayland should work the same way but hasn't been tested yet. Other
 
 ### Your own desktop on X11
 
-Nothing to approve. The host starts when you log in and shares what's on your screen. Someone has to be logged in.
+The host starts when you log in and shares your X11 screen. Capture, input
+and startup checks use the local filesystem socket and verify the server
+before using Xauthority. With graphical session metadata they check the
+session scope or the root display server’s VT. A per-user virtual service
+can lack logind session metadata. In that mode the configured display number
+and verified root or same-user X server select the desktop. Separate Unix
+accounts are needed to isolate mutually untrusted desktops.
 
 ### A server or VM (background desktop)
 
 The background desktop needs Xvfb and a desktop environment; setup tells you what's missing. On Debian and Ubuntu:
 
 ```sh
-sudo apt install xvfb x11-utils dbus-x11 xfce4 pulseaudio-utils
+sudo apt install xvfb dbus-x11 xfce4 pulseaudio-utils
 ```
 
 It uses KDE Plasma if installed, otherwise XFCE. It starts at boot, and keeps running when you disconnect, with your apps still open, like a real computer. `--size 1920x1080` sets its size (default 1710x1112).
+
+Running `sunna-host new-identity` replaces the identity and reloads an active
+host. A stopped host stays stopped. Re-add its new private link on each viewer.
+
+## Updates
+
+```sh
+sunna-host update --check
+sunna-host update --yes
+sunna-host update --rollback
+```
+
+A running host queues changes until nobody is connected. Downloads are staged,
+verified, and checked with `sunnad --version` before switching. The supervisor
+rolls back a new version after two failed startup attempts; failed versions are
+not automatically retried. The current and previous releases are retained.
+
+Daily checks default to **notify**. Use `install.sh host --auto-update`, or set
+`SUNNA_UPDATE=auto`, `notify`, or `off` in `~/.config/sunna/host.env` and restart.
+An explicit environment setting takes precedence over policy chosen from the
+app. `SUNNA_UPDATE_URL` overrides the manifest base URL for self-hosting; it
+never changes the trusted release key. Remote update requests require the host
+key and cannot supply a download URL.
 
 ## Everyday commands
 
@@ -104,7 +199,7 @@ It uses KDE Plasma if installed, otherwise XFCE. It starts at boot, and keeps ru
 |---|---|
 | `--desktop` | share the desktop you're logged into |
 | `--virtual` | share a background desktop |
-| `--listen WHERE` | `tailscale` (only your tailnet; the default when Tailscale is running), `lan` (your local network), or an address like `192.168.1.20:48800` |
+| `--listen WHERE` | `tailscale` (only your tailnet, the default for new setups with the Tailscale CLI installed), `lan` (your local network), or an address like `192.168.1.20:48800` |
 | `--name NAME` | the name shown in the app (default: the hostname) |
 | `--key KEY` | use this key instead of making one |
 | `--size WxH` | the background desktop's size |
