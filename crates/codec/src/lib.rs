@@ -11,13 +11,13 @@ pub mod android;
 #[cfg(sunna_ffmpeg)]
 pub mod ffmpeg;
 pub mod h264;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod nvenc;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod openh264_codec;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod yuv;
 
 use bytes::Bytes;
@@ -216,6 +216,12 @@ pub fn default_codec_name() -> &'static str {
             return "hevc";
         }
         "h264"
+    } else if cfg!(target_os = "windows") {
+        #[cfg(target_os = "windows")]
+        if nvenc::supports(Codec::Hevc) {
+            return "hevc";
+        }
+        "h264"
     } else {
         "raw"
     }
@@ -237,7 +243,7 @@ pub fn make_encoder(
         "h264" => Ok(Box::new(videotoolbox::VtEncoder::new(
             Codec::H264, width, height, fps, bitrate_bps,
         )?)),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         "h264" | "hevc" => {
             let selected = if codec == "h264" { Codec::H264 } else { Codec::Hevc };
             // SUNNA_NVENC=0 forces software H.264.

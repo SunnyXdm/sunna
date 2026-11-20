@@ -394,6 +394,22 @@ fn shared<T>(
     *slot = Arc::downgrade(&session);
     Ok(session)
 }
+/// A non-interactive status check. Creating a portal session can open a
+/// desktop dialog, so probes only inspect the live grant.
+pub fn approved() -> bool {
+    if let Ok(slot) = SESSION.try_lock() {
+        if let Some(session) = slot.upgrade() {
+            return !session.closed.load(std::sync::atomic::Ordering::Acquire);
+        }
+    }
+    false
+}
+
+/// A token is only a candidate for starting a new grant.
+pub fn has_restore_token() -> bool {
+    token_path().is_ok_and(|path| path.is_file())
+}
+
 pub fn acquire() -> anyhow::Result<Arc<Session>> {
     shared(&SESSION, || Session::start(Duration::from_secs(60), true))
 }

@@ -19,6 +19,14 @@ core-foundation-sys.workspace = true
 libloading = "0.9.0"
 openh264 = "0.9.8"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+libloading = "0.9.0"
+openh264 = "0.9.8"
+windows = { version = "0.62", features = ["Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
+
 [build-dependencies]
 cc = "1"
 pkg-config = "0.3"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

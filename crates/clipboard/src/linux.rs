@@ -114,7 +114,7 @@ struct Owner {
 
 impl Owner {
     fn new(count: Arc<AtomicU64>) -> anyhow::Result<Self> {
-        let (conn, screen) = x11rb::connect(None)?;
+        let (conn, screen) = sunna_capture::x11::connect(None)?;
         conn.xfixes_query_version(5, 0)?.reply()?;
         let atoms = Atoms::new(&conn)?.reply()?;
         let root = conn.setup().roots[screen].root;

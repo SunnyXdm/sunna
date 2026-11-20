@@ -16,10 +16,14 @@ mod tiles;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub mod x11;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
+#[cfg(target_os = "windows")]
+pub mod windows_display;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -79,6 +83,9 @@ pub enum FrameData {
     /// An IOSurface wrapped in a CVPixelBuffer, ready for VideoToolbox.
     #[cfg(target_os = "macos")]
     Surface(macos::SurfaceFrame),
+    /// A D3D11 texture (NV12) on the capture's device, for the encoder.
+    #[cfg(target_os = "windows")]
+    D3d11(windows::D3dFrame),
 }
 
 impl FrameData {
@@ -90,6 +97,8 @@ impl FrameData {
             FrameData::Cpu(bytes) => Ok(bytes.clone()),
             #[cfg(target_os = "macos")]
             FrameData::Surface(surface) => surface.to_bytes(),
+            #[cfg(target_os = "windows")]
+            FrameData::D3d11(frame) => frame.to_bytes(),
         }
     }
 }
@@ -131,11 +140,30 @@ fn fast_lane_default(value: Option<&str>, software_h264: bool) -> bool {
     }
 }
 
+/// What [`FrameSource::next_frame`] returns when the screen isn't being
+/// drawn (a display that's off, or a virtual display whose driver stopped):
+/// nothing to show right now, but not a failure. The host sends nothing
+/// until it is drawn again, so the viewer can say so, and asks again.
+#[derive(Debug)]
+pub struct NoPicture;
+
+impl std::fmt::Display for NoPicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the screen isn't being drawn")
+    }
+}
+
+impl std::error::Error for NoPicture {}
+
 pub trait FrameSource: Send {
+    /// The next frame. `Err` with [`NoPicture`] inside means "nothing yet,
+    /// ask again"; any other error ends the stream.
     fn next_frame(&mut self) -> anyhow::Result<VideoFrame>;
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn fps(&self) -> u32;
+    #[cfg(target_os = "linux")]
+    fn take_cursor(&mut self) -> Option<sunna_proto::messages::CursorShape> { None }
     /// Whether this source can produce lossless fast-lane tiles.
     fn supports_tiles(&self) -> bool {
         false

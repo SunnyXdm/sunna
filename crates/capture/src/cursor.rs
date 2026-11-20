@@ -2,11 +2,11 @@
 //! (so it moves without delay) and gives it the host's shape: resize arrows
 //! over a window edge, the text beam over text, a hand over a link.
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::time::Duration;
 
 /// One pointer shape, as the screen shows it.
@@ -25,7 +25,7 @@ pub struct CursorImage {
 }
 
 /// How often the shape is looked at where the system can't say it changed.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const POLL: Duration = Duration::from_millis(30);
 
 /// A capture backend can supply shapes without opening an X connection.
@@ -51,9 +51,19 @@ impl Drop for ProviderGuard {
     }
 }
 
+/// Poll from a Linux session worker that already has a capture loop.
+#[cfg(target_os = "linux")]
+pub fn reader() -> anyhow::Result<Box<dyn FnMut() -> anyhow::Result<Option<CursorImage>>>> {
+    if let Some(provider) = PROVIDER.lock().unwrap().clone() {
+        return Ok(Box::new(move || Ok(provider())));
+    }
+    let mut shapes = linux::Shapes::open()?;
+    Ok(Box::new(move || shapes.next()))
+}
+
 /// Watch the pointer's shape from a thread of its own, calling `changed` with
 /// each new one, until `stop` is set.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_variables, unused_mut))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos", target_os = "windows")), allow(unused_variables, unused_mut))]
 pub fn watch(
     stop: Arc<AtomicBool>,
     mut changed: impl FnMut(CursorImage) + Send + 'static,
@@ -66,9 +76,11 @@ pub fn watch(
     };
     #[cfg(target_os = "macos")]
     let mut shapes = macos::Shapes::open()?;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    let mut shapes = windows::Shapes::open();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     anyhow::bail!("pointer shapes aren't available on this system");
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     Ok(std::thread::Builder::new()
         .name("sunna-cursor".into())
         .spawn(move || {
@@ -83,7 +95,7 @@ pub fn watch(
                         .clone()
                         .and_then(|provider| provider())),
                 };
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 let next = shapes.next();
                 match next {
                     Ok(Some(image)) if last != Some(image.id) => {
@@ -134,7 +146,7 @@ mod linux {
     impl Shapes {
         pub(super) fn open() -> anyhow::Result<Self> {
             let (connection, screen) =
-                x11rb::connect(None).context("connecting to the X server (is DISPLAY set?)")?;
+                crate::x11::connect(None).context("connecting to the X server (is DISPLAY set?)")?;
             connection
                 .xfixes_query_version(5, 0)?
                 .reply()
@@ -310,9 +322,273 @@ mod macos {
     }
 }
 
+/// GDI expands both masks to top-down BGRA, so their scanlines have no padding.
+#[cfg(any(target_os = "windows", test))]
+fn windows_rgba(color: Option<&[u8]>, mask: &[u8], pixels: usize) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(pixels * 4);
+    if let Some(color) = color {
+        let has_alpha = color.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0);
+        for (pixel, and) in color.as_chunks::<4>().0.iter().zip(mask.as_chunks::<4>().0.iter()) {
+            // Windows alpha cursors already contain premultiplied BGRA. Only
+            // legacy cursors (all-zero alpha) take transparency from the mask.
+            let alpha = if has_alpha {
+                pixel[3]
+            } else if and[0] == 0 {
+                255
+            } else {
+                0
+            };
+            rgba.extend_from_slice(&if alpha == 0 {
+                [0, 0, 0, 0]
+            } else {
+                [pixel[2], pixel[1], pixel[0], alpha]
+            });
+        }
+    } else {
+        let (and, xor) = mask.split_at(pixels * 4);
+        for (and, xor) in and.as_chunks::<4>().0.iter().zip(xor.as_chunks::<4>().0.iter()) {
+            let pixel = match (and[0] != 0, xor[0] != 0) {
+                (true, false) => [0, 0, 0, 0],
+                (false, true) => [255, 255, 255, 255],
+                // Inversion depends on the desktop behind the cursor, which
+                // a standalone viewer cursor cannot do. Use opaque black.
+                _ => [0, 0, 0, 255],
+            };
+            rgba.extend_from_slice(&pixel);
+        }
+    }
+    rgba
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::mem::size_of;
+
+    use ::windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+    };
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetCursorInfo, GetIconInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, HCURSOR, HICON,
+        ICONINFO, SM_CXSCREEN,
+    };
+    use anyhow::Context;
+
+    use super::{windows_rgba, CursorImage};
+
+    pub(super) struct Shapes {
+        last: Option<usize>,
+    }
+
+    impl Shapes {
+        pub(super) fn open() -> Self {
+            Self { last: None }
+        }
+
+        pub(super) fn next(&mut self) -> anyhow::Result<Option<CursorImage>> {
+            // A SYSTEM host sees the pointer on the lock screen and UAC
+            // prompts too, from the desktop that has the keyboard.
+            crate::windows::follow_input_desktop();
+            let mut info = CURSORINFO {
+                cbSize: size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            // SAFETY: `info` has the required size and lives through the call.
+            unsafe { GetCursorInfo(&mut info) }.context("reading the Windows cursor")?;
+            let id = if info.flags == CURSOR_SHOWING {
+                info.hCursor.0 as usize
+            } else {
+                0
+            };
+            if self.last == Some(id) {
+                return Ok(None);
+            }
+            // The host shares the primary display. The process is per-monitor
+            // DPI aware, so this width and the cursor bitmap are physical pixels.
+            // SAFETY: GetSystemMetrics takes no pointers or owned resources.
+            let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1) as u32;
+            let image = if id == 0 {
+                // The wire format has no visibility flag: a transparent shape
+                // hides the viewer's cursor without leaving its previous image.
+                CursorImage {
+                    id: 0,
+                    width: 1,
+                    height: 1,
+                    hot_x: 0,
+                    hot_y: 0,
+                    screen_width,
+                    rgba: vec![0; 4],
+                }
+            } else {
+                read_cursor(info.hCursor, screen_width)?
+            };
+            self.last = Some(id);
+            Ok(Some(image))
+        }
+    }
+
+    struct IconBitmaps(ICONINFO);
+
+    impl Drop for IconBitmaps {
+        fn drop(&mut self) {
+            // SAFETY: GetIconInfo creates these bitmaps for the caller; no DC
+            // has them selected. The HCURSOR itself is borrowed and stays alive.
+            unsafe {
+                if !self.0.hbmMask.0.is_null() {
+                    let _ = DeleteObject(self.0.hbmMask.into());
+                }
+                if !self.0.hbmColor.0.is_null() {
+                    let _ = DeleteObject(self.0.hbmColor.into());
+                }
+            }
+        }
+    }
+
+    struct ScreenDc(HDC);
+
+    impl Drop for ScreenDc {
+        fn drop(&mut self) {
+            // SAFETY: This DC came from GetDC(None) on this same thread.
+            unsafe {
+                ReleaseDC(None, self.0);
+            }
+        }
+    }
+
+    fn dimensions(bitmap: HBITMAP) -> anyhow::Result<(usize, usize)> {
+        let mut object = BITMAP::default();
+        // SAFETY: The bitmap is owned by IconBitmaps; the output is a BITMAP
+        // with exactly the size passed to GetObjectW.
+        let read = unsafe {
+            GetObjectW(
+                bitmap.into(),
+                size_of::<BITMAP>() as i32,
+                Some((&mut object as *mut BITMAP).cast()),
+            )
+        };
+        anyhow::ensure!(
+            read == size_of::<BITMAP>() as i32,
+            "reading cursor bitmap dimensions"
+        );
+        // Bound allocations, including the double-height monochrome mask.
+        anyhow::ensure!(
+            (1..=512).contains(&object.bmWidth) && (1..=1024).contains(&object.bmHeight),
+            "invalid cursor bitmap dimensions"
+        );
+        Ok((object.bmWidth as usize, object.bmHeight as usize))
+    }
+
+    fn bitmap_bgra(
+        dc: HDC,
+        bitmap: HBITMAP,
+        width: usize,
+        height: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32), // top-down, including stacked AND/XOR masks
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bytes = vec![0; width * height * 4];
+        // SAFETY: The bitmap is not selected into a DC. Dimensions were checked
+        // before allocation; 32-bit rows are DWORD aligned with no extra padding.
+        let lines = unsafe {
+            GetDIBits(
+                dc,
+                bitmap,
+                0,
+                height as u32,
+                Some(bytes.as_mut_ptr().cast()),
+                &mut info,
+                DIB_RGB_COLORS,
+            )
+        };
+        anyhow::ensure!(lines == height as i32, "reading cursor bitmap pixels");
+        Ok(bytes)
+    }
+
+    fn read_cursor(cursor: HCURSOR, screen_width: u32) -> anyhow::Result<CursorImage> {
+        let mut icon = IconBitmaps(ICONINFO::default());
+        // SAFETY: GetIconInfo accepts a cursor cast to HICON and initializes the
+        // output. The guard frees any returned bitmaps, including on errors.
+        unsafe { GetIconInfo(HICON(cursor.0), &mut icon.0) }
+            .context("reading the Windows cursor image")?;
+        let (width, mask_height) = dimensions(icon.0.hbmMask)?;
+        let monochrome = icon.0.hbmColor.0.is_null();
+        let height = if monochrome {
+            anyhow::ensure!(
+                mask_height % 2 == 0,
+                "invalid monochrome cursor mask height"
+            );
+            mask_height / 2
+        } else {
+            let (color_width, color_height) = dimensions(icon.0.hbmColor)?;
+            anyhow::ensure!(
+                color_width == width && color_height == mask_height,
+                "cursor mask and color dimensions differ"
+            );
+            color_height
+        };
+        anyhow::ensure!(height > 0 && height <= 512, "invalid cursor height");
+        anyhow::ensure!(
+            icon.0.xHotspot < width as u32 && icon.0.yHotspot < height as u32,
+            "invalid cursor hot spot"
+        );
+        // SAFETY: Gets a screen DC, released on this same thread by the guard.
+        let dc = ScreenDc(unsafe { GetDC(None) });
+        anyhow::ensure!(!dc.0 .0.is_null(), "opening a DC for the cursor");
+        let mask = bitmap_bgra(dc.0, icon.0.hbmMask, width, mask_height)?;
+        let color = if monochrome {
+            None
+        } else {
+            Some(bitmap_bgra(dc.0, icon.0.hbmColor, width, height)?)
+        };
+        Ok(CursorImage {
+            id: cursor.0 as usize as u64,
+            width: width as u16,
+            height: height as u16,
+            hot_x: icon.0.xHotspot as u16,
+            hot_y: icon.0.yHotspot as u16,
+            screen_width,
+            rgba: windows_rgba(color.as_deref(), &mask, width * height),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_alpha_is_already_premultiplied_and_overrides_the_mask() {
+        let color = [20, 40, 80, 128, 10, 20, 30, 0];
+        let mask = [255; 8];
+        assert_eq!(windows_rgba(Some(&color), &mask, 2), [80, 40, 20, 128, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn windows_legacy_color_uses_the_and_mask_for_alpha() {
+        let color = [10, 20, 30, 0, 40, 50, 60, 0];
+        let mask = [0, 0, 0, 0, 255, 255, 255, 0];
+        assert_eq!(windows_rgba(Some(&color), &mask, 2), [30, 20, 10, 255, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn windows_monochrome_masks_cover_all_four_combinations() {
+        // Two rows: black/white, then transparent/inverted; AND above XOR.
+        let mask = [
+            0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 0, 255, 255, 255, 0,
+            0, 0, 0, 0, 255, 255, 255, 0, 0, 0, 0, 0, 255, 255, 255, 0,
+        ];
+        assert_eq!(windows_rgba(None, &mask, 4), [0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 255]);
+    }
 
     #[test]
     fn a_shape_keeps_its_id_and_a_change_gets_a_new_one() {

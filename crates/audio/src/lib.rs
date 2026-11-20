@@ -20,6 +20,10 @@ mod player;
 mod pulse;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod wasapi;
+#[cfg(any(target_os = "windows", test))]
+mod wasapi_convert;
 
 pub use opus::{Decoder, Encoder};
 pub use player::{Player, PlayerStats};
@@ -57,7 +61,12 @@ pub fn open_capture() -> anyhow::Result<Box<dyn Capture>> {
         let _ = source;
         Ok(Box::new(macos::SystemAudioCapture::open()?))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = source;
+        Ok(Box::new(wasapi::WasapiCapture::open()?))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = source;
         anyhow::bail!("no audio capture on this platform yet")
@@ -86,8 +95,8 @@ impl Capture for ToneCapture {
             std::thread::sleep(wait);
         }
         let second = self.produced / 100;
-        let hz = self.base_hz * if second % 2 == 0 { 1.0 } else { 1.5 };
-        for sample in frame.chunks_exact_mut(CHANNELS) {
+        let hz = self.base_hz * if second.is_multiple_of(2) { 1.0 } else { 1.5 };
+        for sample in frame.as_chunks_mut::<CHANNELS>().0 {
             let value = (self.phase.sin() * 0.25 * i16::MAX as f64) as i16;
             sample.fill(value);
             self.phase = (self.phase + std::f64::consts::TAU * hz / SAMPLE_RATE as f64) % std::f64::consts::TAU;

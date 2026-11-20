@@ -13,6 +13,10 @@ use sunna_proto::messages::InputEvent;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "windows")]
+pub mod windows;
+#[cfg(any(target_os = "windows", test))]
+mod windows_mapping;
 
 /// Host side: apply a remote input event to the local OS.
 pub trait InputInjector: Send {
@@ -39,7 +43,11 @@ pub fn make_injector() -> Box<dyn InputInjector> {
             }
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(windows::WinInjector::new())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Box::new(LogInjector)
     }

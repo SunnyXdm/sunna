@@ -16,7 +16,7 @@ use anyhow::{bail, Context};
 use bytes::Bytes;
 use x11rb::connection::Connection;
 use x11rb::protocol::shm::{self, ConnectionExt as _};
-use x11rb::protocol::xproto::{ImageFormat, Window};
+use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat, Window};
 use x11rb::rust_connection::RustConnection;
 
 use crate::tiles::{TileQueue, TileWorker};
@@ -29,7 +29,7 @@ const IDLE_REDELIVERY: Duration = Duration::from_millis(100);
 /// Pixel size of the X screen named by `DISPLAY`.
 pub fn main_display_pixel_size() -> anyhow::Result<(u32, u32)> {
     let (conn, screen_num) =
-        x11rb::connect(None).context("connecting to the X server (is DISPLAY set?)")?;
+        crate::x11::connect(None).context("connecting to the X server (is DISPLAY set?)")?;
     let screen = &conn.setup().roots[screen_num];
     Ok((
         screen.width_in_pixels as u32,
@@ -49,6 +49,7 @@ unsafe impl Send for ShmSegment {}
 
 impl ShmSegment {
     fn new(conn: &RustConnection, len: usize) -> anyhow::Result<Self> {
+        let xid = conn.generate_id()?;
         unsafe {
             let id = libc::shmget(libc::IPC_PRIVATE, len, libc::IPC_CREAT | 0o600);
             if id < 0 {
@@ -63,13 +64,14 @@ impl ShmSegment {
             let segment = Self {
                 addr: addr as *mut u8,
                 len,
-                xid: conn.generate_id()?,
+                xid,
             };
+            // Linux permits attachment to a segment marked for deletion while
+            // our mapping is alive. This also cleans up after a refused attach.
+            libc::shmctl(id, libc::IPC_RMID, std::ptr::null_mut());
             conn.shm_attach(segment.xid, id as u32, false)?
                 .check()
                 .context("XShmAttach")?;
-            // Marked for removal now; it goes away once both sides detach.
-            libc::shmctl(id, libc::IPC_RMID, std::ptr::null_mut());
             Ok(segment)
         }
     }
@@ -90,7 +92,7 @@ impl Drop for ShmSegment {
 struct Capture {
     conn: RustConnection,
     root: Window,
-    segment: ShmSegment,
+    segment: Option<ShmSegment>,
     /// Size of the X screen.
     native: (u32, u32),
     /// Size frames are delivered at (the session's stream size).
@@ -116,10 +118,7 @@ impl Capture {
         fps: u32,
     ) -> anyhow::Result<Self> {
         let (conn, screen_num) =
-            x11rb::connect(display).context("connecting to the X server (is DISPLAY set?)")?;
-        conn.shm_query_version()?
-            .reply()
-            .context("the X server has no MIT-SHM extension")?;
+            crate::x11::connect(display).context("connecting to the X server (is DISPLAY set?)")?;
         let screen = &conn.setup().roots[screen_num];
         let root = screen.root;
         let native = (
@@ -131,7 +130,7 @@ impl Capture {
             "X screen depth {} unsupported (need 24/32)",
             screen.root_depth
         );
-        let segment = ShmSegment::new(&conn, native.0 as usize * native.1 as usize * 4)?;
+        let segment = ShmSegment::new(&conn, native.0 as usize * native.1 as usize * 4).ok();
         let fps = fps.max(1);
         let width = width.unwrap_or(native.0).min(native.0).max(2) & !1;
         let height = height.unwrap_or(native.1).min(native.1).max(2) & !1;
@@ -139,7 +138,8 @@ impl Capture {
             screen = format!("{}x{}", native.0, native.1),
             stream = format!("{width}x{height}"),
             depth = screen.root_depth,
-            "X11 capture (MIT-SHM)"
+            shared_memory = segment.is_some(),
+            "X11 capture"
         );
         Ok(Self {
             conn,
@@ -165,21 +165,19 @@ impl Capture {
     /// the stream size.
     fn grab(&mut self) -> anyhow::Result<Bytes> {
         let (w, h) = self.native;
-        self.conn
-            .shm_get_image(
-                self.root,
-                0,
-                0,
-                w as u16,
-                h as u16,
-                !0,
-                ImageFormat::Z_PIXMAP.into(),
-                self.segment.xid,
-                0,
-            )?
-            .reply()
-            .context("XShmGetImage")?;
-        let src = self.segment.bytes();
+        let reply;
+        let src = if let Some(segment) = &self.segment {
+            self.conn.shm_get_image(self.root, 0, 0, w as u16, h as u16, !0,
+                ImageFormat::Z_PIXMAP.into(), segment.xid, 0)?.reply().context("XShmGetImage")?;
+            segment.bytes()
+        } else {
+            // Some X servers run under a different UID and cannot attach a
+            // private segment. Use core X11 without widening its permissions.
+            reply = self.conn.get_image(ImageFormat::Z_PIXMAP, self.root, 0, 0,
+                w as u16, h as u16, !0)?.reply().context("XGetImage")?;
+            anyhow::ensure!(reply.data.len() == w as usize * h as usize * 4, "unexpected X11 pixel layout");
+            &reply.data
+        };
         if (self.width, self.height) == self.native {
             return Ok(Bytes::copy_from_slice(src));
         }
@@ -479,7 +477,7 @@ mod tests {
         let first = source.next_frame().unwrap();
         // Let the tile worker establish its baseline before drawing.
         std::thread::sleep(Duration::from_millis(150));
-        let (conn, screen) = x11rb::connect(Some(name.as_str())).unwrap();
+        let (conn, screen) = crate::x11::connect(Some(name.as_str())).unwrap();
         let root = conn.setup().roots[screen].root;
         let gc = conn.generate_id().unwrap();
         conn.create_gc(gc, root, &CreateGCAux::new().foreground(0xc71707))

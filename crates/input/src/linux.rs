@@ -45,7 +45,7 @@ pub struct X11Injector {
 impl X11Injector {
     pub fn new() -> anyhow::Result<Self> {
         let (conn, screen_num) =
-            x11rb::connect(None).context("connecting to the X server (is DISPLAY set?)")?;
+            sunna_capture::x11::connect(None).context("connecting to the X server (is DISPLAY set?)")?;
         conn.xtest_get_version(2, 2)?
             .reply()
             .context("the X server has no XTEST extension")?;
@@ -218,6 +218,14 @@ impl InputInjector for X11Injector {
     }
 }
 
+impl Drop for X11Injector {
+    fn drop(&mut self) {
+        if !self.keys_down.is_empty() || !self.buttons_down.is_empty() {
+            self.release_all();
+        }
+    }
+}
+
 /// macOS virtual keycode (Carbon `kVK_*`) → Linux evdev `KEY_*` code.
 pub fn evdev_from_mac(vk: u16, command_as_ctrl: bool) -> Option<u16> {
     Some(match vk {
@@ -368,6 +376,27 @@ mod tests {
         assert_eq!(evdev_from_mac(0x00, false), Some(30)); // A
     }
 
+    #[test]
+    #[ignore = "requires a disposable X server"]
+    fn dropping_injector_releases_held_key_and_button() {
+        use super::*;
+        let (observer, screen) = sunna_capture::x11::connect(None).unwrap();
+        let root = observer.setup().roots[screen].root;
+        let held = || {
+            let keys = observer.query_keymap().unwrap().reply().unwrap().keys;
+            let pointer = observer.query_pointer(root).unwrap().reply().unwrap();
+            (keys[38 / 8] & (1 << (38 % 8)) != 0,
+             pointer.mask.contains(x11rb::protocol::xproto::KeyButMask::BUTTON1))
+        };
+        let mut input = X11Injector::new().unwrap();
+        input.inject(&InputEvent::Key {scancode: 0, pressed: true, repeat: false}).unwrap();
+        input.inject(&InputEvent::MouseButton {button: MouseButton::Left, pressed: true}).unwrap();
+        input.conn.get_input_focus().unwrap().reply().unwrap();
+        assert_eq!(held(), (true, true));
+        drop(input);
+        assert_eq!(held(), (false, false));
+    }
+
     /// Needs an X server: `DISPLAY=:40 cargo test -p sunna-input -- --ignored`.
     /// Moves the pointer to the centre, then types "hi" + Return into
     /// whatever has focus.
@@ -420,7 +449,7 @@ mod tests {
 
         // A window of our own, focused and under the pointer, that records
         // what arrives.
-        let (conn, screen) = x11rb::connect(None).unwrap();
+        let (conn, screen) = sunna_capture::x11::connect(None).unwrap();
         let root = conn.setup().roots[screen].root;
         let window = conn.generate_id().unwrap();
         let mask = EventMask::KEY_PRESS | EventMask::KEY_RELEASE | EventMask::BUTTON_PRESS;

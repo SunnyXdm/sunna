@@ -6,15 +6,23 @@ use std::time::{Duration, Instant};
 use sunna_proto::messages::{ClipboardData, ClipboardKind};
 use tokio::sync::watch;
 
+#[cfg(any(target_os = "windows", test))]
+mod dib;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod user_helper;
+#[cfg(target_os = "windows")]
+mod windows;
 // Plain Rust (the app relays Android's clipboard), so it builds and tests
 // anywhere; only Android uses it.
 mod phone;
 
 pub use phone::{copied_on_phone, remote_count, take_for_phone};
+#[cfg(target_os = "windows")]
+pub use user_helper::{serve as serve_helper, HELPER_FLAG};
 
 pub const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -91,9 +99,52 @@ pub fn system_clipboard() -> anyhow::Result<Box<dyn Clipboard>> {
     {
         Ok(Box::new(phone::PhoneClipboard))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "android")))]
+    #[cfg(target_os = "windows")]
+    {
+        // As SYSTEM, only a helper in the user's account sees their copies.
+        match user_helper::HelperClipboard::start() {
+            Ok(Some(helper)) => return Ok(Box::new(helper)),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                "{error:#}; copies made on this PC won't reach the viewer"
+            ),
+        }
+        Ok(Box::new(windows::WindowsClipboard::new()?))
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "android",
+        target_os = "windows"
+    )))]
     {
         anyhow::bail!("clipboard is unsupported on this platform")
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+mod windows_text {
+    pub fn to_lf(text: &str) -> String {
+        text.replace("\r\n", "\n")
+    }
+
+    pub fn to_crlf(text: &str) -> String {
+        // Accept already-normalized Windows text without doubling CRs.
+        to_lf(text).replace('\n', "\r\n")
+    }
+
+    #[test]
+    fn normalizes_newlines() {
+        let mixed = "one\r\ntwo\nthree\rfour 🌍\r\n";
+        let lf = "one\ntwo\nthree\rfour 🌍\n";
+        let crlf = "one\r\ntwo\r\nthree\rfour 🌍\r\n";
+        assert_eq!(to_lf(mixed), lf);
+        assert_eq!(to_crlf(mixed), crlf);
+        assert_eq!(to_lf(crlf), lf);
+        assert_eq!(to_crlf(lf), crlf);
+        assert_eq!(to_crlf(crlf), crlf);
+        assert_eq!(to_lf(""), "");
+        assert_eq!(to_crlf(""), "");
     }
 }
 
@@ -153,13 +204,29 @@ pub struct ClipboardSession {
 
 impl ClipboardSession {
     pub fn start(enabled: bool) -> Self {
+        Self::start_with(enabled, system_clipboard)
+    }
+
+    pub fn start_with(
+        enabled: bool,
+        open: impl FnOnce() -> anyhow::Result<Box<dyn Clipboard>> + Send + 'static,
+    ) -> Self {
+        Self::start_guarded(enabled, open, || true)
+    }
+
+    /// Recheck at the platform write, which can follow the network receive.
+    pub fn start_guarded(
+        enabled: bool,
+        open: impl FnOnce() -> anyhow::Result<Box<dyn Clipboard>> + Send + 'static,
+        connected: impl Fn() -> bool + Send + 'static,
+    ) -> Self {
         let (incoming, mut commands) = watch::channel(None::<ClipboardData>);
         let (updates, outgoing) = watch::channel(None);
         if enabled {
             let spawn = std::thread::Builder::new()
                 .name("clipboard-sync".into())
                 .spawn(move || {
-                    let mut clipboard = match system_clipboard() {
+                    let mut clipboard = match open() {
                         Ok(clipboard) => clipboard,
                         Err(error) => {
                             tracing::warn!(%error, "clipboard sharing unavailable");
@@ -169,7 +236,7 @@ impl ClipboardSession {
                     let mut sync = ClipboardSync::new(clipboard.change_count());
                     let mut next_poll = Instant::now() + POLL_INTERVAL;
                     loop {
-                        if updates.is_closed() {
+                        if updates.is_closed() || !connected() {
                             break;
                         }
                         match commands.has_changed() {
@@ -179,6 +246,7 @@ impl ClipboardSession {
                                 if let Some(data) = data {
                                     let (kind, size) = (data.kind, data.data.len());
                                     if let Some(content) = ClipboardContent::from_data(data) {
+                                        if !connected() { break; }
                                         sync.receive(clipboard.as_mut(), content);
                                         tracing::info!(?kind, size, "clipboard received");
                                     }
@@ -247,6 +315,30 @@ mod tests {
     }
     fn text(s: &str) -> ClipboardContent {
         ClipboardContent::Text(s.into())
+    }
+
+    #[test]
+    fn queued_write_is_discarded_when_connection_closes() {
+        use std::sync::mpsc::{channel, Sender};
+        struct RecordWrites(Sender<()>);
+        impl Clipboard for RecordWrites {
+            fn read(&mut self) -> Option<ClipboardContent> { None }
+            fn change_count(&mut self) -> u64 { 0 }
+            fn write(&mut self, _: &ClipboardContent) { self.0.send(()).unwrap(); }
+        }
+        for open in [true, false] {
+            let (writes, received) = channel();
+            let (ready, waiting) = channel();
+            let session = ClipboardSession::start_guarded(true, move || {
+                waiting.recv().unwrap();
+                Ok(Box::new(RecordWrites(writes)))
+            }, move || open);
+            session.receive(text("fixture").into_data());
+            ready.send(()).unwrap();
+            let result = received.recv_timeout(Duration::from_secs(2));
+            if open { assert!(result.is_ok()); }
+            else { assert_eq!(result, Err(std::sync::mpsc::RecvTimeoutError::Disconnected)); }
+        }
     }
 
     #[test]

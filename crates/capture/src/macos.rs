@@ -37,6 +37,7 @@ const PIXEL_FORMAT_BGRA: i32 = 0x42475241; // 'BGRA'
 /// kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ('420v', NV12).
 const PIXEL_FORMAT_NV12_VIDEO: i32 = 0x34323076;
 const FRAME_STATUS_COMPLETE: i32 = 0; // kCGDisplayStreamFrameStatusFrameComplete
+const FRAME_STATUS_STOPPED: i32 = 3; // kCGDisplayStreamFrameStatusStopped
 const IOSURFACE_LOCK_READ_ONLY: u32 = 1;
 /// Surfaces in the stream's pool. We can hold up to five at once (the last
 /// frame, a pending newer one, the one being encoded, and the fast-lane
@@ -141,6 +142,7 @@ extern "C" {
 
 // libdispatch ships in libSystem, which every binary links.
 extern "C" {
+    fn dispatch_release(object: DispatchQueueT);
     fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> DispatchQueueT;
 }
 
@@ -217,6 +219,11 @@ pub fn describe_displays() -> Vec<String> {
         lines.sort_by_key(|(is_main, _)| !is_main);
         lines.into_iter().map(|(_, line)| line).collect()
     }
+}
+
+/// Check the calling process without presenting a permission request.
+pub fn screen_capture_granted() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() != 0 }
 }
 
 /// Check (and if needed, request) the Screen Recording permission. Returns
@@ -438,9 +445,28 @@ impl std::fmt::Debug for SurfaceFrame {
     }
 }
 
+// CGDisplayStreamStop is asynchronous. The create references belong to
+// the caller until the final stopped callback, which can race with Drop.
+struct StreamResources {
+    stream: CGDisplayStreamRef,
+    queue: DispatchQueueT,
+}
+// Both references may be released on the callback queue.
+unsafe impl Send for StreamResources {}
+impl Drop for StreamResources {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.stream.is_null() { CFRelease(self.stream as _); }
+            dispatch_release(self.queue);
+        }
+    }
+}
+
 #[derive(Default)]
 struct Latest {
     frame: Mutex<Option<VideoFrame>>,
+    stopped: std::sync::atomic::AtomicBool,
+    release_after_stop: Mutex<Option<StreamResources>>,
     ready: Condvar,
     /// Set once the fast lane is on; the capture callback feeds it.
     tiles: Mutex<Option<TileWorker<TileJob>>>,
@@ -450,7 +476,7 @@ struct Latest {
 /// screen changes; `next_frame` re-delivers the last frame at the target fps
 /// when the screen is static so the encoder keeps its cadence.
 pub struct ScreenSource {
-    stream: CGDisplayStreamRef,
+    resources: Option<StreamResources>,
     // Owned so the handler outlives the stream; CG retains its own reference.
     _handler: RcBlock<dyn Fn(i32, u64, *mut c_void, *mut c_void)>,
     latest: Arc<Latest>,
@@ -507,6 +533,13 @@ impl ScreenSource {
                       _display_time: u64,
                       surface: *mut c_void,
                       update: *mut c_void| {
+                    if status == FRAME_STATUS_STOPPED {
+                        latest.stopped.store(true, std::sync::atomic::Ordering::Release);
+                        latest.ready.notify_all();
+                        let pending = latest.release_after_stop.lock().unwrap().take();
+                        drop(pending);
+                        return;
+                    }
                     if status != FRAME_STATUS_COMPLETE || surface.is_null() {
                         return;
                     }
@@ -589,9 +622,10 @@ impl ScreenSource {
             ));
         }
         let properties = CFDictionary::from_CFType_pairs(&properties);
+        let label = CString::new("app.sunna.capture").expect("static label");
+        let queue = unsafe { dispatch_queue_create(label.as_ptr(), std::ptr::null()) };
+        anyhow::ensure!(!queue.is_null(), "Cannot create capture callback queue");
         let stream = unsafe {
-            let label = CString::new("app.sunna.capture").expect("static label");
-            let queue = dispatch_queue_create(label.as_ptr(), std::ptr::null());
             CGDisplayStreamCreateWithDispatchQueue(
                 CGMainDisplayID(),
                 width as usize,
@@ -602,13 +636,13 @@ impl ScreenSource {
                 &*handler as *const block2::Block<_> as *const c_void,
             )
         };
+        let resources = StreamResources { stream, queue };
         anyhow::ensure!(
             !stream.is_null(),
             "CGDisplayStreamCreate failed (is Screen Recording permission granted?)"
         );
         let status = unsafe { CGDisplayStreamStart(stream) };
         if status != 0 {
-            unsafe { CFRelease(stream as _) };
             anyhow::bail!("CGDisplayStreamStart failed: CGError {status}");
         }
         tracing::info!(
@@ -619,7 +653,7 @@ impl ScreenSource {
         );
 
         Ok(Self {
-            stream,
+            resources: Some(resources),
             _handler: handler,
             latest,
             last: None,
@@ -729,8 +763,11 @@ impl FrameSource for ScreenSource {
 
     fn next_frame(&mut self) -> anyhow::Result<VideoFrame> {
         let interval = IDLE_REDELIVERY.max(Duration::from_secs_f64(1.0 / self.fps as f64));
+        let first_frame_deadline = std::time::Instant::now() + Duration::from_secs(8);
         let mut guard = self.latest.frame.lock().unwrap();
         loop {
+            anyhow::ensure!(!self.latest.stopped.load(std::sync::atomic::Ordering::Acquire), "Screen capture stopped. Check Screen Recording permission on the Mac.");
+            anyhow::ensure!(self.last.is_some() || std::time::Instant::now() < first_frame_deadline, "No screen frame arrived. Check the display and Screen Recording permission on the Mac.");
             if let Some(mut frame) = guard.take() {
                 drop(guard);
                 frame.frame_id = self.next_id;
@@ -769,12 +806,26 @@ impl FrameSource for ScreenSource {
     }
 }
 
+mod stop;
+
 impl Drop for ScreenSource {
     fn drop(&mut self) {
         self.latest.tiles.lock().unwrap().take();
-        unsafe {
-            CGDisplayStreamStop(self.stream);
-            CFRelease(self.stream as _);
+        if let Some(resources) = self.resources.take() {
+            // A failed stop offers no completion guarantee. Releasing a live
+            // stream violates Core Graphics' lifetime contract. Give a transient
+            // failure one retry, then let process teardown reclaim the stream.
+            if !stop::stop_requested(
+                || unsafe { CGDisplayStreamStop(resources.stream) == 0 },
+                || self.latest.stopped.load(std::sync::atomic::Ordering::Acquire),
+            ) {
+                tracing::error!("Screen capture could not stop; exiting the host");
+                std::process::exit(1);
+            }
+            let mut pending = self.latest.release_after_stop.lock().unwrap();
+            if !self.latest.stopped.load(std::sync::atomic::Ordering::Acquire) {
+                *pending = Some(resources);
+            }
         }
     }
 }
