@@ -10,8 +10,8 @@ from inventory import JOBS, files, collect
 
 class Publication(unittest.TestCase):
     def test_documented_bootstrap_requires_complete_nonempty_download(self):
-        section = pathlib.Path("README.md").read_text().split("## Updating", 1)[1]
-        script = re.search(r"```sh\n(.*?)\n```", section, re.S).group(1)
+        section = pathlib.Path("README.md").read_text().split("## Get started", 1)[1]
+        script = re.search(r"```sh\n(.*?)\n\s*```", section, re.S).group(1)
         with tempfile.TemporaryDirectory() as temp:
             work = pathlib.Path(temp)
             curl = work / "curl"
@@ -30,7 +30,8 @@ esac
                     env = dict(os.environ, PATH=temp + os.pathsep + os.environ["PATH"],
                                SUNNA_RELEASE_URL="https://fixture.invalid", RESPONSE=response,
                                MARKER=str(marker), TMPDIR=temp)
-                    result = subprocess.run(["sh", "-c", script], env=env, timeout=5)
+                    result = subprocess.run(["sh", "-c", script], env=env, timeout=5, cwd=temp)
+                    (work / "sunna-install.sh").unlink(missing_ok=True)
                     self.assertEqual(result.returncode == 0, response == "complete")
                     self.assertEqual(marker.exists(), response == "complete")
 

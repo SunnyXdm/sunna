@@ -1,6 +1,6 @@
 # Get started with Sunna
 
-Install a host on the computer you want to reach and the app on the device in your hands. One computer can do both jobs. The current installation path is a build from source. Signed downloads are in testing.
+Install a host on the computer you want to reach and the app on the device in your hands. One computer can do both jobs. On Linux with an x86-64 processor there is a signed download. On a Mac, on Android and on ARM Linux you build Sunna from source for now.
 
 ## Share a computer
 

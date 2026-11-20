@@ -17,9 +17,16 @@ its automatic start. The switch also controls a user host configured with
 `sunna-host setup`. A system host that shares the login screen is managed
 by an administrator.
 
-## Build and install
+## Install
 
-Install Git, Rust 1.95 or later, a C/C++ compiler, pkg-config and WebKitGTK 4.1 development files. On x86-64, install NASM too. The script checks for missing tools. Install FFmpeg development files for system video decoding.
+**On an x86-64 computer**, install the signed download. No compiler is needed:
+
+```sh
+curl -fsSL --proto '=https' --proto-redir '=https' https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &&
+  test -s sunna-install.sh && sh sunna-install.sh app
+```
+
+**On ARM, or to build it yourself**, install Git, Rust 1.95 or later, a C/C++ compiler, pkg-config and WebKitGTK 4.1 development files. On x86-64, install NASM too. The script checks for missing tools. Install FFmpeg development files for system video decoding.
 
 ```sh
 git clone https://github.com/SunnyXdm/sunna.git
@@ -29,7 +36,7 @@ scripts/install-app-linux.sh
 
 Open **Sunna** from the application menu.
 
-## Signed installations (in testing)
+## What the download installs
 
 The download needs WebKitGTK 4.1 from your distribution: `libwebkit2gtk-4.1-0`
 on Debian/Ubuntu, `webkit2gtk4.1` on Fedora, or `webkit2gtk-4.1` on Arch. It

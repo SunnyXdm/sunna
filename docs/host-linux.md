@@ -82,9 +82,18 @@ and approve the screen and remote interaction in the portal. Each user grants
 their own permission. Existing per-user desktop and virtual modes require
 no administrator access.
 
-## 2. Build and install
+## 2. Install
 
-Install Git, Rust and a C/C++ compiler, plus NASM on x86-64. As the user who will share the desktop, run:
+**On an x86-64 computer**, install the signed download. No compiler is needed. As the user who will share the desktop, run:
+
+```sh
+curl -fsSL --proto '=https' --proto-redir '=https' https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &&
+  test -s sunna-install.sh && sh sunna-install.sh host
+```
+
+The file it downloads is a short shell script you can read first. It fetches a small helper, checks the helper against a hash written in the script, and the helper checks the release's signature before it installs anything.
+
+**On ARM, or to build it yourself**, install Git, Rust and a C/C++ compiler, plus NASM on x86-64, then run:
 
 ```sh
 git clone https://github.com/SunnyXdm/sunna.git
@@ -94,9 +103,9 @@ scripts/install-host-linux.sh
 
 The script builds the host and runs setup. Pass `--desktop` or `--virtual` to the script to choose explicitly. The setup section below describes the prompts.
 
-### Signed installations (in testing)
+### What the download installs
 
-The planned signed installer needs no Rust toolchain. The host and its helper scripts live under
+The host and its helper scripts live under
 `~/.local/share/sunna/host/versions`; `current` points to the selected version,
 and commands in `~/.local/bin` point through it. The app has a separate
 `sunna/app` directory, so updating one cannot roll back the other.

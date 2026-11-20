@@ -17,7 +17,7 @@ Sunna shows another computer's screen, plays its sound, and sends your keyboard,
 - **Checks it's really your computer.** A link or QR code carries the computer's identity. The app checks it before it sends anything, proves it knows the key without sending the key, and refuses a computer whose identity has changed ([Security](docs/security.md)).
 - **Share a computer with a switch.** On Linux, Settings → Share this computer starts sharing and keeps it on after you close the window. The same switch is written for the Mac and waiting for its first test on one.
 - **Reach it after a restart.** A Linux host can run for the whole machine, so after a reboot you get the login screen and sign in from where you are. Experimental; proven on LightDM and SDDM in test machines.
-- **Updates itself.** Signed releases, a switch between versions that can't half-happen, and a return to the previous version if a new one doesn't start. Built and tested; the first public release hasn't been published yet.
+- **Updates itself.** Signed releases, a switch between versions that can't half-happen, and a return to the previous version if a new one doesn't start. The first release, 0.1.0, is a download for Linux on x86-64; everything else builds from source for now.
 
 ## What runs where
 
@@ -30,22 +30,35 @@ Sunna shows another computer's screen, plays its sound, and sends your keyboard,
 
 ## Get started
 
-Today you build Sunna from source. Each guide has the one script that does it.
+On Linux with an x86-64 processor there is a signed download, and no compiler is needed. On a Mac, on Android and on ARM Linux you build Sunna from source for now; each guide has the one script that does it.
 
 1. **Put both devices on [Tailscale](https://tailscale.com)** (free for personal use). Sunna works on any network you trust, but Tailscale makes your computers reachable from anywhere and keeps everyone else out. Keep a host off the public internet.
-2. **Share a computer**: [Linux](docs/host-linux.md) or [Mac](docs/host-mac.md). When sharing starts you get a **link** and a **QR code**:
+2. **Share a computer**: [Linux](docs/host-linux.md) or [Mac](docs/host-mac.md). On x86-64 Linux, this installs the host:
+   ```sh
+   curl -fsSL --proto '=https' --proto-redir '=https' https://sunna.sunnydx.dev/install.sh -o sunna-install.sh &&
+     test -s sunna-install.sh && sh sunna-install.sh host
+   ```
+   Then `sunna-host setup` starts sharing. You get a **link** and a **QR code**:
    ```
    sunna://100.101.102.103?key=7f3a…&id=Qm9v…
    ```
    The link contains the key that grants access to that computer. Treat it like a password.
-3. **Install the app** on the device you'll use: [Mac](docs/app-mac.md), [Linux](docs/app-linux.md) or [Android](docs/app-android.md).
+3. **Install the app** on the device you'll use: [Mac](docs/app-mac.md), [Linux](docs/app-linux.md) or [Android](docs/app-android.md). On x86-64 Linux, run the command from step 2 with `app` in place of `host`.
 4. **Add the computer** in the app: paste the link, or scan the QR code with your phone. It shows **Ready** when it can be reached. Click or tap it to connect.
 
 ## Updating
 
-Until the first release is published, update the way you installed: `git pull`, then run the same install script again.
+A copy installed from the download updates itself. A host checks for a release once a day and tells you, or installs it by itself if you turned that on; it never restarts under someone who is connected. The app shows which of your computers are out of date and can tell each one to update. From a terminal:
 
-Signed downloads change that. A host checks for a release once a day and tells you, or installs it by itself if you turned that on; it never restarts under someone who is connected. The app shows which of your computers are out of date and can tell each one to update. `sunna-host update --check`, `--yes` and `--rollback` do the same from a terminal. All of this is in the code and [tested](docs/update-verification.md), and waits on that first release.
+```sh
+sunna-host update --check      # is there a newer release?
+sunna-host update --yes        # install it
+sunna-host update --rollback   # go back to the version before
+```
+
+Every release is signed, and a copy of Sunna only installs what that signature covers ([how this was tested](docs/update-verification.md)).
+
+A copy built from source updates the way it was installed: `git pull`, then run the same install script again.
 
 ## Guides
 

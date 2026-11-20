@@ -1,6 +1,6 @@
 # Building from source
 
-For working on Sunna itself. To just install it, follow the guides in the [README](../README.md): prebuilt downloads need no toolchain after the first public release. The source install scripts remain for development.
+For working on Sunna itself. To just install it, follow the guides in the [README](../README.md): the download for x86-64 Linux needs no toolchain. The source install scripts remain for development.
 
 Everything is one Rust workspace:
 
