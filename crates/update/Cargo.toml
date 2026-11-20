@@ -1,0 +1,26 @@
+[package]
+name = "sunna-update"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Never enable in public releases. Requires SUNNA_TEST_PUBLIC_KEY at build time.
+test-key = []
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ring = "0.17"
+ureq = { version = "2", features = ["tls"] }
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+fs2 = "0.4"
+semver = "1"
+tempfile = "3"
+url = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

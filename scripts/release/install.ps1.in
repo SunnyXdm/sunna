@@ -1,0 +1,25 @@
+param([switch]$AutoUpdate)
+$ErrorActionPreference = 'Stop'
+# First install trusts this script and its embedded hash. Obtain it over HTTPS or inspect it before running.
+# Uses an atomic version-pointer file; no symlink privileges required. Untested.
+$originalFeed = $env:SUNNA_UPDATE_URL
+$base = '@BASE_URL@'
+$env:SUNNA_UPDATE_URL = $base
+$work = Join-Path ([IO.Path]::GetTempPath()) ('sunna-upd-' + [Guid]::NewGuid())
+New-Item -ItemType Directory $work | Out-Null
+try {
+  $helper = Join-Path $work 'sunna-update.exe'
+  & curl.exe --proto '=https' --proto-redir '=https' -fLsS "$base/sunna-update-windows-x86_64.exe" -o $helper
+  if ($LASTEXITCODE -ne 0) { throw 'HTTPS helper download failed' }
+  if ((Get-FileHash $helper -Algorithm SHA256).Hash.ToLower() -ne '@WINDOWS_HASH@') { throw 'Installer helper hash mismatch' }
+  $args = @('install', 'host')
+  if ($AutoUpdate) { $args += '--auto-update' }
+  & $helper @args
+  if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
+  $data = if ($env:SUNNA_UPDATE_ROOT) { $env:SUNNA_UPDATE_ROOT } else { Join-Path $env:LOCALAPPDATA 'Sunna' }
+  $root = Join-Path $data 'host'
+  $action = New-ScheduledTaskAction -Execute $env:ComSpec -Argument ('/d /c ""{0}" --source screen"' -f "$root/sunna-host.cmd")
+  $trigger = New-ScheduledTaskTrigger -AtLogOn
+  Register-ScheduledTask -TaskName SunnaHost -Action $action -Trigger $trigger -Force | Out-Null
+  Write-Output 'Installed. Configure a private listen address and host key before sharing. The display driver is installed separately.'
+} finally { $env:SUNNA_UPDATE_URL = $originalFeed; Remove-Item -Recurse -Force $work }

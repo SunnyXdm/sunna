@@ -1,0 +1,112 @@
+#!/bin/sh
+# sunna-linux-system-installer-v1
+# The installer is the trust bootstrap: fetch it through HTTPS (or inspect it).
+# Its pinned helper verifies the release manifest using the compiled public key.
+set -eu
+component=${1:-host}; shift || true
+case "$component" in host|app) ;; *) echo 'usage: install.sh host|app [--auto-update]' >&2; exit 2;; esac
+os=$(uname -s | tr '[:upper:]' '[:lower:]'); [ "$os" != darwin ] || os=macos
+[ "$os" != macos ] || component=app
+arch=$(uname -m); [ "$arch" != arm64 ] || arch=aarch64
+case "$os-$arch" in
+@HASH_CASES@
+  *) echo "No download for $os-$arch" >&2; exit 1;;
+esac
+if [ "$component" = host ] && [ "$os" = linux ] && [ "${1:-}" = --system ]; then
+  shift
+  listen=
+  auto=
+  while [ "$#" != 0 ]; do
+    case "$1" in
+      --listen) shift; listen=${1:?missing listen address};;
+      --auto-update) auto=--auto-update;;
+      *) echo "Unknown system install option: $1" >&2; exit 2;;
+    esac
+    shift
+  done
+  # Migration reads the settings as their owner, never as a sudo helper.
+  legacy="${XDG_CONFIG_HOME:-$HOME/.config}/sunna/host.env"
+  key=; migrate=no; restart=no
+  if [ "$(id -u)" != 0 ] && [ -f "$legacy" ] && grep -qx SUNNA_MODE=desktop "$legacy"; then
+    migrate=yes
+    key=$(sed -n 's/^SUNNA_TOKEN=//p' "$legacy")
+    [ -n "$key" ] || { echo 'The existing desktop key could not be read.' >&2; exit 1; }
+    [ -n "$listen" ] || listen=$(sed -n 's/^SUNNA_LISTEN=//p' "$legacy")
+  fi
+  port=48800
+  if [ "$migrate" = yes ]; then port=$(sed -n 's/^SUNNA_PORT=//p' "$legacy"); port=${port:-48800}; fi
+  if [ -z "$listen" ]; then
+    if command -v tailscale >/dev/null; then listen=tailscale; else listen=lan; fi
+  fi
+  case "$listen" in tailscale|lan|*:*) ;; *) listen="$listen:$port";; esac
+  echo "Installing the signed host in /opt/sunna, root-only settings in /etc/sunna, and the system sunna-host.service. Listening on $listen."
+  echo "Anyone with the sharing key can try passwords at your login screen. Use an authenticated private network."
+  elevate=sudo
+  [ "$(id -u)" != 0 ] || elevate=
+  $elevate /usr/bin/env -i HOME=/root PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -ec '
+    umask 077
+    work=$(mktemp -d /root/.sunna-bootstrap.XXXXXXXX)
+    trap "rm -rf -- \"$work\"" EXIT
+    base=$1; hash=$2; auto=$3
+    curl --proto "@CURL_PROTO@" --proto-redir "=https" -fsSL "$base/sunna-update-linux-$4" -o "$work/helper"
+    [ "$(sha256sum "$work/helper" | cut -d " " -f1)" = "$hash" ] || { echo "Installer helper hash mismatch" >&2; exit 1; }
+    chmod 700 "$work/helper"
+    export SUNNA_UPDATE_ROOT=/opt/sunna SUNNA_UPDATE_URL="$base"
+    "$work/helper" validate-listen "$5" "$6"
+    "$work/helper" install-system host $auto
+  ' sh '@BASE_URL@' "$hash" "$auto" "$arch" "$listen" "$port"
+  trap 'if [ "$restart" = yes ]; then systemctl --user start sunna-host.service; fi' EXIT
+  if [ "$migrate" = yes ] && systemctl --user is-active --quiet sunna-host.service; then
+    restart=yes
+    systemctl --user stop sunna-host.service
+  fi
+  identity=
+  if [ "$migrate" = yes ] && [ -e "${legacy%/*}/host.identity" ]; then
+    identity=$(base64 -w0 < "${legacy%/*}/host.identity")
+    [ -n "$identity" ] || { echo 'The existing desktop identity is empty.' >&2; exit 1; }
+  fi
+  printf '%s\n%s\n%s\n%s\n' "$key" "$listen" "$port" "$identity" |
+    $elevate /usr/bin/env -i HOME=/root PATH=/usr/sbin:/usr/bin:/sbin:/bin /opt/sunna/host/current/share/sunna/system-host.sh setup
+  unset identity
+  restart=no
+  if [ "$migrate" = yes ]; then
+    systemctl --user disable sunna-host.service || true
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/sunna-host.service" "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/sunna-host.desktop" "$legacy" "${legacy%/*}/host.identity"
+    systemctl --user daemon-reload
+  fi
+  echo "System sharing installed. Show the private link with /opt/sunna/host/current/bin/sunna-host link."
+  exit 0
+fi
+umask 077
+install_tmp=${SUNNA_INSTALL_TMPDIR:-$HOME}
+case "$install_tmp" in /*) ;; *) echo 'SUNNA_INSTALL_TMPDIR must be absolute' >&2; exit 1;; esac
+parent=$install_tmp
+while :; do
+  [ -d "$parent" ] && [ ! -L "$parent" ] || { echo 'Unsafe bootstrap directory' >&2; exit 1; }
+  if [ "$os" = macos ]; then attrs=$(stat -f '%u %Lp' "$parent"); else attrs=$(stat -c '%u %a' "$parent"); fi
+  owner=${attrs% *}; mode=${attrs#* }
+  if { [ "$owner" != 0 ] && [ "$owner" != "$(id -u)" ]; } || [ $((0$mode & 022)) != 0 ]; then
+    echo "Unsafe bootstrap directory: $parent" >&2; exit 1
+  fi
+  [ "$parent" != / ] || break
+  parent=$(dirname "$parent")
+done
+work=$(mktemp -d "$install_tmp/.sunna-install.XXXXXXXX")
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+base='@BASE_URL@'
+curl --proto '@CURL_PROTO@' --proto-redir '=https' -fSL "$base/sunna-update-$os-$arch" -o "$work/sunna-update"
+if command -v sha256sum >/dev/null; then actual=$(sha256sum "$work/sunna-update" | cut -d ' ' -f1); else actual=$(shasum -a 256 "$work/sunna-update" | cut -d ' ' -f1); fi
+[ "$actual" = "$hash" ] || { echo 'Installer helper hash mismatch' >&2; exit 1; }
+chmod 755 "$work/sunna-update"
+SUNNA_UPDATE_URL="$base" "$work/sunna-update" install "$component" "$@" || {
+  rc=$?
+  if [ "$rc" = 126 ]; then echo 'Set SUNNA_INSTALL_TMPDIR to a private directory on an executable filesystem.' >&2; fi
+  exit "$rc"
+}
+
+if [ "$component" = host ] && [ "$os" = linux ] && systemctl --user is-active --quiet sunna-host.service 2>/dev/null; then
+  case " $* " in
+    *" --restart "*) "$HOME/.local/bin/sunna-host" migrate-service ;;
+    *) echo "The existing service is running. To switch it to the installed host, run: $HOME/.local/bin/sunna-host migrate-service" ;;
+  esac
+fi
