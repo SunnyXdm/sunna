@@ -1,0 +1,4 @@
+FROM debian:13 AS licenses
+FROM fedora:42
+RUN dnf install -y rpm-build rpm-sign gnupg2 createrepo_c rpmlint cpio
+COPY --from=licenses /usr/share/common-licenses/LGPL-2.1 /usr/local/share/LGPL-2.1

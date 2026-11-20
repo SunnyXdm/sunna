@@ -28,6 +28,10 @@ try{
  await page.eval(`{const old=window.__sunnaMock.commands.machine_statuses;window.__sunnaMock.commands.machine_statuses=async()=>{const all=await old();for(const c of Object.values(all))c.detail='That computer runs a newer Sunna. Update this one.';return all;};}`);
  await page.press('r',2);await page.sleep(250);await page.click('.cap .go');await page.sleep(250);
  await assert(`!document.querySelector('.host-update-sheet') && document.getElementById('toast').textContent.includes('Update this one')`,'A newer host protocol asks to update this app, preserving the direction of the mismatch.');
+ await go('app-update=unmanaged');
+ await page.eval(`{const old=window.__sunnaMock.commands.update_status;window.__sunnaMock.commands.update_status=()=>({...old(),packaged:true,message:"Sunna was installed as a system package. New versions arrive with your system's software updates."});}`);
+ await page.click('#settings-button');await page.sleep(700);
+ await assert(`document.querySelector('.update-state').textContent==='Updated by your system' && document.querySelector('.update-explanation').textContent.includes("your system's software updates.") && !document.querySelector('.update-policy-hint').textContent && document.querySelector('.update-check').disabled && document.querySelector('.app-update-policy').disabled && document.querySelector('.update-restart').hidden`,'Package installs show system update guidance with unavailable controls disabled.');
  writeFileSync(new URL('./design/shots-app/updates-edge-results.json',import.meta.url),JSON.stringify({results,logs:page.logs},null,2));
  console.log(`PASS: ${results.length} compatibility and recovery checks.`);
 }finally{await close();}

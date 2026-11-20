@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+@GUARD@
+if [ ! -e /usr/lib/sunna/repo-key.asc ] && [ ! -e /usr/lib/sunna-host/repo-key.asc ]; then
+  rm -f @SOURCE@ @KEY@
+fi

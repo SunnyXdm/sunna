@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+@GUARD@
+install -d -m 755 "$(dirname @KEY@)" "$(dirname @SOURCE@)"
+tmp=$(mktemp @KEY@.XXXXXX)
+install -m 644 /usr/lib/@PACKAGE@/repo-key.asc "$tmp"
+mv -f "$tmp" @KEY@
+if @FIRST@ && [ ! -e @SOURCE@ ]; then
+  tmp=$(mktemp @SOURCE@.XXXXXX)
+  cat > "$tmp" <<'SOURCE'
+@CONFIG@
+SOURCE
+  chmod 644 "$tmp"
+  mv -f "$tmp" @SOURCE@
+fi
+@NOTICE@

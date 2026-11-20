@@ -58,6 +58,7 @@ export function updateUI({invoke, state, render, openSheet, closeSheet, toast, m
   const failedApp = () => (app?.failed || []).filter(v => newer(v, app?.version)).at(-1);
   function appText() {
     if (!app) return localError ? 'Could not read update status' : 'Checking update status…';
+    if (app.packaged) return 'Updated by your system';
     if (!app.managed) return 'Cannot update this copy';
     if (app.phase === 'downloading') return 'Downloading and verifying…';
     if (checking || app.phase === 'checking') return 'Checking for updates…';
@@ -85,7 +86,7 @@ export function updateUI({invoke, state, render, openSheet, closeSheet, toast, m
       const policy = $(sheet, '.app-update-policy');
       policy.value = app?.policy || 'notify';
       policy.disabled = !app?.managed || busy || app?.policy_locked;
-      text(sheet, '.update-policy-hint', app && !app.managed ? 'Available with a signed download.' : app?.policy_locked ? 'The SUNNA_UPDATE setting controls this choice.' : policy.value === 'off' ? 'No background checks. You can still check here.' : policy.value === 'auto' ? 'A downloaded update takes effect the next time you open Sunna.' : 'Checks daily and downloads in the background. You choose when to restart.');
+      text(sheet, '.update-policy-hint', app?.packaged ? '' : app && !app.managed ? 'Available with a signed download.' : app?.policy_locked ? 'The SUNNA_UPDATE setting controls this choice.' : policy.value === 'off' ? 'No background checks. You can still check here.' : policy.value === 'auto' ? 'A downloaded update takes effect the next time you open Sunna.' : 'Checks daily and downloads in the background. You choose when to restart.');
     }
   }
   async function refresh() {

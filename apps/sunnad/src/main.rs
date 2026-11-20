@@ -341,7 +341,12 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(result) = sunna_update::publication_probe() { return result; }
     if std::env::args().nth(1).as_deref() == Some("update") {
-        let helper = std::env::current_exe()?.with_file_name(format!("sunna-update{}", std::env::consts::EXE_SUFFIX));
+        let exe = std::env::current_exe()?;
+        anyhow::ensure!(
+            !(cfg!(target_os = "linux") && exe.starts_with("/usr")),
+            "This copy was installed as a system package. Update it with your system's software updates (apt or dnf)."
+        );
+        let helper = exe.with_file_name(format!("sunna-update{}", std::env::consts::EXE_SUFFIX));
         anyhow::ensure!(helper.exists(), "This source or system-package install has no updater. Use apt/dnf/pacman, or install a signed download first.");
         let status = std::process::Command::new(helper).args(["update", "host"]).args(std::env::args_os().skip(2)).status()?;
         anyhow::ensure!(status.success(), "update did not complete");

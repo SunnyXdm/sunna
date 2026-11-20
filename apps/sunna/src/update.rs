@@ -31,6 +31,7 @@ pub struct Status {
     state: State,
     version: &'static str,
     managed: bool,
+    packaged: bool,
     message: Option<&'static str>,
     phase: &'static str,
     error: Option<String>,
@@ -78,12 +79,22 @@ pub fn update_status() -> Result<Status, String> {
     let mut state = u.state().map_err(|e| e.to_string())?;
     state.policy = u.policy().map_err(|e| e.to_string())?;
     let managed = u.is_managed_process();
+    let packaged = !managed
+        && cfg!(target_os = "linux")
+        && std::env::current_exe().is_ok_and(|path| path.starts_with("/usr"));
     let p = PROGRESS.lock().map_err(|e| e.to_string())?;
     Ok(Status {
         state,
         version: env!("CARGO_PKG_VERSION"),
         managed,
-        message: if managed { None } else { Some(UNMANAGED) },
+        packaged,
+        message: if managed {
+            None
+        } else if packaged {
+            Some("Sunna was installed as a system package. New versions arrive with your system's software updates.")
+        } else {
+            Some(UNMANAGED)
+        },
         phase: p.phase,
         error: p.error.clone(),
         latest_version: p.latest.clone(),
