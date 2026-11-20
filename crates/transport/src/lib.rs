@@ -4,17 +4,16 @@
 //! media rides QUIC unreliable datagrams (RFC 9221) sent directly by the host
 //! pipeline via [`quinn::Connection::send_datagram`].
 //!
-//! TLS is dev-grade for Milestone 0: the server generates a self-signed
-//! certificate per run; clients either trust it explicitly ([`connect_trusted`],
-//! used by the in-process bench) or skip verification ([`connect_insecure`],
-//! dev CLI only). Real pairing (PIN/QR → pinned peer certificates) is Milestone 2.
+pub mod auth;
+mod identity;
+pub use identity::{load_or_create_key, HostIdentity};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use quinn::{ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sunna_proto::messages::{self, ControlMessage};
 
 pub use quinn;
@@ -31,6 +30,8 @@ const DATAGRAM_RECV_BUFFER: usize = 4 * 1024 * 1024;
 
 #[derive(thiserror::Error, Debug)]
 pub enum TransportError {
+    #[error("{0}")]
+    Authentication(&'static str),
     #[error("tls setup: {0}")]
     Tls(#[from] rustls::Error),
     #[error("certificate generation: {0}")]
@@ -112,10 +113,21 @@ fn transport_config() -> TransportConfig {
     config.keep_alive_interval(Some(KEEP_ALIVE));
     config.datagram_receive_buffer_size(Some(DATAGRAM_RECV_BUFFER));
     config.datagram_send_buffer_size(DATAGRAM_SEND_BUFFER_SIZE);
+    // Probe for larger packets only up to what a 1280-byte path carries
+    // over IPv4 (Tailscale's MTU, and IPv6's minimum). Probing past the
+    // path's MTU just fails to send: Linux ignores that, Windows logs every
+    // failure as a warning. Video datagrams stay at 1200 bytes anyway.
+    let mut mtu = quinn::MtuDiscoveryConfig::default();
+    mtu.upper_bound(MTU_PROBE_LIMIT);
+    config.mtu_discovery_config(Some(mtu));
     config
 }
 
-/// A listening endpoint with a per-run self-signed certificate.
+/// The largest UDP payload MTU discovery tries: 1280 bytes less the IPv4
+/// and UDP headers.
+const MTU_PROBE_LIMIT: u16 = 1280 - 20 - 8;
+
+/// QUIC listener presenting the configured host identity.
 pub struct Server {
     pub endpoint: Endpoint,
     pub cert: CertificateDer<'static>,
@@ -123,15 +135,17 @@ pub struct Server {
 
 impl Server {
     pub fn bind(addr: SocketAddr) -> Result<Self> {
-        let certified = rcgen::generate_simple_self_signed(vec!["sunna".to_string()])?;
-        let cert: CertificateDer<'static> = certified.cert.der().clone();
-        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        Self::with_identity(addr, HostIdentity::generate()?)
+    }
 
+    pub fn with_identity(addr: SocketAddr, identity: HostIdentity) -> Result<Self> {
+        let cert = identity.cert;
+        let key = PrivateKeyDer::from(identity.key);
         let mut tls = rustls::ServerConfig::builder_with_provider(crypto_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_no_client_auth()
             .with_single_cert(vec![cert.clone()], key)?;
-        tls.alpn_protocols = vec![sunna_proto::ALPN.to_vec()];
+        tls.alpn_protocols = vec![auth::ALPN.to_vec(), sunna_proto::ALPN.to_vec()];
 
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
         let mut server_config = ServerConfig::with_crypto(Arc::new(crypto));
@@ -176,13 +190,23 @@ pub async fn connect_trusted(
 /// Connect without verifying the server certificate. Dev tooling only —
 /// encrypts against passive listeners but is trivially MITM-able.
 pub async fn connect_insecure(addr: SocketAddr, server_name: &str) -> Result<ClientConnection> {
+    connect_peer(addr, server_name, None).await
+}
+
+/// A missing pin requires application-level mutual proof before first use.
+pub async fn connect_peer(addr: SocketAddr, server_name: &str, pin: Option<&str>) -> Result<ClientConnection> {
+    let mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let provider = crypto_provider();
     let tls = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification(provider)))
+        .with_custom_certificate_verifier(Arc::new(PeerVerifier(provider, pin.map(str::to_owned), mismatch.clone())))
         .with_no_client_auth();
-    finish_connect(tls, addr, server_name).await
+    let result = finish_connect(tls, addr, server_name).await;
+    if mismatch.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(TransportError::Authentication(auth::IDENTITY_CHANGED));
+    }
+    result
 }
 
 async fn finish_connect(
@@ -190,7 +214,7 @@ async fn finish_connect(
     addr: SocketAddr,
     server_name: &str,
 ) -> Result<ClientConnection> {
-    tls.alpn_protocols = vec![sunna_proto::ALPN.to_vec()];
+    tls.alpn_protocols = vec![auth::ALPN.to_vec(), sunna_proto::ALPN.to_vec()];
     let crypto =
         quinn::crypto::rustls::QuicClientConfig::try_from(tls).map_err(TransportError::Crypto)?;
     let mut client_config = ClientConfig::new(Arc::new(crypto));
@@ -211,17 +235,21 @@ async fn finish_connect(
 }
 
 #[derive(Debug)]
-struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
+struct PeerVerifier(Arc<rustls::crypto::CryptoProvider>, Option<String>, Arc<std::sync::atomic::AtomicBool>);
 
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+impl rustls::client::danger::ServerCertVerifier for PeerVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if self.1.as_ref().is_some_and(|pin| auth::certificate_pin(end_entity).as_ref().ok() != Some(pin)) {
+            self.2.store(true, std::sync::atomic::Ordering::Release);
+            return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::ApplicationVerificationFailure));
+        }
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -265,7 +293,7 @@ pub struct ControlChannel {
 }
 
 impl ControlChannel {
-    /// Client side: open the stream. Must send the first message ([`ControlMessage::Hello`])
+    /// Client side: open the stream. Must send the admission message
     /// promptly — QUIC streams are lazy and the server cannot accept an unopened stream.
     pub async fn open(connection: &Connection) -> Result<Self> {
         let (send, recv) = connection.open_bi().await?;
@@ -351,6 +379,17 @@ impl ControlReceiver {
 mod tests {
     use super::*;
     use bytes::Bytes;
+
+    #[test]
+    fn pinned_server_still_needs_a_valid_handshake_signature() {
+        use rustls::client::danger::ServerCertVerifier;
+        use rustls::internal::msgs::codec::Codec;
+        let id = HostIdentity::generate().unwrap();
+        let verifier = PeerVerifier(crypto_provider(), Some(id.pin().unwrap()), Default::default());
+        // ECDSA P-256, followed by a one-byte invalid signature.
+        let sig = rustls::DigitallySignedStruct::read_bytes(&[4, 3, 0, 1, 0]).unwrap();
+        assert!(verifier.verify_tls13_signature(b"fixture", &id.cert, &sig).is_err());
+    }
 
     #[tokio::test]
     async fn loopback_control_and_datagram() {

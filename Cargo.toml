@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/update",
     "crates/proto",
     "crates/transport",
     "crates/capture",
@@ -44,6 +45,7 @@ edition = "2021"
 publish = false
 
 [workspace.dependencies]
+sunna-update = { path = "crates/update" }
 sunna-proto = { path = "crates/proto" }
 sunna-transport = { path = "crates/transport" }
 sunna-viewer = { path = "crates/viewer" }

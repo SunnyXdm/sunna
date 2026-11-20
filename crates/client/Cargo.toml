@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 serde.workspace = true
@@ -16,3 +17,16 @@ sunna-proto.workspace = true
 sunna-transport.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[[example]]
+name = "login-test"
+path = "../../tools/login-test/client.rs"
+
+[dependencies.fs2]
+version = "0.4"
+
+[dependencies.tempfile]
+version = "3"
+
+[dependencies.form_urlencoded]
+version = "1"

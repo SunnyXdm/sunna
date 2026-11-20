@@ -17,3 +17,19 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+
+[dependencies.ring]
+version = "0.17"
+
+[dependencies.webpki]
+package = "rustls-webpki"
+version = "0.103"
+
+[dependencies.base64]
+version = "0.22"
+
+[dependencies.tempfile]
+version = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

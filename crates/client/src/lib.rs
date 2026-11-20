@@ -16,6 +16,7 @@
 
 pub mod keys;
 pub mod reach;
+pub mod auth;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -120,6 +121,7 @@ impl std::fmt::Debug for Wake {
 /// Connection options for [`run_client`].
 #[derive(Debug, Clone, Default)]
 pub struct ClientOptions {
+    pub trust: auth::Trust,
     /// See [`Wake`].
     pub wake: Option<Wake>,
     /// Share text and images with the host during this session.
@@ -144,6 +146,7 @@ pub struct ClientOptions {
 /// The session's latest per-second numbers, for a stats overlay.
 #[derive(Debug, Clone, Default)]
 pub struct LiveStats {
+    pub unverified: bool,
     pub epoch: u8,
     pub fast_lane: bool,
     /// The stream's frame rate as configured (`fps` below is measured).
@@ -174,6 +177,10 @@ pub struct LiveStats {
     /// that moves on with every change.
     pub cursor: Option<Arc<sunna_proto::messages::CursorShape>>,
     pub cursor_changes: u64,
+    /// Whole seconds in a row with no picture (0 while frames arrive).
+    /// Hosts send a still screen again every ~100 ms, so this means the
+    /// host has nothing to show (`host.fps` is 0) or the frames are lost.
+    pub no_picture_s: u32,
 }
 
 impl LiveStats {
@@ -187,6 +194,9 @@ impl LiveStats {
             format!("{} {}×{}", self.codec.to_uppercase(), self.width, self.height),
             format!("{} fps", self.fps),
         ];
+        if self.unverified {
+            parts.insert(0, "Not fully verified".into());
+        }
         match &self.host {
             Some(host) => parts.push(format!("{:.1} / {:.0} Mbps", self.mbps, host.target_kbps as f64 / 1000.0)),
             None => parts.push(format!("{:.1} Mbps", self.mbps)),
@@ -226,6 +236,11 @@ impl LiveStats {
     }
 }
 
+// A successful receive can come from a queue populated before the close.
+fn while_connected<T>(connection: &Connection, queued: T) -> Option<T> {
+    connection.close_reason().is_none().then_some(queued)
+}
+
 fn clipboard_paused(live: &Option<Arc<std::sync::Mutex<LiveStats>>>) -> bool {
     live.as_ref()
         .is_some_and(|live| live.lock().unwrap().clipboard_paused)
@@ -233,6 +248,9 @@ fn clipboard_paused(live: &Option<Arc<std::sync::Mutex<LiveStats>>>) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeResult {
+    pub identity: Option<String>,
+    pub not_sharing: Option<String>,
+    pub update: Option<String>,
     pub name: String,
     pub version: u16,
     pub busy: bool,
@@ -257,7 +275,7 @@ fn state_dir() -> Option<std::path::PathBuf> {
     STATE_DIR
         .get()
         .cloned()
-        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".sunna")))
+        .or_else(|| std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|home| std::path::Path::new(&home).join(".sunna")))
 }
 
 /// This computer's id as a viewer: random, made once and kept in
@@ -294,6 +312,54 @@ async fn left(leave: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     }
 }
 
+/// A system host closes this transport before replacing its session worker.
+pub fn session_changed(connection: &Connection) -> bool {
+    matches!(connection.close_reason(), Some(sunna_transport::quinn::ConnectionError::ApplicationClosed(close))
+        if close.error_code.into_inner() == 0 && close.reason.as_ref() == b"session changed")
+}
+
+#[derive(Debug)]
+struct Refused(String);
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "host refused the session: {}", self.0)
+    }
+}
+impl std::error::Error for Refused {}
+
+/// Hello races with worker replacement even if a preceding probe was ready.
+pub fn handoff_pending(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Refused>().is_some_and(|e| {
+        matches!(e.0.as_str(), "Its desktop isn't running."
+            | "Nobody is logged in and the login screen can't be shared on this system."
+            | "Waiting for permission on that computer."
+            | "Its desktop doesn't support remote input."
+            | "Sunna can't capture its X11 display."
+            | "Sunna can't open its X11 display."
+            | "Its display needs 24-bit or 32-bit color."
+            | "Host is restarting for an update; reconnect shortly."
+            | "Multiple graphical sessions for this account. Sign out of the other session to share."
+            | "busy: the previous session is still ending")
+    })
+}
+
+/// The caller uses Hello on this fresh connection to test readiness and
+/// negotiate the replacement screen in one round trip.
+pub async fn reconnect_for_handoff(addr: SocketAddr, name: &str, trust: &auth::Trust)
+    -> anyhow::Result<sunna_transport::ClientConnection>
+{
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        match sunna_transport::connect_peer(addr, name, trust.current_pin().await?.as_deref()).await {
+            Err(sunna_transport::TransportError::Connection(
+                sunna_transport::quinn::ConnectionError::TimedOut
+                | sunna_transport::quinn::ConnectionError::Reset,
+            )) => continue,
+            result => return result.map_err(Into::into),
+        }
+    }
+}
+
 /// Query a peer without starting capture or taking its viewer slot.
 pub async fn probe(
     addr: SocketAddr,
@@ -301,14 +367,14 @@ pub async fn probe(
     token: &str,
     timeout: Duration,
 ) -> anyhow::Result<ProbeResult> {
+    probe_with(addr, server_name, token, timeout, &auth::Trust::default()).await
+}
+
+pub async fn probe_with(addr: SocketAddr, server_name: &str, token: &str, timeout: Duration, trust: &auth::Trust) -> anyhow::Result<ProbeResult> {
     tokio::time::timeout(timeout, async {
-        let client = sunna_transport::connect_insecure(addr, server_name).await?;
+        let client = trust.connect(addr, server_name).await?;
         let mut control = ControlChannel::open(&client.connection).await?;
-        control
-            .send(&ControlMessage::Probe {
-                token: token.into(),
-            })
-            .await?;
+        let identity = trust.request(&client.connection, &mut control, token, |token| ControlMessage::Probe { token }).await?;
         let mut result = match control.recv().await? {
             ControlMessage::ProbeAck {
                 name,
@@ -316,29 +382,32 @@ pub async fn probe(
                 busy,
                 token_ok,
             } => ProbeResult {
+                identity,
                 name,
                 version,
                 busy,
                 token_ok,
                 viewer: None,
+                not_sharing: None,
+                update: None,
                 about: None,
                 rtt: Duration::ZERO,
             },
-            other => anyhow::bail!("expected ProbeAck, got {other:?}"),
+            _ => anyhow::bail!("expected ProbeAck"),
         };
-        // Newer hosts follow a matching token with HostInfo; older ones have
-        // already finished the stream, so this returns at once.
         if result.token_ok {
-            let next = tokio::time::timeout(Duration::from_millis(500), control.recv()).await;
-            if let Ok(Ok(ControlMessage::HostInfo(about))) = next {
-                result.about = Some(about);
-                if result.busy {
-                    let next = tokio::time::timeout(Duration::from_millis(500), control.recv()).await;
-                    if let Ok(Ok(ControlMessage::InUse { viewer, device })) = next {
-                        result.viewer = Some((viewer, device));
+            // recv is cancellation-unsafe. A timeout ends the entire tail read.
+            let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                for _ in 0..4 {
+                    match control.recv().await {
+                        Ok(ControlMessage::HostInfo(about)) => result.about = Some(about),
+                        Ok(ControlMessage::InUse { viewer, device }) => result.viewer = Some((viewer, device)),
+                        Ok(ControlMessage::UpdateInfo(info)) => result.update = Some(info),
+                        Ok(ControlMessage::NotSharing { detail }) => { result.not_sharing = Some(detail); break; }
+                        _ => break,
                     }
                 }
-            }
+            }).await;
         }
         result.rtt = client.connection.rtt();
         client.connection.close(0u32.into(), b"probe complete");
@@ -391,6 +460,20 @@ struct DecodeCounters {
     skipped_awaiting_keyframe: AtomicU64,
     gap_lost: AtomicU64,
     decode_errors: AtomicU64,
+}
+
+struct StreamWorkers {
+    reader: tokio::task::JoinHandle<()>,
+    tile_reader: tokio::task::JoinHandle<()>,
+    decoder: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for StreamWorkers {
+    fn drop(&mut self) {
+        self.reader.abort();
+        self.tile_reader.abort();
+        if let Some(decoder) = self.decoder.take() { let _ = decoder.join(); }
+    }
 }
 
 fn spawn_decoder(
@@ -503,10 +586,10 @@ pub async fn run_client(
     mut input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>,
 ) -> anyhow::Result<BenchReport> {
     let mut control = ControlChannel::open(&connection).await?;
-    let hello = ControlMessage::Hello {
+    let hello = |token| ControlMessage::Hello {
         version: sunna_proto::PROTOCOL_VERSION,
         name: options.name.clone(),
-        token: options.token.clone(),
+        token,
         stream: options.stream.clone(),
         device: options.device.clone(),
     };
@@ -514,7 +597,7 @@ pub async fn run_client(
     // the session hanging before it starts.
     let reply = tokio::select! {
         reply = tokio::time::timeout(Duration::from_secs(10), async {
-            control.send(&hello).await?;
+            options.trust.request(&connection, &mut control, &options.token, hello).await?;
             Ok::<_, anyhow::Error>(control.recv().await?)
         }) => reply.map_err(|_| anyhow::anyhow!("no answer from the host for 10 seconds"))??,
         _ = left(&mut options.leave) => anyhow::bail!("left before the session started"),
@@ -547,8 +630,8 @@ pub async fn run_client(
                 codec,
             }
         }
-        ControlMessage::Refused { reason } => anyhow::bail!("host refused the session: {reason}"),
-        other => anyhow::bail!("expected HelloAck, got {other:?}"),
+        ControlMessage::Refused { reason } => return Err(Refused(reason).into()),
+        _ => anyhow::bail!("expected HelloAck"),
     };
     tracing::info!(
         host = %info.host_name,
@@ -560,7 +643,9 @@ pub async fn run_client(
         "session established"
     );
     if let Some(live) = &options.live {
-        live.lock().unwrap().stream_changed(&info);
+        let mut stats = live.lock().unwrap();
+        stats.unverified = !sunna_transport::auth::supports_proof(&connection);
+        stats.stream_changed(&info);
     }
     let decoder = make_decoder(&info.codec, info.width, info.height)?;
 
@@ -592,6 +677,9 @@ pub async fn run_client(
     let (event_tx, mut decode_events) = tokio::sync::mpsc::unbounded_channel();
     let decode_thread =
         spawn_decoder(decoder, frame_rx, event_tx, Arc::clone(&counters), on_frame)?;
+    // Declare the sender after the guard so even a failed control send closes
+    // the decoder queue before joining the old stream's workers.
+    let workers = StreamWorkers { reader, tile_reader, decoder: Some(decode_thread) };
     let mut frame_tx = Some(frame_tx);
 
     let mut reassembler = Reassembler::new();
@@ -619,6 +707,7 @@ pub async fn run_client(
 
     // Per-second progress window, also the receiver-report cadence.
     let mut window_frames: u64 = 0;
+    let mut no_picture_s: u32 = 0;
     let mut window_bytes: u64 = 0;
     let mut window_samples: Vec<u64> = Vec::new();
     let mut window_decode_us: Vec<u64> = Vec::new();
@@ -647,7 +736,11 @@ pub async fn run_client(
     );
     tokio::pin!(deadline_sleep);
     let mut input_open = true;
-    let mut clipboard = sunna_clipboard::ClipboardSession::start(options.clipboard);
+    let clipboard_connection = connection.clone();
+    let mut clipboard = sunna_clipboard::ClipboardSession::start_guarded(
+        options.clipboard, sunna_clipboard::system_clipboard,
+        move || clipboard_connection.close_reason().is_none(),
+    );
 
     if let Some(requests) = &mut options.stream_requests {
         requests.mark_changed();
@@ -713,6 +806,7 @@ pub async fn run_client(
                 });
             }
             Some(data) = clipboard_rx.recv() => {
+                let Some(data) = while_connected(&connection, data) else { break };
                 if !clipboard_paused(&options.live) {
                     clipboard.receive(data);
                 }
@@ -724,7 +818,7 @@ pub async fn run_client(
                 }
             }
             datagram = connection.read_datagram() => {
-                let Ok(datagram) = datagram else { break };
+                let Some(datagram) = datagram.ok().and_then(|data| while_connected(&connection, data)) else { break };
                 if let Some((header, payload)) = MediaHeader::parse(&datagram) {
                     if header.flags & FLAG_AUDIO != 0 {
                         if let (Some(player), Some((current, previous))) = (player.as_mut(), parse_audio(payload)) {
@@ -890,7 +984,7 @@ pub async fn run_client(
                             }
                         }
                     }
-                    Some(other) => tracing::debug!(?other, "unexpected control message"),
+                    Some(_) => tracing::debug!("unexpected control message"),
                     None => break,
                 }
             }
@@ -916,6 +1010,8 @@ pub async fn run_client(
                 window_recovered_base = reassembler.recovered_chunks;
                 let window = Percentiles::from_samples(std::mem::take(&mut window_samples));
                 let decode = Percentiles::from_samples(std::mem::take(&mut window_decode_us));
+                let had_no_picture = no_picture_s > 0;
+                no_picture_s = if window_frames == 0 { no_picture_s + 1 } else { 0 };
                 control.send(&ControlMessage::ReceiverReport {
                     frames_complete: window_frames.min(u32::MAX as u64) as u32,
                     frames_dropped: dropped.min(u32::MAX as u64) as u32,
@@ -927,6 +1023,13 @@ pub async fn run_client(
                     live.codec = info.codec.clone();
                     (live.width, live.height) = (info.width, info.height);
                     live.fps = window_frames as u32;
+                    live.no_picture_s = no_picture_s;
+                    // No frames wake the window meanwhile: say it ourselves.
+                    if no_picture_s > 0 || had_no_picture {
+                        if let Some(wake) = &options.wake {
+                            (wake.0)();
+                        }
+                    }
                     live.mbps = window_bytes as f64 * 8.0 / 1_000_000.0;
                     live.latency_ms = window
                         .as_ref()
@@ -1031,11 +1134,12 @@ pub async fn run_client(
     }
 
     // Close now rather than leave the host to time the connection out.
-    connection.close(0u32.into(), b"bye");
-    reader.abort();
-    tile_reader.abort();
+    // Quinn replaces the peer's close reason with LocallyClosed on close().
+    if connection.close_reason().is_none() {
+        connection.close(0u32.into(), b"bye");
+    }
     drop(frame_tx);
-    let _ = decode_thread.join();
+    drop(workers);
     if let Some(error) = stream_error {
         anyhow::bail!("decoder reconfigure failed: {error}");
     }
@@ -1125,7 +1229,60 @@ async fn read_tiles(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn handoff_retries_a_cold_backend_and_preserves_authentication_errors() {
+        for detail in ["Its desktop isn't running.", "Sunna can't capture its X11 display."] {
+            assert!(super::handoff_pending(&super::Refused(detail.into()).into()));
+        }
+        assert!(!super::handoff_pending(&super::Refused("wrong session token".into()).into()));
+    }
     use super::*;
+
+    #[tokio::test]
+    async fn queued_datagram_loses_eligibility_at_close() {
+        let host = sunna_transport::Server::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let (client, peer) = tokio::join!(
+            sunna_transport::connect_peer(host.local_addr().unwrap(), "sunna", None),
+            host.accept(),
+        );
+        let client = client.unwrap();
+        let conn = client.connection;
+        let peer = peer.unwrap().unwrap();
+        peer.send_datagram(bytes::Bytes::from_static(b"fixture")).unwrap();
+        let queued = tokio::time::timeout(Duration::from_secs(5), conn.read_datagram()).await.unwrap().unwrap();
+        assert!(while_connected(&conn, queued.clone()).is_some());
+        conn.close(0u32.into(), b"session changed");
+        assert!(while_connected(&conn, queued).is_none());
+    }
+
+    #[tokio::test]
+    async fn remote_close_survives_stream_cleanup() {
+        let server = sunna_transport::Server::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = server.local_addr().unwrap();
+        let serving = tokio::spawn(async move {
+            let conn = server.accept().await.unwrap().unwrap();
+            let mut control = ControlChannel::accept(&conn).await.unwrap();
+            let ControlMessage::AuthProof { nonce, proof } = control.recv().await.unwrap() else { panic!("Expected proof") };
+        let (nonce, proof) = sunna_transport::auth::answer(&conn, &"01".repeat(16), &nonce, &proof.0).unwrap();
+        control.send(&ControlMessage::AuthProofAck { nonce: nonce.to_vec(), proof: sunna_proto::messages::Proof(proof) }).await.unwrap();
+        assert!(matches!(control.recv().await.unwrap(), ControlMessage::Hello {token, ..} if token.is_empty()));
+            control.send(&ControlMessage::HelloAck {
+                version: 8, name: "fixture".into(), width: 32, height: 32, fps: 1,
+                codec: "raw".into(), fast_lane: false, audio: false,
+            }).await.unwrap();
+            control.recv().await.unwrap();
+            conn.close(0u32.into(), b"session changed");
+            server.endpoint.wait_idle().await;
+        });
+        let client = sunna_transport::connect_insecure(addr, "sunna").await.unwrap();
+        let watched = client.connection.clone();
+        let (_tx, input) = tokio::sync::mpsc::unbounded_channel();
+        let _ = tokio::time::timeout(Duration::from_secs(8),
+            run_client(client.connection, ClientOptions { token: "01".repeat(16), ..Default::default() }, |_| {}, |_| {}, input)
+        ).await.unwrap();
+        assert!(session_changed(&watched));
+        serving.await.unwrap();
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -1234,4 +1391,35 @@ mod tests {
             1
         );
     }
+}
+
+/// Optional management connection, gated by the host's advertised capability.
+/// Older hosts get only an ordinary probe, never an unknown command.
+pub async fn host_update(addr: SocketAddr, token: &str, action: &str) -> anyhow::Result<String> {
+    host_update_with(addr, token, action, &auth::Trust::default()).await
+}
+
+pub async fn host_update_with(addr: SocketAddr, token: &str, action: &str, trust: &auth::Trust) -> anyhow::Result<String> {
+    let info = probe_with(addr, "sunna", token, Duration::from_secs(3), trust).await?;
+    let trust = auth::Trust { identity: info.identity.clone().or(trust.identity.clone()), ..trust.clone() };
+    anyhow::ensure!(info.token_ok, "wrong host key");
+    anyhow::ensure!(info.update.is_some(), "This host predates remote updates; install a signed download on it first.");
+    let mut action = action.to_owned();
+    if action == "update" {
+        let status: serde_json::Value = serde_json::from_str(info.update.as_deref().unwrap())?;
+        anyhow::ensure!(status["state"]["minimum_protocol"].as_u64().unwrap_or(0) <= u64::from(sunna_proto::PROTOCOL_VERSION), "update the app first");
+        if status["versioned_request"] == true {
+            action = format!("update/{}", sunna_proto::PROTOCOL_VERSION);
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let client = trust.connect(addr, "sunna").await?;
+        let mut control = ControlChannel::open(&client.connection).await?;
+        trust.request(&client.connection, &mut control, token, |token| ControlMessage::UpdateRequest { token, action }).await?;
+        match control.recv().await? {
+            ControlMessage::UpdateInfo(info) => Ok(info),
+            ControlMessage::Refused { reason } => anyhow::bail!(reason),
+            _ => anyhow::bail!("unexpected update reply"),
+        }
+    }).await?
 }

@@ -8,14 +8,39 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+/// The link printed by a Mac host and encoded in its QR code.
+pub fn sharing_link(address: impl std::fmt::Display, key: &str, identity: Option<&str>) -> String {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("key", key);
+    if let Some(pin) = identity { query.append_pair("id", pin); }
+    format!("sunna://{address}?{}", query.finish())
+}
+
+/// Read the pin before reducing a sharing link to a socket address.
+pub fn link_identity(address: &str) -> Result<Option<String>, String> {
+    let Some(link) = address.trim().strip_prefix("sunna://") else { return Ok(None) };
+    let query = link.split('#').next().and_then(|v| v.split_once('?')).map(|(_, v)| v).unwrap_or("");
+    let mut pins = form_urlencoded::parse(query.as_bytes()).filter(|(field, _)| field == "id");
+    let Some((_, pin)) = pins.next() else { return Ok(None) };
+    if pins.next().is_some() || !sunna_transport::auth::valid_pin(&pin) { return Err("Invalid computer identity.".into()); }
+    Ok(Some(pin.into_owned()))
+}
+
 pub const DEFAULT_PORT: u16 = 48800;
-const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+// A cold login manager can compete with QUIC for CPU during boot.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One look at a machine.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Check {
-    /// ready | busy | wrong-key | update-needed | unreachable | not-found | invalid
+    #[serde(default)]
+    pub identity: Option<String>,
+    #[serde(default)]
+    pub unverified: bool,
+    /// Optional JSON update state from a capable host; absent on older builds.
+    pub update: Option<serde_json::Value>,
+    /// ready | not-sharing | busy | identity-changed | wrong-key | update-needed | unreachable | not-found | invalid
     pub state: String,
     /// The host's own name; only told when the key matched.
     pub name: String,
@@ -46,6 +71,7 @@ impl Check {
 /// "host", "host:port", "[v6]:port", a bare IPv6 address, or a
 /// `sunna://host[:port]?key=...` link, into host and port.
 pub fn parse(address: &str) -> Result<(String, u16), String> {
+    link_identity(address)?;
     let mut rest = address.trim();
     if let Some(stripped) = rest.strip_prefix("sunna://") {
         rest = stripped;
@@ -110,13 +136,28 @@ pub async fn resolve(address: &str) -> Result<SocketAddr, Check> {
 
 /// Is a Sunna host there, does the key fit, and what is it?
 pub async fn check(address: &str, key: &str) -> Check {
+    check_with(address, key, &super::auth::Trust::default()).await
+}
+
+pub async fn check_with(address: &str, key: &str, trust: &super::auth::Trust) -> Check {
+    let mut trust = trust.clone();
+    match link_identity(address) {
+        Ok(Some(pin)) if trust.identity.as_ref().is_some_and(|expected| expected != &pin) =>
+            return Check::failed("identity-changed", sunna_transport::auth::IDENTITY_CHANGED),
+        Ok(Some(pin)) => trust.identity = Some(pin),
+        Ok(None) => {}
+        Err(e) => return Check::failed("invalid", e),
+    }
     let addr = match resolve(address).await {
         Ok(addr) => addr,
         Err(check) => return check,
     };
     let resolved = addr.to_string();
-    let result = crate::probe(addr, "sunna", key.trim(), PROBE_TIMEOUT).await;
+    let result = crate::probe_with(addr, "sunna", key.trim(), PROBE_TIMEOUT, &trust).await;
     let mut check = match result {
+        Err(e) if e.to_string() == super::auth::OLD_HOST => Check::failed("update-needed", super::auth::OLD_HOST),
+        Err(e) if e.to_string() == super::auth::WRONG_KEY || e.to_string().starts_with("Run sunna-host") => Check::failed("wrong-key", e.to_string()),
+        Err(e) if e.to_string() == sunna_transport::auth::IDENTITY_CHANGED || e.to_string().contains("proof didn't match") => Check::failed("identity-changed", sunna_transport::auth::IDENTITY_CHANGED),
         Err(_) => Check::failed(
             "unreachable",
             format!("Nothing answered at {resolved}. Is Sunna sharing on that computer?"),
@@ -131,6 +172,8 @@ pub async fn check(address: &str, key: &str) -> Check {
                 "update-needed"
             } else if !probe.token_ok {
                 "wrong-key"
+            } else if probe.not_sharing.is_some() {
+                "not-sharing"
             } else if probe.busy && !yours {
                 "busy"
             } else {
@@ -146,12 +189,16 @@ pub async fn check(address: &str, key: &str) -> Check {
                 }
                 "update-needed" => "That computer runs an older Sunna. Update it.".to_string(),
                 "wrong-key" => "Sunna is there, but the key doesn't match.".to_string(),
+                "not-sharing" => probe.not_sharing.unwrap_or_default(),
                 "busy" if !viewer.is_empty() => format!("{viewer} is connected to it right now."),
                 "busy" => "Someone is connected to it right now.".to_string(),
                 _ => String::new(),
             };
             let about = probe.about.unwrap_or_default();
             Check {
+                unverified: probe.identity.is_none() && matches!(state, "ready" | "busy"),
+                identity: probe.identity,
+                update: probe.update.and_then(|s| serde_json::from_str(&s).ok()),
                 state: state.into(),
                 name: probe.name,
                 os: about.os,
@@ -173,6 +220,19 @@ pub async fn check(address: &str, key: &str) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_preserve_the_pin_or_fail_closed() {
+        let pin = sunna_transport::auth::encode_pin(&[42; 32]);
+        let link = sharing_link("[::1]:48810", "test+&", Some(&pin));
+        assert!(link.contains("key=test%2B%26&id="));
+        assert_eq!(link_identity(&link).unwrap().as_ref(), Some(&pin));
+        assert_eq!(parse(&link).unwrap(), ("::1".into(), 48810));
+        assert!(link_identity("sunna://host?key=example").unwrap().is_none());
+        for tail in ["id", "id=", "id=short", "%69d=short", "id=a&id=b"] {
+            assert!(parse(&format!("sunna://host?{tail}")).is_err());
+        }
+    }
 
     #[test]
     fn addresses() {

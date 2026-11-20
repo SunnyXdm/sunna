@@ -2,6 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Proof(pub Vec<u8>);
+
+impl std::fmt::Debug for Proof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
 /// Requested changes; absent fields keep the current value or host default.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StreamSettings {
@@ -19,12 +28,12 @@ pub struct StreamSettings {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMessage {
-    /// First message from the client after the control stream opens.
+    /// Open a session after authentication, or as the first legacy message.
     Hello {
         version: u16,
         /// This viewer's computer, as people call it ("Sunny's MacBook Air").
         name: String,
-        /// Shared session token; the host refuses clients that don't match.
+        /// Empty after mutual proof. Legacy clients send the sharing key here.
         token: String,
         stream: StreamSettings,
         /// This viewer's computer's id (see `InUse`); empty if unknown.
@@ -109,6 +118,16 @@ pub enum ControlMessage {
     Resend { epoch: u8, frame_id: u64, chunks: Vec<u16> },
     /// Host: the pointer's shape changed.
     Cursor(CursorShape),
+    /// Optional probe tail. Old readers stop after HostInfo/InUse. Never sent
+    /// on a session stream, where unknown postcard variants are fatal.
+    UpdateInfo(String),
+    /// Only sent on a new connection after UpdateInfo advertised support.
+    /// No URL/path/version supplied by the viewer can influence installation.
+    UpdateRequest { token: String, action: String },
+    /// Optional authenticated probe tail, after every protocol-8 legacy message.
+    NotSharing { detail: String },
+    AuthProof { nonce: Vec<u8>, proof: Proof },
+    AuthProofAck { nonce: Vec<u8>, proof: Proof },
 }
 
 /// The host's pointer shape. The viewer shows its own pointer (it moves with
