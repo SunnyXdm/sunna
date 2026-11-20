@@ -1,5 +1,5 @@
 #!/bin/bash
-# Not yet exercised on a Mac. Produces unsigned downloads, signed on install.
+# Produces unsigned downloads, signed on install. Built on macOS 26 (arm64).
 set -euo pipefail
 export SUNNA_PUBLIC_RELEASE=1
 cd "$(dirname "$0")/../.."
@@ -30,4 +30,10 @@ cat > "$work/app/Sunna.app/Contents/Info.plist" <<PLIST
 PLIST
 (cd "$work/app" && zip -qr "$out/Sunna-macos-$arch.zip" .)
 cp target/release/sunna-update "$out/sunna-update-macos-$arch"
+# The check signs a fixture with Ed25519, which macOS's own openssl (LibreSSL) lacks.
+if ! openssl genpkey -algorithm ED25519 -out /dev/null 2>/dev/null; then
+  for dir in /opt/homebrew/opt/openssl@3/bin /usr/local/opt/openssl@3/bin; do
+    [ ! -x "$dir/openssl" ] || { PATH="$dir:$PATH"; break; }
+  done
+fi
 python3 scripts/release/check-updaters.py "$out" "macos-$arch"
