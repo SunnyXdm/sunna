@@ -415,6 +415,18 @@ impl LayerPresenter {
         }
     }
 
+    pub fn clear_session(&mut self) {
+        unsafe {
+            let _: () = msg_send![class!(CATransaction), begin];
+            let _: () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
+            let _: () = msg_send![&*self.layer, setContents: std::ptr::null_mut::<AnyObject>()];
+            self.clear_overlays();
+            let _: () = msg_send![class!(CATransaction), commit];
+        }
+        self.video_ts_us = None;
+        self.recent.clear();
+    }
+
     /// Show `frame` (captured at `capture_ts_us`) now, retiring tiles it
     /// already contains. Must run on the main thread.
     pub fn show(&mut self, frame: SurfaceFrame, capture_ts_us: u64) {

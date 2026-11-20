@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sunna_client::{run_client, ClientOptions};
-use sunna_transport::connect_insecure;
+use sunna_client::auth::Trust;
 
 use crate::viewer;
 
 /// What to connect to.
 #[derive(Debug, Clone)]
 pub struct ViewerArgs {
+    pub trust: Trust,
     pub addr: SocketAddr,
     /// SNI name expected by the host's self-signed certificate.
     pub server_name: String,
@@ -72,8 +73,12 @@ fn viewer_max_size() -> Option<(u32, u32)> {
 fn why_it_ended(reason: Option<sunna_transport::quinn::ConnectionError>) -> String {
     use sunna_transport::quinn::ConnectionError;
     match reason {
-        Some(ConnectionError::TimedOut) => "lost the connection: nothing came back for 10 seconds".into(),
-        Some(ConnectionError::ApplicationClosed(close)) if close.reason.starts_with(b"replaced") => {
+        Some(ConnectionError::TimedOut) => {
+            "lost the connection: nothing came back for 10 seconds".into()
+        }
+        Some(ConnectionError::ApplicationClosed(close))
+            if close.reason.starts_with(b"replaced") =>
+        {
             "replaced: a newer session from this Mac took over".into()
         }
         Some(ConnectionError::ApplicationClosed(close)) if !close.reason.is_empty() => {
@@ -88,6 +93,7 @@ fn why_it_ended(reason: Option<sunna_transport::quinn::ConnectionError>) -> Stri
 /// tokio runtime in a background thread and wakes the event loop per frame.
 pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let ViewerArgs {
+        trust,
         addr,
         server_name,
         token,
@@ -95,7 +101,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         host_os,
         audio,
     } = args;
-    tracing::warn!("dev TLS: server certificate is NOT verified");
+
     let event_loop = viewer::create_event_loop()?;
     let proxy = event_loop.create_proxy();
     let shared = Arc::new(viewer::SharedFrame::default());
@@ -104,15 +110,16 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let client = runtime.block_on(connect_insecure(addr, &server_name))?;
-    let connection = client.connection.clone();
+    let client = runtime.block_on(trust.connect(addr, &server_name))?;
 
+    let pictures = crate::picture::Recorder::from_env();
+    let picture_frames = pictures.frames();
     let network_shared = Arc::clone(&shared);
     let live = Arc::clone(&shared.live);
     let tile_shared = Arc::clone(&shared);
     let tile_proxy = event_loop.create_proxy();
     let cursor_proxy = event_loop.create_proxy();
-    let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+    let input = viewer::DisplayedInput::default();
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     // The in-session menu's Video choices, sent to the host as SetStream.
     let (stream_tx, stream_rx) = tokio::sync::watch::channel(None);
@@ -121,16 +128,15 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let max_size = viewer_max_size();
     // To tell a session the user ended from one that ended by itself.
     let asked_to_leave = leave_rx.clone();
-    let watched = connection.clone();
-    std::thread::spawn(move || {
-        let endpoint = client.endpoint;
-        let mut announced = false;
+
+    let network_thread = std::thread::spawn(move || {
         let options = ClientOptions {
+            trust: trust.clone(),
             clipboard: true,
             // How the host lists this viewer ("in use by …").
             name: std::env::var("SUNNA_VIEWER_NAME").unwrap_or_else(|_| "Sunna viewer".into()),
             device: sunna_client::device_id(),
-            leave: Some(leave_rx),
+            leave: Some(leave_rx.clone()),
             // A new pointer shape: wake the window to put it on.
             wake: Some(sunna_client::Wake(Arc::new(move || {
                 let _ = cursor_proxy.send_event(viewer::FrameReady);
@@ -148,23 +154,70 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
             duration: None,
             live: Some(live),
         };
-        let result = runtime.block_on(run_client(
-            connection,
-            options,
-            move |frame| {
-                if !announced {
-                    announced = true;
-                    let _ = size_tx.send((frame.width, frame.height));
+        let mut client = client;
+        let mut reconnecting = false;
+        let (result, watched, endpoint) = loop {
+            let mut announced = false;
+            let watched = client.connection.clone();
+            let frame_connection = watched.clone();
+            let tile_connection = watched.clone();
+            let (sender, input_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (size_tx, recording_frames) = (size_tx.clone(), picture_frames.clone());
+            let (frames, tiles) = (network_shared.clone(), tile_shared.clone());
+            let (wake_frame, wake_tiles) = (proxy.clone(), tile_proxy.clone());
+            let result = runtime.block_on(run_client(
+                client.connection,
+                options.clone(),
+                move |frame| {
+                    let mut latest = frames.latest.lock().unwrap();
+                    if frame_connection.close_reason().is_some() { return; }
+                    if !announced {
+                        announced = true;
+                        let _ = size_tx.send((frame.width, frame.height));
+                    }
+                    if let Some(latest) = &recording_frames {
+                        *latest.lock().unwrap() = Some(frame.clone());
+                    }
+                    *latest = Some((frame, sender.clone()));
+                    let _ = wake_frame.send_event(viewer::FrameReady);
+                },
+                move |batch| {
+                    let mut pending = tiles.tiles.lock().unwrap();
+                    if tile_connection.close_reason().is_some() { return; }
+                    pending.push(batch);
+                    let _ = wake_tiles.send_event(viewer::FrameReady);
+                },
+                input_rx,
+            ));
+            let pending = reconnecting && result.as_ref().is_err_and(sunna_client::handoff_pending);
+            if *asked_to_leave.borrow() || !(pending || sunna_client::session_changed(&watched)) {
+                break (result, watched, client.endpoint);
+            }
+            reconnecting = true;
+            network_shared.latest.lock().unwrap().take();
+            if let Some(latest) = &picture_frames {
+                latest.lock().unwrap().take();
+            }
+            network_shared.tiles.lock().unwrap().clear();
+            *network_shared.live.lock().unwrap() = Default::default();
+            network_shared.session_ended.store(true, std::sync::atomic::Ordering::Release);
+            let _ = proxy.send_event(viewer::FrameReady);
+            let next = runtime.block_on(async {
+                let mut leaving = leave_rx.clone();
+                tokio::select! {
+                    _ = leaving.wait_for(|left| *left) => None,
+                    next = sunna_client::reconnect_for_handoff(addr, &server_name, &trust) => Some(next),
                 }
-                *network_shared.latest.lock().unwrap() = Some(frame);
-                let _ = proxy.send_event(viewer::FrameReady);
-            },
-            move |batch| {
-                tile_shared.tiles.lock().unwrap().push(batch);
-                let _ = tile_proxy.send_event(viewer::FrameReady);
-            },
-            input_rx,
-        ));
+            });
+            let Some(next) = next else {
+                break (result, watched, client.endpoint);
+            };
+            match next {
+                Ok(next) => client = next,
+                Err(error) => break (Err(error), watched, client.endpoint),
+            }
+        };
+        pictures.finish();
         // A failed session exits non-zero: the app reports the reason. So
         // does one that ended without being asked to: the connection was
         // lost, or the host ended it.
@@ -202,7 +255,7 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
     let result = viewer::run_viewer(
         event_loop,
         shared,
-        input_tx,
+        input,
         viewer::StreamControl {
             requests: stream_tx,
             max_size,
@@ -213,9 +266,10 @@ pub fn run(args: ViewerArgs) -> anyhow::Result<()> {
         width,
         height,
     );
-    // The window is gone: leave, and give the session thread a moment to
-    // tell the host (it exits the process when done).
+    // The window is gone: let the session finish its private picture and
+    // tell the host before exiting. A fixed sleep can cut off JPEG readback
+    // on a slow machine. The network thread exits the process when done.
     let _ = leave_tx.send(true);
-    std::thread::sleep(Duration::from_secs(1));
+    let _ = network_thread.join();
     result
 }

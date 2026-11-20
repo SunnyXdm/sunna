@@ -59,10 +59,57 @@ pub fn windowed() -> bool {
     std::env::var("SUNNA_WINDOWED").is_ok_and(|value| value == "1")
 }
 
+/// Input always belongs to the connection that produced the displayed frame.
+#[derive(Clone, Default)]
+pub struct DisplayedInput(Arc<Mutex<InputRoute>>);
+
+#[derive(Default)]
+struct InputRoute {
+    sender: Option<UnboundedSender<InputEvent>>,
+    down: Vec<HeldInput>,
+}
+
+#[derive(PartialEq)]
+enum HeldInput {
+    Key(u16),
+    Button(sunna_proto::messages::MouseButton),
+}
+
+impl DisplayedInput {
+    fn display(&self, next: Option<UnboundedSender<InputEvent>>) {
+        let mut route = self.0.lock().unwrap();
+        if let (Some(old), Some(new)) = (&route.sender, &next) {
+            if old.same_channel(new) { return; }
+        }
+        route.down.clear();
+        route.sender = next;
+    }
+
+    pub fn send(&self, event: InputEvent) -> Result<(), ()> {
+        let mut route = self.0.lock().unwrap();
+        let held = match event {
+            InputEvent::Key { scancode, pressed, repeat } => Some((HeldInput::Key(scancode), pressed, repeat)),
+            InputEvent::MouseButton { button, pressed } => Some((HeldInput::Button(button), pressed, false)),
+            _ => None,
+        };
+        if let Some((key, pressed, repeat)) = held {
+            let pos = route.down.iter().position(|k| *k == key);
+            match (pos, pressed, repeat) {
+                (None, true, false) => route.down.push(key),
+                (Some(i), false, _) => { route.down.swap_remove(i); }
+                (None, _, _) => return Ok(()),
+                _ => {}
+            }
+        }
+        route.sender.as_ref().ok_or(())?.send(event).map_err(|_| ())
+    }
+}
+
 /// Shared between the network thread (writer) and the viewer (reader).
 #[derive(Default)]
 pub struct SharedFrame {
-    pub latest: Mutex<Option<DecodedFrame>>,
+    pub session_ended: std::sync::atomic::AtomicBool,
+    pub latest: Mutex<Option<(DecodedFrame, UnboundedSender<InputEvent>)>>,
     /// Fast-lane tile batches waiting to be drawn (in arrival order).
     pub tiles: Mutex<Vec<sunna_proto::tiles::TileBatch>>,
     /// Session numbers for the stats bar.
@@ -119,7 +166,7 @@ pub struct StreamControl {
 pub fn run_viewer(
     event_loop: EventLoop<FrameReady>,
     shared: Arc<SharedFrame>,
-    input: UnboundedSender<InputEvent>,
+    input: DisplayedInput,
     stream: StreamControl,
     title: String,
     width: u32,
@@ -196,7 +243,7 @@ struct ViewerApp {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     capture: Option<KeyboardCapture>,
     shared: Arc<SharedFrame>,
-    input: UnboundedSender<InputEvent>,
+    input: DisplayedInput,
     title: String,
     stream_size: (u32, u32),
     window: Option<Arc<Window>>,
@@ -259,9 +306,13 @@ impl ViewerApp {
         }
         self.stats_updated = Instant::now();
         self.stream_changed();
-        let text = self
-            .stats_visible
-            .then(|| stats_text(&self.shared.live.lock().unwrap()));
+        let live = self.shared.live.lock().unwrap();
+        let text = if self.stats_visible {
+            Some(stats_text(&live))
+        } else {
+            live.unverified.then(|| "Not fully verified".to_string())
+        };
+        drop(live);
         #[cfg(target_os = "macos")]
         if let Some(layer) = self.layer.as_mut() {
             layer.show_stats(text.as_deref());
@@ -287,6 +338,40 @@ impl ViewerApp {
         }
         tracing::info!(notice = %text, "viewer notice");
         self.notice = Some((text, Instant::now() + time));
+    }
+
+    /// Say so while the host sends no picture (see `LiveStats::no_picture_s`):
+    /// otherwise the last frame just stays up, as if the session had hung.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+    fn note_missing_picture(&mut self) {
+        let (seconds, host_fps) = {
+            let live = self.shared.live.lock().unwrap();
+            (live.no_picture_s, live.host.as_ref().map(|host| host.fps))
+        };
+        if seconds < 3 {
+            // The picture is back: take the notice down with the next frame.
+            if let Some((shown, expiry)) = &mut self.notice {
+                if shown.starts_with("No picture") {
+                    *expiry = Instant::now();
+                }
+            }
+            return;
+        }
+        let text = if host_fps == Some(0) {
+            let host = match self.stream.host_name.as_str() {
+                "" => "the other computer",
+                name => name,
+            };
+            format!("No picture from {host}: its screen isn't being drawn")
+        } else {
+            "No picture: the video isn't getting through".to_string()
+        };
+        // Shown while it lasts: refreshed every second, gone soon after.
+        let until = Instant::now() + Duration::from_millis(2500);
+        match &mut self.notice {
+            Some((shown, expiry)) if *shown == text => *expiry = until,
+            _ => self.show_notice(text, Duration::from_millis(2500)),
+        }
     }
 
     fn expire_notice(&mut self) {
@@ -584,7 +669,7 @@ impl ViewerApp {
         let text: String = text.chars().take(MAX_CHARS).collect();
         let (keys, skipped) = send_keys::type_text(&text);
         let typed = keys.len();
-        let input = self.input.clone();
+        let Some(input) = self.input.0.lock().unwrap().sender.clone() else { return };
         // Paced, so apps that read keys one event at a time keep up.
         std::thread::spawn(move || {
             for group in keys {
@@ -820,7 +905,6 @@ impl ViewerApp {
             return;
         };
         let frame = self.shared.latest.lock().unwrap().clone();
-        let Some(frame) = frame else { return };
         if let Err(error) = surface.resize(width, height) {
             tracing::warn!(%error, "surface resize failed");
             return;
@@ -831,6 +915,11 @@ impl ViewerApp {
                 tracing::warn!(%error, "surface buffer unavailable");
                 return;
             }
+        };
+        let Some((frame, input)) = frame else {
+            buffer.fill(0);
+            let _ = buffer.present();
+            return;
         };
 
         let (dst_w, dst_h) = (size.width as usize, size.height as usize);
@@ -865,9 +954,24 @@ impl ViewerApp {
                 }
             }
         }
+        // Softbuffer has no text renderer. Composite the same label directly,
+        // including in fullscreen where the title bar is hidden.
+        if self.shared.live.lock().unwrap().unverified {
+            let mask = include_bytes!("legacy-label.alpha");
+            let left = dst_w.saturating_sub(112) / 2;
+            for y in 0..24.min(dst_h.saturating_sub(8)) {
+                for x in 0..112.min(dst_w) {
+                    let gray = 32 + u32::from(mask[y * 112 + x]) * 207 / 255;
+                    buffer[(8 + y) * dst_w + left + x] = gray * 0x010101;
+                }
+            }
+        }
         if let Err(error) = buffer.present() {
             tracing::warn!(%error, "present failed");
+            return;
         }
+        self.input.display(Some(input));
+        self.stream_size = (frame.width, frame.height);
         self.note_presented();
     }
 }
@@ -875,17 +979,17 @@ impl ViewerApp {
 #[cfg(target_os = "linux")]
 impl ViewerApp {
     /// Draw the GPU picture and act on what the menu says.
-    fn draw_gpu(&mut self, event_loop: &ActiveEventLoop) {
-        let events = match self.gpu.as_mut() {
+    fn draw_gpu(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let (presented, events) = match self.gpu.as_mut() {
             Some(gpu) => {
-                gpu.render();
-                gpu.take_events()
+                (gpu.render(), gpu.take_events())
             }
-            None => return,
+            None => return false,
         };
         for event in events {
             self.handle_menu(event_loop, event);
         }
+        presented
     }
 }
 
@@ -995,6 +1099,22 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: FrameReady) {
+        if self.shared.session_ended.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            self.input.display(None);
+            self.keys_down.clear();
+            if let Some(window) = &self.window { window.set_cursor(winit::window::CursorIcon::Default); }
+            #[cfg(target_os = "macos")]
+            {
+                self.remote_cursor = Default::default();
+                if let Some(layer) = &mut self.layer { layer.clear_session(); }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                self.cursors.clear();
+                self.cursor_key = None;
+                if let Some(gpu) = &mut self.gpu { gpu.clear_session(); }
+            }
+        }
         let hotkeys = std::mem::take(&mut *self.shared.hotkeys.lock().unwrap());
         for hotkey in hotkeys {
             match hotkey {
@@ -1005,6 +1125,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             }
         }
         self.expire_notice();
+        self.note_missing_picture();
         #[cfg(target_os = "macos")]
         for event in menu::take_events() {
             self.handle_menu(event_loop, event);
@@ -1017,7 +1138,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
             // first: it retires tiles it already contains; tiles newer than it
             // then go on top.
             let frame = self.shared.latest.lock().unwrap().take();
-            if let Some(frame) = frame {
+            if let Some((frame, input)) = frame {
                 match frame.data {
                     sunna_capture::FrameData::Surface(surface) => {
                         // The host changed the stream's size (Resolution menu).
@@ -1033,6 +1154,7 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
                         if let Some(layer) = self.layer.as_mut() {
                             layer.show(surface, frame.capture_ts_us);
                         }
+                        self.input.display(Some(input));
                         self.note_presented();
                     }
                     sunna_capture::FrameData::Cpu(_) => {
@@ -1053,24 +1175,26 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
         if self.gpu.is_some() {
             let frame = self.shared.latest.lock().unwrap().take();
             let batches = std::mem::take(&mut *self.shared.tiles.lock().unwrap());
-            let mut shown = false;
+            let mut next_input = None;
             if let Some(gpu) = self.gpu.as_mut() {
-                if let Some(frame) = &frame {
-                    if gpu.show(frame) {
+                if let Some((frame, input)) = frame {
+                    if gpu.show(&frame) {
                         self.stream_size = gpu.stream_size();
+                        next_input = Some(input);
                     }
-                    shown = true;
                 }
                 for batch in batches {
                     gpu.add_tiles(batch);
                 }
             }
-            if shown {
-                self.note_presented();
-            }
             self.update_cursor(event_loop);
             self.refresh_stats(false);
-            self.draw_gpu(event_loop);
+            if self.draw_gpu(event_loop) {
+                if let Some(input) = next_input {
+                    self.input.display(Some(input));
+                    self.note_presented();
+                }
+            }
             return;
         }
         if let Some(window) = &self.window {
@@ -1327,6 +1451,23 @@ impl ApplicationHandler<FrameReady> for ViewerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_input_ends_with_the_displayed_session() {
+        let input = DisplayedInput::default();
+        let (a, mut old) = tokio::sync::mpsc::unbounded_channel();
+        let (b, mut new) = tokio::sync::mpsc::unbounded_channel();
+        let key = |pressed, repeat| InputEvent::Key { scancode: 4, pressed, repeat };
+        input.display(Some(a));
+        input.send(key(true, false)).unwrap();
+        assert_eq!(old.try_recv().unwrap(), key(true, false));
+        input.display(Some(b));
+        input.send(key(true, true)).unwrap();
+        input.send(key(false, false)).unwrap();
+        assert!(new.try_recv().is_err());
+        input.send(key(true, false)).unwrap();
+        assert_eq!(new.try_recv().unwrap(), key(true, false));
+    }
 
     #[test]
     fn stats_line() {

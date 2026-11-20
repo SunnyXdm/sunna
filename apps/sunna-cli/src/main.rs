@@ -13,7 +13,7 @@ use sunna_client::{run_client, ClientOptions};
 use sunna_codec::{default_codec_name, make_encoder};
 use sunna_host::{HostConfig, run_host};
 use sunna_input::{InputInjector, LogInjector};
-use sunna_transport::{connect_insecure, connect_trusted, Server};
+use sunna_transport::{connect_trusted, Server};
 
 #[derive(Parser, Debug)]
 #[command(name = "sunna-cli", about = "Sunna dev client")]
@@ -24,13 +24,16 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Open a viewer window on a sunnad host (dev TLS: certificate NOT verified).
+    /// Open a viewer window on a sunnad host with shared-key proof.
     View {
         addr: SocketAddr,
+        /// Public-key fingerprint from the computer's link.
+        #[arg(long)]
+        identity: Option<String>,
         /// SNI name expected by the host's self-signed certificate.
         #[arg(long, default_value = "sunna")]
         server_name: String,
-        /// Session token printed by (or given to) sunnad.
+        /// Sharing key configured on the host.
         #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
         token: String,
         /// Name shown in the window title (default: the address).
@@ -40,16 +43,19 @@ enum Command {
         #[arg(long)]
         no_audio: bool,
     },
-    /// Connect headless: stats only (dev TLS: certificate NOT verified).
+    /// Connect headless: stats only with shared-key proof.
     Connect {
         addr: SocketAddr,
+        /// Public-key fingerprint from the computer's link.
+        #[arg(long)]
+        identity: Option<String>,
         /// SNI name expected by the host's self-signed certificate.
         #[arg(long, default_value = "sunna")]
         server_name: String,
         /// Disconnect after this many seconds (runs until closed if omitted).
         #[arg(long)]
         seconds: Option<u64>,
-        /// Session token printed by (or given to) sunnad.
+        /// Sharing key configured on the host.
         #[arg(long, env = "SUNNA_TOKEN", default_value = "", hide_env_values = true)]
         token: String,
         /// Apply the stream options this many seconds into the session.
@@ -145,12 +151,14 @@ fn main() -> anyhow::Result<()> {
 fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::View {
+            identity,
             addr,
             server_name,
             token,
             name,
             no_audio,
         } => sunna_viewer::run(sunna_viewer::ViewerArgs {
+            trust: sunna_client::auth::Trust { identity, ..Default::default() },
             addr,
             server_name,
             token,
@@ -171,6 +179,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
     match command {
         Command::View { .. } => unreachable!("handled in main"),
         Command::Connect {
+            identity,
             addr,
             server_name,
             seconds,
@@ -188,8 +197,9 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             type_text,
             input_after,
         } => {
-            tracing::warn!("dev TLS: server certificate is NOT verified");
-            let client = connect_insecure(addr, &server_name).await?;
+
+            let trust = sunna_client::auth::Trust { identity, ..Default::default() };
+            let client = trust.connect(addr, &server_name).await?;
             let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             if click.is_some() || type_text.is_some() {
                 tokio::spawn(async move {
@@ -236,6 +246,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 settings
             };
             let options = ClientOptions {
+                trust,
                 device: sunna_client::device_id(),
                 leave: None,
                 wake: None,
@@ -264,6 +275,7 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let cert = server.cert.clone();
             let bitrate_bps = bitrate_kbps.saturating_mul(1000);
             let config = HostConfig {
+                require_proof: false,
                 name: "bench-host".into(),
                 width,
                 height,
@@ -272,10 +284,11 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
                 max_bitrate_bps: bitrate_bps,
                 fast_lane: false,
                 simulate_loss,
-                token: String::new(),
+                token: "01".repeat(16),
                 clipboard: false,
                 about: Default::default(),
                 audio: false,
+                display_follows_viewer: false,
             };
             make_encoder(&codec, width, height, fps, bitrate_bps)?;
             let host_task = tokio::spawn(run_host(
@@ -291,12 +304,13 @@ async fn run_async(command: Command) -> anyhow::Result<()> {
             let client = connect_trusted(addr, "sunna", &cert).await?;
             let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
             let options = ClientOptions {
+                trust: Default::default(),
                 device: sunna_client::device_id(),
                 leave: None,
                 wake: None,
                 name: "bench-client".into(),
                 clipboard: false,
-                token: String::new(),
+                token: "01".repeat(16),
                 stream: Default::default(),
                 stream_requests: None,
                 duration: Some(Duration::from_secs(seconds)),

@@ -372,8 +372,13 @@ impl GpuPresenter {
         }
     }
 
-    /// Put `frame` up (retiring tiles it already contains). Returns whether
-    /// the stream changed size.
+    pub fn clear_session(&mut self) {
+        self.video = None;
+        self.tiles.clear();
+        self.video_ts_us = None;
+    }
+
+    /// Upload a frame and retire tiles it already contains.
     pub fn show(&mut self, frame: &DecodedFrame) -> bool {
         let Ok(bytes) = frame.data.to_cpu() else { return false };
         let size = (frame.width.max(1), frame.height.max(1));
@@ -393,7 +398,7 @@ impl GpuPresenter {
         while self.tiles.front().is_some_and(|tile| tile.capture_ts_us <= frame.capture_ts_us) {
             self.tiles.pop_front();
         }
-        resized
+        true
     }
 
     /// Draw a fast-lane batch over the video, unless the video on screen is
@@ -513,14 +518,14 @@ impl GpuPresenter {
     }
 
     /// Draw everything now.
-    pub fn render(&mut self) {
+    pub fn render(&mut self) -> bool {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         };
         let view = frame.texture.create_view(&Default::default());
         let (x, y, w, h) = self.content_rect();
@@ -585,6 +590,7 @@ impl GpuPresenter {
         if self.overlay.menu.is_some() || output.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
             self.window.request_redraw();
         }
+        true
     }
 }
 

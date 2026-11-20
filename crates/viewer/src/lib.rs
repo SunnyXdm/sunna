@@ -27,3 +27,5 @@ mod session;
 mod viewer;
 
 pub use session::{run, ViewerArgs};
+
+mod picture;

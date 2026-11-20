@@ -13,12 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send};
-use sunna_proto::messages::InputEvent;
-use tokio::sync::mpsc::UnboundedSender;
 use winit::event_loop::EventLoopProxy;
 
 use crate::keyboard::{Action, Hotkey, RawKind, Translator};
-use crate::viewer::{FrameReady, SharedFrame};
+use crate::viewer::{DisplayedInput, FrameReady, SharedFrame};
 
 const HID_EVENT_TAP: u32 = 0; // kCGHIDEventTap
 const HEAD_INSERT_EVENT_TAP: u32 = 0; // kCGHeadInsertEventTap
@@ -75,7 +73,7 @@ struct TapState {
     /// Capture wanted (⌃⌥G toggles it).
     enabled: bool,
     tap: *mut c_void,
-    input: UnboundedSender<InputEvent>,
+    input: DisplayedInput,
     shared: Arc<SharedFrame>,
     wake: EventLoopProxy<FrameReady>,
 }
@@ -113,7 +111,7 @@ impl KeyboardCapture {
     /// Install the tap. Fails without the Accessibility permission, which
     /// the app asks for (not every session: that would prompt each time).
     pub fn new(
-        input: UnboundedSender<InputEvent>,
+        input: DisplayedInput,
         shared: Arc<SharedFrame>,
         wake: EventLoopProxy<FrameReady>,
     ) -> anyhow::Result<Self> {
