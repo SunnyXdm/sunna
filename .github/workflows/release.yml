@@ -1,7 +1,10 @@
 name: Release
+# Started by hand on a tag (Actions, Release, Run workflow, choose the tag)
+# while Actions can't run for this account and its signing secrets aren't set.
+# 0.1.0 was built and signed outside it, for Linux x86-64 only. To build on
+# every tag again: `on: {push: {tags: ['v*']}}`.
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
