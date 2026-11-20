@@ -1,0 +1,78 @@
+# 17 · Review findings: whole-machine host, sharing switch, Mac host
+
+Status: work brief, 2026-11-19. An independent review of the work in research/14, 15 and 16 found no path from an ordinary local account to root or to the machine key in the code it read, and found the problems below. Everything here is to be fixed, each with a test that fails first, unless marked otherwise. Two agents work from this document at the same time: **Part 1** (the Linux system host) and **Part 2** (the app's sharing switch and the Mac host).
+
+A decision that changes the earlier design: **a viewer does not stay connected across a change of active session.** Research/15 asked for one connection through login where possible. The review shows that is unsafe as built (below, 1.2), and doing it safely costs more than it is worth. The host now ends the stream with a "session changed" reason at every change of active session, and the viewer reconnects by itself as soon as the new session can be shared.
+
+## Part 1 · Linux system host
+
+Files: `apps/sunnad` (Linux), `crates/host`, `crates/capture`, `crates/input`, `crates/audio`, `crates/clipboard`, `crates/portal`, `crates/proto`, `crates/client` and `crates/viewer` (only what the reconnect and the probe need), `crates/transport` (only what 1.5 needs), `crates/update`, `scripts/system-host.sh`, `scripts/sunna-host` (not its `status --json` output, which Part 2 owns), `scripts/release/install.sh.in`, `tools/login-test`, `docs/host-linux.md`, `docs/security.md`, `docs/troubleshooting.md`.
+
+### Security
+
+1.1 **High. The X11 connection isn't tied to the session's own display server.** The worker picks a display number and authority file; capture and input then open their own connections, and `x11rb` tries the Linux abstract socket (`@/tmp/.X11-unix/Xn`) before the filesystem socket and sends the Xauthority data during setup. If the chosen display has no abstract listener (or in a server-restart window), that name may belong to an unrelated local process, which would then be the endpoint the host authenticates to and captures from (`apps/sunnad/src/linux_worker.rs:40`, `crates/capture/src/linux.rs:121`, `crates/input/src/linux.rs:45`). Fix: connect only to the expected filesystem socket, check the peer (`SO_PEERCRED`: it must be the display server of the selected session) before any authority data is sent, and use that one verified path for every X11 backend, including clipboard and health checks. Applies to the per-user modes too.
+
+1.2 **High. Data and commands cross a session change.** A frame captured from A just before a switch can still be encoded, sent or retransmitted after B is active; Opus carries the previous packet as redundancy, so B's first datagram can contain A's sound; an input event or clipboard transfer started while A was visible can be applied to B; the host marks a worker "drawn" at capture time, before the viewer can have seen it (`apps/sunnad/src/linux_machine.rs:355`, `:469`; `crates/host/src/lib.rs:1693`, `:1520`, `:1580`). Fix: per the decision above, on any change of active session revoke input first, drop every queue (video resend, audio, clipboard, input), end the viewer's stream with a `session changed` reason, and accept a new connection only when the new session's worker is ready. The viewer and the app treat that reason as "reconnect now", quietly, keeping the window. Prove with a test that puts recognisable picture, sound, clipboard and input into session A and checks none of it appears after the switch.
+
+1.3 **Medium. Keys or buttons can be left held on the old X server.** The worker is killed while its release code races (`linux_machine.rs:46`, `linux_worker.rs:230`, `crates/input/src/linux.rs:81`). Fix: revoke new input, give the old worker a bounded time to release everything it holds and acknowledge, then kill it.
+
+1.4 **Medium. One account, two graphical sessions; and `/proc` reads that aren't pinned.** Workers are chosen per session but the user bus, portal state and default Pulse monitor are per user, so they can point at the other session; when logind's `Display` is empty the worker trusts matching `/proc` environment values and reopens `/proc/PID` after checking it (`linux_machine.rs:88`, `linux_worker.rs:40`, `crates/audio/src/lib.rs:47`, `crates/portal/src/session.rs:397`). Fix: open the process directory once and read through that descriptor; tie each backend to the selected session, and where that can't be established (same user, several graphical sessions) disable the ambiguous backend and say so in the not-sharing or degraded reason.
+
+1.5 **High. Unauthenticated connections are unbounded.** A task per incoming connection waits indefinitely for the first message while keep-alives hold it open (`crates/host/src/lib.rs:476`, `:503`; `crates/transport/src/lib.rs:111`). Fix: one deadline from accept to authenticated first message; a global and a per-source cap on connections that haven't authenticated; close what misses. In all modes.
+
+1.6 **Medium. Short keys, and no limit on failed sign-ins.** Migration carries a short user-chosen desktop key over to the system host unchanged; the installer accepts a one-character key; nothing slows repeated failed authentication (`scripts/release/install.sh.in:27`, `scripts/system-host.sh:44`, `crates/host/src/lib.rs:527`). Fix: system mode requires a key in the generated format (rotate anything else at migration, and say clearly that links must be re-shared); rate-limit failed authentications per source and overall, with backoff; leave password lockout to the operating system. A viewer holding the slot with no usable session for longer than a bound is disconnected so idle-only updates can proceed.
+
+### Recovery and install
+
+1.7 **High. The boot entry point depends on the release it must recover.** The unit executes `current/bin/sunna-update`; if `current` dangles or that file is missing, systemd can't start the supervisor although a healthy version and `known-good` exist (`scripts/system-host.sh:61`, `crates/update/src/bin/sunna-update.rs:173`). This breaks research/13 A2–A4. Fix: a small, validated recovery launcher at a root-owned path outside any version directory, which repairs the selection before running release code. Apply the same to the per-user install.
+
+1.8 **High. Migration destroys a working host before the new one has proved itself.** The readiness marker is written at bind; if the worker then fails, setup still returns success and the installer deletes the old unit, autostart entry and settings; a leftover marker also satisfies the check (`linux_machine.rs:550`, `scripts/system-host.sh:78`, `scripts/release/install.sh.in:49`). Fix: a fresh receipt tied to this process and to a frame actually produced (or, where nobody is logged in, to a verified login-screen frame or an explicit "nothing to share yet" state the installer names); keep the old configuration until then and restore the old service if setup fails.
+
+1.9 **Medium. Probation can freeze management.** On a Wayland greeter or with no active session the start deadline keeps extending, the update loop never starts, and queued update or rollback requests are not handled; a single transient failure of the frame check ends verification (`linux_machine.rs:522`, `sunna-update.rs:243`, `crates/update/src/host.rs:20`). Fix: status and rollback always available; retry checks after transient worker or seat changes; with a known-good version present, bound how long an unconfirmed version may serve.
+
+1.10 **Medium. Stale readiness.** The observer reuses cached session properties while session id and uid match, so a logind restart doesn't invalidate a worker; on Wayland a saved portal token makes probes say ready though stream start will prompt or fail (`linux_machine.rs:192`, `linux_worker.rs:131`, `crates/portal/src/session.rs:247`). Fix: invalidate on logind owner and session lifecycle changes and re-read properties; a saved token is a candidate, and readiness is reported only after the backend has actually started.
+
+1.11 **Medium. The installer accepts listen addresses the daemon rejects** (`::1:48800`, `[fe80::1%eth0]:48800`; `scripts/system-host.sh:17`), after it has started changing the system; and it stores a numeric address forever, so a changed LAN address leaves the unit restarting (`:52`, `install.sh.in:36`). Fix: validate with the daemon's own parser before touching anything; store the choice ("tailscale", "lan", or an explicit address) and resolve it at each start.
+
+1.12 **Low.** The advertised `sunna-host link` can resolve to a legacy helper earlier on `PATH` (`install.sh.in:69`, `system-host.sh:86`): print a verified absolute command; update old links only when their ownership and target are known. A new host appends `NotSharing` after messages an old viewer stops reading at, so an old viewer shows Ready then gets an ordinary refusal: keep `NotSharing` off the session stream, and add an end-to-end test of the unavailable case with old and new on each side.
+
+### What system mode lacks compared with the per-user modes
+
+List in `docs/host-linux.md` what is still missing after this work, and close these now: the remote pointer's shape; picture-size change announced at reconnect; sound must not be silently absent after an IPC timeout (restart the media channel or tell the viewer). Leave as documented limits: fast-lane tiles, only `seat0`, no virtual-desktop mode under the system host, Wayland greeters.
+
+### The slow login handoff
+
+LightDM reached a usable desktop 75 seconds after the password; SDDM showed none on the same connection within 80. Find out why by measurement (where the time goes: the login manager, the session start in an emulated guest, discovering the new session, starting the worker, the first frame) and report numbers. With 1.2's reconnect in place the target is: a frame of the new session within 5 seconds of that session being able to draw.
+
+## Part 2 · The sharing switch and the Mac host
+
+Files: `apps/sunna/src/sharing.rs`, `apps/sunna/src/sharing/**`, `apps/sunna/ui/sharing.js` and the sharing parts of `index.html` and the stylesheets, `apps/sunna/src/mac_host/**`, the macOS parts of `apps/sunnad`, `crates/host`, `crates/capture`, `scripts/install-mac-app.sh`, `scripts/release/build-macos.sh`, `scripts/release/sign-mac.sh`, the `status --json` part of `scripts/sunna-host` only, `apps/sunna/dev` checks, `docs/dev/mac-host-test.md`, `docs/host-mac.md`, `docs/app-mac.md`.
+
+### The switch
+
+2.1 **Medium. Any `sunna-host` on `PATH` is trusted.** A different helper earlier on the inherited `PATH`, or a user unit pointing elsewhere, is executed for status and setup; its JSON is accepted even when it exits unsuccessfully, and can supply the command the app offers to copy (`apps/sunna/src/sharing/linux.rs:35`, `:110`, `:380`; `apps/sunna/ui/sharing.js:33`). Fix: run automatically only the managed helper or a recognised packaged one at a fixed path; require a successful exit; show any other install as "set up outside Sunna" without controlling it; build every command the app displays from fixed templates in the app, never from helper output.
+
+2.2 **Medium. A failed or unfinished stop looks like off.** Linux stops before removing the login entry, and on error the snapshot unticks the switch though a process or login entry may remain; macOS emits `off` before attempting removal (`sharing/linux.rs:276`, `sharing/macos.rs:112`, `sharing.js:15`). Fix: remove every restart source, stop the host, then verify running and enabled state; an explicit "Stopping…" state; on error keep the last confirmed value and say what is still running.
+
+2.3 **Medium. System status claims what it hasn't checked.** A supervisor still waiting for its listener shows as Sharing; a machine whose greeter can't be shared still gets `shows_login_screen: true`; a stopped but enabled unit is offered `enable --now` with no way to disable its next boot (`sharing/linux.rs:168`, `scripts/sunna-host:568`). Fix: check the listener receipt; report the login screen as unknown until the host has observed it; base the offered command on both running and enabled state, and verify the unit is Sunna's first.
+
+2.4 **Low.** The helper path is interpolated into a unit file unescaped (`scripts/sunna-host:168`): use a stable installed path or escape for systemd, including `%`.
+
+### macOS (still cannot be run here; keep saying so)
+
+2.5 **High. Updating a paused host erases its launcher.** After "Quit Sunna Host" the plist stays; reconciliation skips a paused agent, so after two app updates the plist names a pruned version and the next login can't start it (`apps/sunna/src/mac_host/agent.rs:67`, `:161`; `crates/update/src/lib.rs:1175`). Fix: the agent runs a stable launcher that does not live in a version directory, or the plist is rewritten at update without starting the agent. Unit-test the paused, updated twice, log in again sequence.
+
+2.6 **High risk on first run. Attribution.** The plist runs `Sunna`, which execs `Sunna-real`; the window asks for grants separately; there is no `AssociatedBundleIdentifiers` key. macOS may show an unidentified background item, a second permission entry, or a host stuck waiting after the window reports both grants (`mac_host/model.rs:7`, `scripts/release/sign-mac.sh:56`). Fix what can be fixed by reading Apple's documentation: add the association; make the executable that requests each grant the same one that uses it; then put attribution first in the Mac test procedure, with exactly what to look at.
+
+2.7 **Medium. Tailscale not up yet at login.** With Tailscale unavailable for the three-second startup query the host binds to the LAN for its whole life; a viewer using the saved Tailscale address can't reach it (`mac_host/mod.rs:151`, `:210`). Fix: keep the intended choice and retry or rebind when the network changes. The Linux host has the same question: check and fix it there with Part 1's agent through 1.11.
+
+2.8 **Medium. Permission flags true, no frame.** The switch says Sharing before a frame exists; if the display stream starts and never delivers, the viewer is admitted and then loses capture; if stopping fails with no stopped callback, the captured `Arc` and deferred resources retain each other (`mac_host/mod.rs:67`, `crates/capture/src/macos.rs:764`, `:809`). Fix: report first-frame failure through host status and the not-sharing reason; handle stop failure without relying on the final callback.
+
+2.9 **The Mac test procedure** (`docs/dev/mac-host-test.md`): add quit, update twice, log in; make a remote probe and a real frame mandatory in the permission steps; add a way to measure wakeups, not only CPU and memory.
+
+## Proving it
+
+- Each numbered item: a regression test or fixture that shows the incorrect behaviour on the code as it stands and passes after the fix. For Part 1, exercise the conditions in the `tools/login-test` guests as well as in unit tests: the abstract socket name already taken by another local process; a session change while a stream is running; many connections that never complete sign-in; repeated failed sign-ins; a dangling `current`; a worker that fails during migration; a logind restart.
+- Then the whole of research/15's proof list again on LightDM and SDDM, plus the update system's proofs for the system install, plus the per-user modes' existing proofs, plus old and new on each side.
+- Part 2: the app's sharing checks (`apps/sunna/dev/verify-sharing*.`) extended for every item, the real app under Xvfb, Linux lifecycle runs again; macOS by cross-check and unit tests only, stated plainly.
+- Update `tools/login-test/evidence/REPORT.md` and the docs to what is now true.

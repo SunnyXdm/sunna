@@ -1,0 +1,7 @@
+Uid:	102	102	102	102
+Gid:	104	104	104	104
+Groups:	 
+CapEff:	0000000000000000
+NoNewPrivs:	1
+Worker environment matches allowlist
+Protected key, settings, process environments, executable paths and runtime directory passed

@@ -1,0 +1,38 @@
+PASS systemd killed child at boundary partial download
+PASS systemd killed child at boundary verified archive
+PASS systemd killed child at boundary partial unpack
+PASS systemd killed child at boundary complete staging tree
+PASS systemd killed child at boundary synced staging tree
+PASS systemd killed child at boundary renamed version
+PASS systemd killed child at boundary synced versions directory
+PASS systemd killed child at boundary highest-version write
+PASS systemd killed child at boundary pending state temp
+PASS systemd killed child at boundary pending state committed
+PASS systemd killed child at boundary known-good temp
+PASS systemd killed child at boundary known-good committed
+PASS systemd killed child at boundary journal temp
+PASS systemd killed child at boundary journal committed
+PASS systemd killed child at boundary state temp
+PASS systemd killed child at boundary state committed
+PASS systemd killed child at boundary current temp
+PASS systemd killed child at boundary current committed
+PASS systemd killed child at boundary journal removed
+PASS systemd killed supervisor at boundary partial download
+PASS systemd killed supervisor at boundary verified archive
+PASS systemd killed supervisor at boundary partial unpack
+PASS systemd killed supervisor at boundary complete staging tree
+PASS systemd killed supervisor at boundary synced staging tree
+PASS systemd killed supervisor at boundary renamed version
+PASS systemd killed supervisor at boundary synced versions directory
+PASS systemd killed supervisor at boundary highest-version write
+PASS systemd killed supervisor at boundary pending state temp
+PASS systemd killed supervisor at boundary pending state committed
+PASS systemd killed supervisor at boundary known-good temp
+PASS systemd killed supervisor at boundary known-good committed
+PASS systemd killed supervisor at boundary journal temp
+PASS systemd killed supervisor at boundary journal committed
+PASS systemd killed supervisor at boundary state temp
+PASS systemd killed supervisor at boundary state committed
+PASS systemd killed supervisor at boundary current temp
+PASS systemd killed supervisor at boundary current committed
+PASS systemd killed supervisor at boundary journal removed

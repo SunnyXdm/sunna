@@ -45,7 +45,7 @@ COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 echo "Building Sunna $VERSION (build $BUILD, $COMMIT)…"
 # custom-protocol: the production build (embedded UI, icon from the bundle).
-SUNNA_GIT_HASH="$COMMIT" cargo build --release -p sunna --features custom-protocol
+SUNNA_GIT_HASH="$COMMIT" cargo build --release -p sunna -p sunna-update --features custom-protocol
 
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 # Earlier versions of this script built the app inside the project, where
@@ -61,7 +61,8 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 APP="$WORK/Sunna.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/sunna "$APP/Contents/MacOS/Sunna"
+cp target/release/sunna "$APP/Contents/MacOS/Sunna-real"
+cp target/release/sunna-update "$APP/Contents/MacOS/Sunna"
 cp apps/sunna/icons/icon.icns "$APP/Contents/Resources/Sunna.icns"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 cat >"$APP/Contents/Info.plist" <<PLIST
@@ -80,6 +81,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Sunna connects your devices and lets a viewer reach this Mac when sharing is on.</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>Sunna $VERSION ($COMMIT)</string>
 </dict>
@@ -134,6 +136,7 @@ trust_certificate() {
 
 if [ "$ADHOC" = 1 ]; then
   echo "Signing ad hoc: macOS will forget Sunna's permissions at every update."
+  codesign --force --sign - "$APP/Contents/MacOS/Sunna-real"
   codesign --force --sign - "$APP"
 else
   if ! has_identity; then
@@ -149,6 +152,7 @@ else
     exit 1
   fi
   echo "Signing with \"$IDENTITY\" (if macOS asks whether codesign may use its key, choose Always Allow)…"
+  codesign --force --timestamp=none --identifier dev.sunna.app --sign "$IDENTITY" "$APP/Contents/MacOS/Sunna-real"
   if ! SIGN_ERROR="$(codesign --force --timestamp=none --sign "$IDENTITY" "$APP" 2>&1)"; then
     echo "$SIGN_ERROR" >&2
     echo "Signing failed, so nothing was installed. If macOS asked whether codesign may" >&2
@@ -160,24 +164,17 @@ codesign --verify --strict "$APP"
 # What macOS ties Sunna's permissions to.
 requirement() { codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => //p'; }
 REQUIREMENT="$(requirement "$APP")"
+if [ "$ADHOC" != 1 ]; then
+  [ -n "$REQUIREMENT" ] && [ "$(requirement "$APP/Contents/MacOS/Sunna-real")" = "$REQUIREMENT" ] || {
+    echo "The app and its host must have the same designated requirement." >&2; exit 1;
+  }
+fi
 echo "Signed: $REQUIREMENT"
 
 DEST=/Applications
 [ -w "$DEST" ] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
-# Quit Sunna (the app and any session it has open) and wait until it's gone.
-if pgrep -x Sunna >/dev/null; then
-  echo "Quitting the running Sunna…"
-  osascript -e 'quit app "Sunna"' >/dev/null 2>&1 || true
-  for _ in $(seq 50); do pgrep -x Sunna >/dev/null || break; sleep 0.1; done
-  if pgrep -x Sunna >/dev/null; then
-    pkill -x Sunna || true
-    for _ in $(seq 30); do pgrep -x Sunna >/dev/null || break; sleep 0.1; done
-  fi
-  if pgrep -x Sunna >/dev/null; then
-    echo "Sunna is still running: quit it (and any session), then run this again." >&2
-    exit 1
-  fi
-fi
+# adopt takes the app supervisor lock and waits on the incoming session's
+# lock. A host sharing a live desktop must never be killed by process name.
 
 # macOS keeps Sunna's Accessibility permission for one signature. When that
 # changes (from the old ad hoc builds, or after a missing installed copy),
@@ -185,6 +182,14 @@ fi
 # it so Sunna can ask afresh.
 OLD_REQUIREMENT=""
 [ -d "$DEST/Sunna.app" ] && OLD_REQUIREMENT="$(requirement "$DEST/Sunna.app")"
+if [ -n "$OLD_REQUIREMENT" ] && [ "$OLD_REQUIREMENT" != "$REQUIREMENT" ] && [ -f "$HOME/Library/LaunchAgents/dev.sunna.host.plist" ]; then
+  echo "This build changes Sunna’s signing identity. Use the original certificate, or turn sharing off before changing identities." >&2
+  exit 1
+fi
+
+mkdir -p "$WORK/bin"
+cp target/release/sunna-update scripts/release/sign-mac.sh "$WORK/bin/"
+SUNNA_APPLICATIONS="$DEST" target/release/sunna-update adopt app "$WORK"
 if [ "$OLD_REQUIREMENT" != "$REQUIREMENT" ]; then
   if tccutil reset Accessibility dev.sunna.app; then
     [ -n "$OLD_REQUIREMENT" ] && echo "Sunna's signature changed, so its old Accessibility entry was cleared."
@@ -200,8 +205,6 @@ if [ "$OLD_REQUIREMENT" != "$REQUIREMENT" ]; then
   fi
 fi
 
-rm -rf "$DEST/Sunna.app"
-ditto "$APP" "$DEST/Sunna.app"
 # So Finder, Spotlight and the Dock pick up the new icon and version.
 touch "$DEST/Sunna.app"
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$DEST/Sunna.app" >/dev/null 2>&1 || true

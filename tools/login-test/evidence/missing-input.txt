@@ -1,0 +1,3 @@
+not-sharing Its desktop doesn't support remote input.
+wrong-key Sunna is there, but the key doesn't match.
+probe ok

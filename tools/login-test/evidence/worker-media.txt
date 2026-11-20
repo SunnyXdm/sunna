@@ -1,0 +1,1 @@
+PASS two non-root workers exchanged both X11 selections and returned a non-silent 10 ms stereo PCM frame

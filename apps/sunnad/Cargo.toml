@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+sunna-update.workspace = true
 qrcode.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["env"] }
@@ -19,3 +20,24 @@ sunna-transport.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sunna-clipboard.workspace = true
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+sunna-audio.workspace = true
+sunna-clipboard.workspace = true
+x11rb = { version = "0.13", features = ["xtest"] }
+zbus = "5"
+nix = { version = "0.31", features = ["user"] }
+libloading = "0.9"

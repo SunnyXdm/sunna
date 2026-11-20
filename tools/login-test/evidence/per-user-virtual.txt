@@ -1,0 +1,2 @@
+ready 
+640x480 first frame in 387 ms

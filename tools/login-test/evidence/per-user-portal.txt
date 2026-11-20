@@ -1,0 +1,4 @@
+Sharing approved. Keyboard: granted; pointer: granted.
+portal permission mode 600
+ready 
+640x360 first frame in 473 ms

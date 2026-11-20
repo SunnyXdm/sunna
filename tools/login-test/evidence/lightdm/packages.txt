@@ -1,0 +1,11 @@
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Removing and restoring lightdm
+Removing and restoring lightdm-gtk-greeter
+Removing and restoring light-locker
+not-sharing Its desktop isn't running.
+640x400 first frame in 3075 ms
+Supervisor PID 768 and listener PID 894 survived desktop removal and restoration

@@ -12,9 +12,7 @@
 #   SUNNA_LOG_URL=http://<collector tailnet IP>:48900
 #   SUNNA_LOG_TOKEN=<collector token>
 #
-# First run of `host`: macOS asks for Screen Recording (and Accessibility for
-# remote input) for your terminal app. Grant both, quit and reopen the
-# terminal, run again.
+# macOS host mode uses the signed executable installed by install-mac-app.sh.
 #
 # SUNNA_KEEP_AWDL_DOWN=1 (env or sunna.env): hold AWDL (AirDrop/Continuity
 # Wi-Fi) down for the session. macOS re-enables awdl0 on its own; while it's
@@ -31,6 +29,12 @@ if [ -f "$ENV_FILE" ]; then
   # shellcheck disable=SC1090
   . "$ENV_FILE"
   set +a
+fi
+if [ "${1:-}" = host ] && [ "$(uname)" = Darwin ]; then
+  shift
+  launcher="$HOME/.local/bin/sunna"
+  [ -x "$launcher" ] || { echo "Install Sunna with scripts/install-mac-app.sh first." >&2; exit 1; }
+  exec "$launcher" host "$@"
 fi
 : "${SUNNA_TOKEN:?set SUNNA_TOKEN in $ENV_FILE (same value on both Macs)}"
 [ -n "${SUNNA_LOG_URL:-}" ] || echo "note: SUNNA_LOG_URL not set; logs stay local"

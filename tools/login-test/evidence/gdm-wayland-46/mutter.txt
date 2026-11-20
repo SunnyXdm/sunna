@@ -1,0 +1,28 @@
+Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Session creation inhibited
+Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Session creation inhibited
+User=102
+Name=gdm
+Seat=seat0
+Type=wayland
+Class=greeter
+Active=yes
+GNOME Shell 46.0
+  interface org.gnome.Mutter.RemoteDesktop {
+    methods:
+      CreateSession(out o session_path);
+    signals:
+    properties:
+      readonly u SupportedDeviceTypes;
+      readonly i Version = 1;
+  };
+RemoteDesktop session request failed
+  interface org.gnome.Mutter.ScreenCast {
+    methods:
+      CreateSession(in  a{sv} properties,
+                    out o session_path);
+    signals:
+    properties:
+      readonly i Version = 4;
+  };
+ScreenCast session request failed
+not-sharing Nobody is logged in and the login screen can't be shared on this system.

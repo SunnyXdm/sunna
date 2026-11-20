@@ -1,0 +1,8 @@
+Uid:	1001	1001	1001	1001
+Gid:	1001	1001	1001	1001
+Groups:	 
+CapEff:	0000000000000000
+NoNewPrivs:	1
+PASS other user cannot read test settings or process environments or write the executable; worker has no machine token
+worker replaced; listener pid 431 remained
+unreachable Nothing answered at 127.0.0.1:48800. Is Sunna sharing on that computer?

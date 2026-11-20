@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Sunna's disconnected GDM greeter proof
+After=display-manager.service
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wayland-proof
+StandardOutput=journal+console
+StandardError=journal+console
+[Install]
+WantedBy=multi-user.target

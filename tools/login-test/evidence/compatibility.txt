@@ -1,0 +1,4 @@
+probe ok
+connected
+ready 
+640x360 first frame in 369 ms

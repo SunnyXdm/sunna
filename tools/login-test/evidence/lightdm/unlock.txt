@@ -1,0 +1,3 @@
+640x400 first frame in 1861 ms
+c8 1001 viewer1 seat0 tty7 active no -
+640x400 first frame in 2237 ms

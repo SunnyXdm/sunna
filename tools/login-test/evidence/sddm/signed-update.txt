@@ -1,0 +1,15 @@
+Uid:	101	101	101	101
+Gid:	102	102	102	102
+Groups:	 
+CapEff:	0000000000000000
+NoNewPrivs:	1
+Worker environment matches allowlist
+Protected key, settings, process environments, executable paths and runtime directory passed
+Update queued; it will restart when the session ends.
+{"format":1,"request":"update","request_id":1,"pending_protocol":0,"error":null,"minimum_protocol":8,"peer_protocol":null,"last_check":1795015982,"available":"0.1.0","pending":null,"current":"0.1.0","previous":null,"failed":[],"starts":0,"healthy":true,"policy":""}
+Signed B healthy
+640x400 first frame in 4919 ms
+Update queued; it will restart when the session ends.
+{"format":1,"request":"update","request_id":2,"pending_protocol":0,"error":null,"minimum_protocol":8,"peer_protocol":null,"last_check":1795018463,"available":"0.2.0","pending":null,"current":"0.2.0","previous":"0.1.0","failed":[],"starts":0,"healthy":true,"policy":""}
+Signed broken candidate recorded and B healthy again
+640x400 first frame in 4310 ms

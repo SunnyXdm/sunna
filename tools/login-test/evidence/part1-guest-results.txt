@@ -1,0 +1,335 @@
+lightdm unoptimized handoff (guest uptime seconds)
+462.66 client started
+640x400 first frame in 4962 ms
+469.57 key step at 5998 ms
+475.40 session changed at 11829 ms
+487.76 first decoded frame from new worker
+490.72 new session frame at 27143 ms
+491.01 client ended
+463.40 logind active c1
+476.02 logind active c2
+482.68 worker pid 1711
+485.65 XSync in user session
+
+sddm unoptimized handoff (guest uptime seconds)
+459.15 client started
+640x400 first frame in 7869 ms
+470.24 key step at 9954 ms
+487.83 session changed at 27522 ms
+507.26 first decoded frame from new worker
+519.64 first decoded frame from new worker
+519.78 new session frame at 59475 ms
+520.43 client ended
+460.86 logind active 9
+487.47 logind active 11
+500.13 worker pid 1731
+500.33 XSync in user session
+511.86 worker pid 1794
+
+LightDM optimized handoff after cursor correction
+1161.63 client started
+640x400 first frame in 1267 ms
+1163.55 key step at 1522 ms
+1163.55 key step at 1527 ms
+1166.39 key step at 4361 ms
+1170.03 session changed at 8006 ms
+1179.89 first decoded frame from new worker
+1180.76 new session frame at 18732 ms
+1181.27 client ended
+1162.14 logind active c6
+1170.08 logind active 
+1171.40 logind active c7
+1171.40 worker pid 3447
+1172.58 worker pid 
+1178.83 worker pid 3480
+
+LightDM XSync and worker readiness
+XSync 1179.26
+[ 1169.941715] localhost recovery[3238]: 2026-11-18T22:45:28.129124Z  WARN sunna_host: frame source failed, stopping media loop error=worker closed the frame channel
+[ 1170.054416] localhost recovery[3238]: 2026-11-18T22:45:28.249482Z  INFO sunnad::linux_machine: active seat changed
+[ 1170.512354] localhost recovery[3238]: 2026-11-18T22:45:28.706416Z  INFO sunnad::linux_machine: active seat changed session="c7"
+[ 1176.662348] localhost recovery[3238]: 2026-11-18T22:45:34.846972Z  INFO sunnad::linux_machine: session worker produced its first frame session=c7
+
+SDDM optimized handoff, first run
+437.39 client started
+640x400 first frame in 5114 ms
+444.42 key step at 6108 ms
+465.03 session changed at 26708 ms
+480.40 first decoded frame from new worker
+480.48 new session frame at 42157 ms
+480.75 client ended
+438.71 logind active 1
+465.84 logind active 3
+478.15 worker pid 1217
+477.30 XSync in user session
+
+SDDM optimized handoff, repeat
+1516.82 client started
+640x400 first frame in 2839 ms
+1521.50 key step at 3748 ms
+1536.30 session changed at 18546 ms
+1547.06 first decoded frame from new worker
+1548.17 new session frame at 30421 ms
+1548.36 client ended
+1517.98 logind active 14
+1537.26 logind active 15
+1541.92 worker pid 4296
+1543.44 worker pid 
+1545.04 worker pid 4313
+1547.49 XSync in user session
+
+SDDM worker readiness on repeat
+[ 1536.122494] localhost recovery[3882]: 2026-11-18T22:53:18.961695Z  WARN sunna_host: frame source failed, stopping media loop error=session changed
+[ 1536.407936] localhost recovery[3882]: 2026-11-18T22:53:19.245379Z  INFO sunnad::linux_machine: active seat changed session="15"
+[ 1544.810045] localhost recovery[3882]: 2026-11-18T22:53:27.644931Z  INFO sunnad::linux_machine: session worker produced its first frame session=15
+
+lightdm reboot
+640x400 first frame in 4468 ms
+640x400 first frame in 2185 ms
+Boot to first saved frame (upper bound): 86.34 seconds
+
+lightdm signed install / update / rollback
+640x400 first frame in 1089 ms
+Uid:	101	101	101	101
+Groups:	 
+CapEff:	0000000000000000
+NoNewPrivs:	1
+Worker environment matches allowlist
+Protected key, settings, process environments, executable paths and runtime directory passed
+Signed B healthy
+640x400 first frame in 1368 ms
+Signed broken candidate recorded and B healthy again
+640x400 first frame in 1087 ms
+
+lightdm interruption and package restore
+Killed worker pid 2564
+ready 
+640x400 first frame in 2231 ms
+Killed supervisor pid 2100
+ready 
+640x400 first frame in 2488 ms
+Killed display pid 2514
+not-sharing Its desktop isn't running.
+640x400 first frame in 2634 ms
+Removing and restoring lightdm
+Removing and restoring lightdm-gtk-greeter
+Removing and restoring light-locker
+not-sharing Its desktop isn't running.
+640x400 first frame in 3706 ms
+Supervisor PID 2100 and listener PID 2238 survived desktop removal and restoration
+
+lightdm protocol 8, old library from 1c46c9d
+probe ok
+protocol-8 client ended its session
+ready 
+640x360 first frame in 1679 ms
+protocol-8 client ended its session
+not-sharing Its desktop isn't running.
+probe ok
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+
+sddm reboot
+640x400 first frame in 9968 ms
+Boot to first saved frame (upper bound): 115.40 seconds
+
+sddm signed install / update / rollback
+640x400 first frame in 2251 ms
+Uid:	101	101	101	101
+Groups:	 
+CapEff:	0000000000000000
+NoNewPrivs:	1
+Worker environment matches allowlist
+Protected key, settings, process environments, executable paths and runtime directory passed
+Signed B healthy
+640x400 first frame in 1747 ms
+Signed broken candidate recorded and B healthy again
+640x400 first frame in 1818 ms
+
+sddm interruption and package restore
+Killed worker pid 2649
+ready 
+640x400 first frame in 4941 ms
+Killed supervisor pid 2188
+unreachable Nothing answered at 127.0.0.1:48800. Is Sunna sharing on that computer?
+640x400 first frame in 5514 ms
+Killed display pid 2574
+ready 
+640x400 first frame in 5452 ms
+Removing and restoring sddm
+not-sharing Its desktop isn't running.
+640x400 first frame in 5683 ms
+Supervisor PID 2188 and listener PID 2377 survived desktop removal and restoration
+
+sddm protocol 8, old library from 1c46c9d
+probe ok
+protocol-8 client ended its session
+ready 
+640x360 first frame in 2999 ms
+protocol-8 client ended its session
+not-sharing Its desktop isn't running.
+probe ok
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+
+Old host display loss
+640x400 first frame in 350 ms
+Old host probe after display loss: ready
+Old host still reports Ready after display loss. New viewer reports an ordinary refusal or session end.
+
+SDDM unlock / second user / logout
+LockedHint=yes
+LockedHint=no
+3 1001 viewer1 seat0 tty2 active no -
+7 1002 viewer2 seat0 tty1 online no -
+15 1001 viewer1 seat0 tty1 online no -
+19 1002 viewer2 seat0 tty3 active no -
+21 101 sddm seat0 tty3 active no -
+Decoded active SDDM greeter after both users logged out.
+
+LightDM lock / unlock / second user / logout
+locked at c2
+640x400 first frame in 983 ms
+c1 1001 viewer1 seat0 tty7 active no -
+640x400 first frame in 844 ms
+c1 1001 viewer1 seat0 tty7 online no -
+c4 1002 viewer2 seat0 tty8 active no -
+Returned to greeter c8
+640x400 first frame in 2468 ms
+
+Migration, system probation and selection repair
+640x400 first frame in 766 ms
+The signed setup failed with a live graphical seat and a denied worker launch.
+Rollback request selected signed A while B was still waiting for a desktop.
+640x400 first frame in 954 ms
+640x400 first frame in 2094 ms
+
+Private container
+Verified X11 input with real Xauthority and an unavailable abstract name.
+640x480 first frame in 1343 ms
+PASS two non-root workers exchanged both X11 selections and returned a non-silent 10 ms stereo PCM frame
+PASS kernel ENOSPC between journal and state save, then successful retry
+Both unit paths survived pruning and the virtual desktop launcher repaired the selection.
+PASS generated user and virtual desktop units survive release pruning.
+PASS original live service migrated through signed entry point and reported update support
+PASS legacy host answered probes without XTEST; candidate refused readiness on the same display
+
+Interruption boundaries, system manager
+PASS child: partial download
+PASS child: verified archive
+PASS child: partial unpack
+PASS child: complete staging tree
+PASS child: synced staging tree
+PASS child: renamed version
+PASS child: synced versions directory
+PASS child: highest-version write
+PASS child: pending state temp
+PASS child: pending state committed
+PASS child: known-good temp
+PASS child: known-good committed
+PASS child: journal temp
+PASS child: journal committed
+PASS child: state temp
+PASS child: state committed
+PASS child: current temp
+PASS child: current committed
+PASS child: journal removed
+PASS supervisor: partial download
+PASS supervisor: verified archive
+PASS supervisor: partial unpack
+PASS supervisor: complete staging tree
+PASS supervisor: synced staging tree
+PASS supervisor: renamed version
+PASS supervisor: synced versions directory
+PASS supervisor: highest-version write
+PASS supervisor: pending state temp
+PASS supervisor: pending state committed
+PASS supervisor: known-good temp
+PASS supervisor: known-good committed
+PASS supervisor: journal temp
+PASS supervisor: journal committed
+PASS supervisor: state temp
+PASS supervisor: state committed
+PASS supervisor: current temp
+PASS supervisor: current committed
+PASS supervisor: journal removed
+
+Interruption boundaries, user manager
+PASS systemd killed child at boundary partial download
+PASS systemd killed child at boundary verified archive
+PASS systemd killed child at boundary partial unpack
+PASS systemd killed child at boundary complete staging tree
+PASS systemd killed child at boundary synced staging tree
+PASS systemd killed child at boundary renamed version
+PASS systemd killed child at boundary synced versions directory
+PASS systemd killed child at boundary highest-version write
+PASS systemd killed child at boundary pending state temp
+PASS systemd killed child at boundary pending state committed
+PASS systemd killed child at boundary known-good temp
+PASS systemd killed child at boundary known-good committed
+PASS systemd killed child at boundary journal temp
+PASS systemd killed child at boundary journal committed
+PASS systemd killed child at boundary state temp
+PASS systemd killed child at boundary state committed
+PASS systemd killed child at boundary current temp
+PASS systemd killed child at boundary current committed
+PASS systemd killed child at boundary journal removed
+PASS systemd killed supervisor at boundary partial download
+PASS systemd killed supervisor at boundary verified archive
+PASS systemd killed supervisor at boundary partial unpack
+PASS systemd killed supervisor at boundary complete staging tree
+PASS systemd killed supervisor at boundary synced staging tree
+PASS systemd killed supervisor at boundary renamed version
+PASS systemd killed supervisor at boundary synced versions directory
+PASS systemd killed supervisor at boundary highest-version write
+PASS systemd killed supervisor at boundary pending state temp
+PASS systemd killed supervisor at boundary pending state committed
+PASS systemd killed supervisor at boundary known-good temp
+PASS systemd killed supervisor at boundary known-good committed
+PASS systemd killed supervisor at boundary journal temp
+PASS systemd killed supervisor at boundary journal committed
+PASS systemd killed supervisor at boundary state temp
+PASS systemd killed supervisor at boundary state committed
+PASS systemd killed supervisor at boundary current temp
+PASS systemd killed supervisor at boundary current committed
+PASS systemd killed supervisor at boundary journal removed
+
+Private container Rust suite: 119 passed, 0 failed, 5 ignored.
+
+LightDM resolution change, before (initial frame and eight reconnect attempts)
+640x400 first frame in 1084 ms
+640x400 first frame in 778 ms
+640x400 first frame in 848 ms
+640x400 first frame in 950 ms
+640x400 first frame in 1019 ms
+640x400 first frame in 814 ms
+640x400 first frame in 792 ms
+640x400 first frame in 814 ms
+640x400 first frame in 845 ms
+
+LightDM resolution change, after
+640x400 first frame in 996 ms
+640x400 first frame in 902 ms
+640x400 first frame in 958 ms
+640x480 first frame in 797 ms
+Reconnected at 640x480 after a 640x400 session.
+
+Viewer library suite: 15 passed, including held_input_ends_with_the_displayed_session.
+
+LightDM production viewer window across a display-manager restart
+Viewer PID 5186 presented both sessions in X window 0x200002.
+
+Merged existing release-layout regression in the private systemd container
+PASS user and virtual desktop unit commands; real recovery repaired current after pruning.
+Final host, update, client and viewer Rust suite, build checkout and isolated container: 134 passed, 0 failed, 5 ignored in each.
+
+Protocol 8 rerun against the final signed LightDM host
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+probe ok
+protocol-8 client ended its session
+ready 
+640x360 first frame in 1521 ms
+protocol-8 client ended its session
+not-sharing Its desktop isn't running.
+probe ok

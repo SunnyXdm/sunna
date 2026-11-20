@@ -1,0 +1,10 @@
+update-alternatives: using /etc/pam.d/gdm-smartcard-sssd-exclusive to provide /etc/pam.d/gdm-smartcard (gdm-smartcard) in auto mode
+invoke-rc.d: policy-rc.d denied execution of reload.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+640x400 first frame in 5876 ms
+not-sharing Its desktop isn't running.
+640x400 first frame in 4718 ms
+Supervisor PID 5286 survived desktop removal and restoration

@@ -115,23 +115,33 @@ case "$DESKTOP" in
   *) echo "SUNNA_DESKTOP must be plasma or xfce" >&2; exit 2 ;;
 esac
 
-for tool in Xvfb "$SESSION_CMD" dbus-run-session setsid xdpyinfo; do
+helper_dir=$(dirname "$(readlink -f "$0")")
+sunnad="$helper_dir/../../bin/sunnad"
+if [[ ! -x $sunnad ]]; then
+  # scripts/run.sh starts the release daemon directly from a source checkout.
+  sunnad="$helper_dir/../target/release/sunnad"
+  [[ -f "$helper_dir/../Cargo.toml" && -x $sunnad ]] || sunnad=sunnad
+fi
+display_health() { DISPLAY="$DISPLAY_NUM" "$sunnad" check-x11; }
+
+for tool in Xvfb "$SESSION_CMD" dbus-run-session setsid "$sunnad"; do
   command -v "$tool" >/dev/null || {
-    echo "missing $tool (Debian/Ubuntu: xvfb xfce4 dbus x11-utils; Arch: xorg-server-xvfb xfce4 or plasma-x11-session, dbus, xorg-xdpyinfo)" >&2
+    echo "missing $tool (Debian/Ubuntu: xvfb xfce4 dbus; Arch: xorg-server-xvfb xfce4 or plasma-x11-session, dbus)" >&2
     exit 1
   }
 done
 
-if DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1; then
-  echo "Display $DISPLAY_NUM already running ($(DISPLAY="$DISPLAY_NUM" xdpyinfo | awk '/dimensions/{print $2}'))."
+if size=$(display_health 2>/dev/null); then
+  echo "Display $DISPLAY_NUM already running ($size)."
 else
   echo "Starting display $DISPLAY_NUM at $SIZE (logs in $LOG_DIR)."
   setsid nohup Xvfb "$DISPLAY_NUM" -screen 0 "${SIZE}x24" -nolisten tcp \
     >"$LOG_DIR/xvfb.log" 2>&1 </dev/null &
   for _ in $(seq 50); do
-    DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 && break
+    display_health >/dev/null 2>&1 && break
     sleep 0.1
   done
+  display_health >/dev/null || exit 1
 fi
 
 # The desktop's own sound output (see above).

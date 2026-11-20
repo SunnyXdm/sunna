@@ -1,0 +1,13 @@
+User=102
+Seat=seat0
+Display=
+Remote=no
+Type=x11
+Class=greeter
+Active=yes
+USER     GROUP    COMMAND
+gdm      gdm      Xorg
+root     root     sunnad
+root root 700 /etc/sunna
+root root 600 /etc/sunna/host.key
+root root 755 /opt/sunna/host/current/bin/sunnad

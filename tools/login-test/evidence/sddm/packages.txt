@@ -1,0 +1,11 @@
+Removing and restoring sddm
+not-sharing Its desktop isn't running.
+640x400 first frame in 3713 ms
+Supervisor PID 2000 and listener PID 2002 survived desktop removal and restoration
+invoke-rc.d: policy-rc.d denied execution of reload.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+Error: host refused the session: Its desktop isn't running.
+12 101 sddm seat0 tty3 active no -
+640x400 first frame in 6115 ms

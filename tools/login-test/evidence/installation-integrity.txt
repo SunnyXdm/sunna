@@ -1,0 +1,1 @@
+PASS installer rejected a world-writable file, a link outside the install and an entry owned by a non-administrator

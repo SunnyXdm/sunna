@@ -1,0 +1,16 @@
+Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Mutter.RemoteDesktop was not provided by any .service files
+Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Mutter.RemoteDesktop was not provided by any .service files
+Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Mutter.ScreenCast was not provided by any .service files
+Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Mutter.ScreenCast was not provided by any .service files
+Type=wayland
+Class=greeter
+User=102
+Name=gdm
+Seat=seat0
+Type=wayland
+Class=greeter
+Active=yes
+GNOME Shell 46.0
+RemoteDesktop session request was refused
+ScreenCast session request was refused
+not-sharing Nobody is logged in and the login screen can't be shared on this system.

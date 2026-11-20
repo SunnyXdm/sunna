@@ -1,0 +1,10 @@
+User=101
+Seat=seat0
+Display=:0
+Remote=no
+Type=x11
+Class=greeter
+Active=yes
+USER     GROUP        PID COMMAND
+root     root         437 sunnad
+sddm     sddm         444 sunnad

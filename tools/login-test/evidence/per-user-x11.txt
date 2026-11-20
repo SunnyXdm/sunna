@@ -1,0 +1,4 @@
+not-sharing Its desktop isn't running.
+ready 
+640x360 first frame in 376 ms
+Same listener PID 16706

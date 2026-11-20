@@ -1,0 +1,9 @@
+#!/bin/bash
+# LightDM supplies the display and its authority file. Xvfb needs no VT.
+set -eu
+args=()
+for arg do
+    case "$arg" in vt[0-9]*|-novtswitch|-sharevts) continue ;; esac
+    args+=("$arg")
+done
+exec /usr/bin/Xvfb "${args[@]}" -screen 0 1024x768x24 -nolisten tcp

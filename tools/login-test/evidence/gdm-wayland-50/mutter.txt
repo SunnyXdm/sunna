@@ -1,0 +1,35 @@
+SUNNA-GREETER-PROOF-BEGIN
+Installing the signed host in /opt/sunna, root-only settings in /etc/sunna, and the system sunna-host.service. Listening on 127.0.0.1:48800.
+Anyone with the sharing key can try passwords at your login screen. Use an authenticated private network.
+Created symlink '/etc/systemd/system/multi-user.target.wants/sunna-host.service' → '/etc/systemd/system/sunna-host.service'.
+System sharing installed. Show the private link with sunna-host link.
+User=60578
+Name=gdm-greeter
+Seat=seat0
+Type=wayland
+Class=greeter
+Active=yes
+GNOME Shell 50.1
+  interface org.gnome.Mutter.RemoteDesktop {
+    methods:
+      CreateSession(out o session_path);
+    signals:
+    properties:
+      readonly u SupportedDeviceTypes;
+      readonly i Version;
+  };
+Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Session creation inhibited
+RemoteDesktop session request was refused
+  interface org.gnome.Mutter.ScreenCast {
+    methods:
+      CreateSession(in  a{sv} properties,
+                    out o session_path);
+    signals:
+    properties:
+      readonly i Version;
+  };
+Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Session creation inhibited
+ScreenCast session request was refused
+unreachable Nothing answered at 127.0.0.1:48800. Is Sunna sharing on that computer?
+not-sharing Nobody is logged in and the login screen can't be shared on this system.
+SUNNA-GREETER-PROOF-END

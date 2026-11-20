@@ -1,0 +1,10 @@
+Error: host refused the session: Its desktop isn't running.
+Killed worker pid 2186
+ready 
+640x400 first frame in 2111 ms
+Killed supervisor pid 768
+unreachable Nothing answered at 127.0.0.1:48800. Is Sunna sharing on that computer?
+640x400 first frame in 2743 ms
+Killed display pid 2118
+not-sharing Its desktop isn't running.
+640x400 first frame in 2961 ms

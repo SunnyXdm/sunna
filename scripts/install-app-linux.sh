@@ -32,15 +32,24 @@ if ! pkg-config --exists libavcodec libavutil; then
 fi
 
 echo "Building Sunna…"
-SUNNA_GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" cargo build --release -p sunna --features custom-protocol
+SUNNA_GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" cargo build --release -p sunna -p sunna-update --features custom-protocol
 
 BIN="$HOME/.local/bin"
 SHARE="${XDG_DATA_HOME:-$HOME/.local/share}"
 mkdir -p "$BIN" "$SHARE/applications" "$SHARE/icons/hicolor/scalable/apps" "$SHARE/icons/hicolor/128x128/apps" "$SHARE/icons/hicolor/256x256/apps"
-# Copy then rename: a running Sunna keeps its old binary until it restarts.
-cp target/release/sunna "$BIN/sunna.new"
-chmod 755 "$BIN/sunna.new"
-mv -f "$BIN/sunna.new" "$BIN/sunna"
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "$STAGE/bin" "$STAGE/share/sunna"
+cp target/release/sunna "$STAGE/bin/sunna-real"
+cp target/release/sunna-update "$STAGE/bin/"
+cp -r apps/sunna/icons "$STAGE/share/sunna/"
+cat > "$STAGE/bin/sunna" <<'LAUNCH'
+#!/bin/sh
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/sunna-update" supervise app "$@"
+LAUNCH
+chmod 755 "$STAGE/bin/sunna"
+target/release/sunna-update adopt app "$STAGE"
 cp apps/sunna/icons/icon.svg "$SHARE/icons/hicolor/scalable/apps/dev.sunna.app.svg"
 cp apps/sunna/icons/128x128.png "$SHARE/icons/hicolor/128x128/apps/dev.sunna.app.png"
 cp apps/sunna/icons/128x128@2x.png "$SHARE/icons/hicolor/256x256/apps/dev.sunna.app.png"

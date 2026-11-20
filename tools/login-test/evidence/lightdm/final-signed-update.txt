@@ -1,0 +1,13 @@
+Removed "/etc/systemd/system/multi-user.target.wants/sunna-host.service".
+Created symlink /etc/systemd/system/multi-user.target.wants/sunna-host.service → /etc/systemd/system/sunna-host.service.
+Installing the signed host in /opt/sunna, root-only settings in /etc/sunna, and the system sunna-host.service. Listening on 127.0.0.1:48800.
+Anyone with the sharing key can try passwords at your login screen. Use an authenticated private network.
+System sharing installed. Show the private link with sunna-host link.
+Update queued; it will restart when the session ends.
+{"format":1,"request":"update","request_id":1,"pending_protocol":0,"error":null,"minimum_protocol":8,"peer_protocol":null,"last_check":1795018870,"available":"0.1.0","pending":null,"current":"0.1.0","previous":null,"failed":[],"starts":0,"healthy":true,"policy":""}
+Signed B healthy
+640x400 first frame in 2906 ms
+Update queued; it will restart when the session ends.
+{"format":1,"request":"update","request_id":2,"pending_protocol":0,"error":null,"minimum_protocol":8,"peer_protocol":null,"last_check":1795018910,"available":"0.2.0","pending":null,"current":"0.2.0","previous":"0.1.0","failed":[],"starts":0,"healthy":true,"policy":""}
+Signed broken candidate recorded and B healthy again
+640x400 first frame in 2665 ms

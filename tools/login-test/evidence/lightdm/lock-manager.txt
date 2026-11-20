@@ -1,0 +1,9 @@
+Error: host refused the session: Its desktop isn't running.
+640x400 first frame in 2042 ms
+Authenticated desktop session c8
+c8 1001 viewer1 seat0 tty7 online  no -
+c9  101 lightdm seat0 -    opening no -
+640x400 first frame in 2672 ms
+c8 1001 viewer1 seat0 tty7 online no -
+c9  101 lightdm seat0 -    active no -
+640x400 first frame in 2006 ms

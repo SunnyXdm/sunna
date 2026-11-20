@@ -7,6 +7,7 @@
 #   sunna-host status           running? where? is someone connected?
 #   sunna-host start | stop | restart
 #   sunna-host logs             follow the host's log
+#   sunna-host new-identity     replace the host identity (add it again on every viewer)
 #   sunna-host new-key          make a new key (update it in the app after)
 #   sunna-host desktop-restart  restart the virtual desktop (closes its apps)
 #   sunna-host desktop-stop     stop the host, the virtual desktop and its apps
@@ -15,11 +16,12 @@
 #                               (the key is left out)
 #
 # setup options:
+#   --system         install the signed host for the active local seat (administrator)
 #   --desktop        share your X11 or GNOME/KDE Wayland desktop
 #                    (Wayland: approve once here at the computer)
 #   --virtual        share a separate desktop that runs without a screen
 #                    (servers, or other Wayland desktops)
-#   --listen WHERE   tailscale (default when Tailscale is up), lan, or IP[:PORT]
+#   --listen WHERE   tailscale (default when its CLI is installed), lan, or IP[:PORT]
 #   --name NAME      how this computer is called in the app (default: hostname)
 #   --key KEY        use this key instead of making one
 #   --size WxH       the virtual desktop's size (default 1710x1112)
@@ -41,6 +43,12 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 SELF="$(readlink -f "$0")"
 HERE="$(dirname "$SELF")"
+# Unit files must survive pruning the version that ran setup.
+INSTALL_ROOT="${SUNNA_UPDATE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/sunna}/host"
+LAUNCHER="$SELF"
+case "$SELF" in
+  "$(readlink -m "$INSTALL_ROOT")"/versions/*/bin/sunna-host) LAUNCHER="$INSTALL_ROOT/current/bin/sunna-host" ;;
+esac
 
 die() { echo "sunna-host: $*" >&2; exit 1; }
 
@@ -50,6 +58,10 @@ sunnad_path() {
 
 desktop_helper() {
   local candidate
+  if [ "$LAUNCHER" != "$SELF" ] && [ -x "$INSTALL_ROOT/current/share/sunna/linux-desktop.sh" ]; then
+    echo "$INSTALL_ROOT/current/share/sunna/linux-desktop.sh"
+    return
+  fi
   for candidate in "$HERE/../share/sunna/linux-desktop.sh" "${XDG_DATA_HOME:-$HOME/.local/share}/sunna/linux-desktop.sh" \
     /usr/share/sunna/linux-desktop.sh "$HERE/linux-desktop.sh"; do
     [ -x "$candidate" ] && { echo "$candidate"; return; }
@@ -108,6 +120,7 @@ write_config() {
 
 # The key other computers need to connect. Keep it secret.
 SUNNA_TOKEN=$SUNNA_TOKEN
+SUNNA_REQUIRE_PROOF=${SUNNA_REQUIRE_PROOF:-0}
 # How this computer is called in the app.
 SUNNA_NAME=$SUNNA_NAME
 # Where to listen: tailscale (only your tailnet), lan (your local network),
@@ -131,10 +144,26 @@ EOF
 # and stopping the desktop takes everything started in it along, the host
 # included (stopped first, so no session is recording the desktop's sound
 # output when it goes away).
+unit_path() {
+  python3 - "$1" <<'PYUNIT'
+import sys
+path = sys.argv[1]
+print('"' + ''.join({'%': '%%', '\\': '\\\\', '"': '\\"'}.get(c, c if ord(c) >= 32 and ord(c) != 127 else f'\\x{ord(c):02x}') for c in path) + '"')
+PYUNIT
+}
+
 write_units() {
   mkdir -p "$UNIT_DIR"
+  local run_command="$(unit_path "$LAUNCHER") run"
+  if [[ "$LAUNCHER" != "$SELF" && -x "$INSTALL_ROOT/recovery" ]]; then
+    run_command="$(unit_path "$INSTALL_ROOT/recovery") run-user host"
+  fi
   local needs=""
   if [ "$SUNNA_MODE" = virtual ]; then
+    local desktop_command="$(unit_path "$(desktop_helper)")"
+    if [[ "$LAUNCHER" != "$SELF" && -x "$INSTALL_ROOT/recovery" ]]; then
+      desktop_command="$(unit_path "$INSTALL_ROOT/recovery") run-desktop host"
+    fi
     needs="Wants=$DESKTOP_UNIT
 After=$DESKTOP_UNIT
 PartOf=$DESKTOP_UNIT"
@@ -145,9 +174,11 @@ Description=Sunna's virtual desktop (a desktop without a screen, to share)
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15
 Environment=SUNNA_DESKTOP=${SUNNA_DESKTOP:-}
-ExecStart=$(desktop_helper) $SUNNA_DISPLAY ${SUNNA_DESKTOP_SIZE:-1710x1112}
-ExecStop=$(desktop_helper) stop $SUNNA_DISPLAY
+ExecStart=:/usr/bin/env -- $desktop_command $SUNNA_DISPLAY ${SUNNA_DESKTOP_SIZE:-1710x1112}
+ExecStop=:/usr/bin/env -- $desktop_command stop $SUNNA_DISPLAY
 EOF
   else
     rm -f "$DESKTOP_UNIT_FILE"
@@ -159,9 +190,9 @@ After=graphical-session.target
 $needs
 
 [Service]
-ExecStart=$SELF run
+ExecStart=:/usr/bin/env -- $run_command
 Environment=NO_COLOR=1
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]
@@ -177,7 +208,7 @@ write_autostart() {
 Type=Application
 Name=Sunna host
 Comment=Share this desktop with the Sunna app
-Exec=sh -c 'systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS; systemctl --user restart $UNIT'
+Exec=sh -c 'systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_ID XDG_VTNR XDG_SESSION_TYPE WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS; systemctl --user restart $UNIT'
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
@@ -187,7 +218,6 @@ missing_for_virtual() {
   local missing=() session
   command -v Xvfb >/dev/null || missing+=(Xvfb)
   command -v dbus-run-session >/dev/null || missing+=(dbus-run-session)
-  command -v xdpyinfo >/dev/null || missing+=(xdpyinfo)
   if [ -n "${SUNNA_DESKTOP:-}" ]; then
     session=$([ "$SUNNA_DESKTOP" = plasma ] && echo startplasma-x11 || echo startxfce4)
     command -v "$session" >/dev/null || missing+=("$session")
@@ -199,11 +229,11 @@ missing_for_virtual() {
 
 install_hint() {
   if command -v apt-get >/dev/null; then
-    echo "  sudo apt install xvfb x11-utils dbus-x11 xfce4"
+    echo "  sudo apt install xvfb dbus-x11 xfce4"
   elif command -v pacman >/dev/null; then
-    echo "  sudo pacman -S xorg-server-xvfb xorg-xdpyinfo dbus xfce4"
+    echo "  sudo pacman -S xorg-server-xvfb dbus xfce4"
   elif command -v dnf >/dev/null; then
-    echo "  sudo dnf install xorg-x11-server-Xvfb xdpyinfo dbus-x11 @xfce-desktop-environment"
+    echo "  sudo dnf install xorg-x11-server-Xvfb dbus-x11 @xfce-desktop-environment"
   fi
 }
 
@@ -248,7 +278,7 @@ cmd_setup() {
   if [ -n "$listen" ]; then
     SUNNA_LISTEN="$listen"
   elif [ -z "${SUNNA_LISTEN:-}" ]; then
-    if [ -n "$(tailscale_ip)" ]; then SUNNA_LISTEN=tailscale; else SUNNA_LISTEN=lan; fi
+    if command -v tailscale >/dev/null; then SUNNA_LISTEN=tailscale; else SUNNA_LISTEN=lan; fi
   fi
   if [ -n "$key" ]; then
     SUNNA_TOKEN="$key"
@@ -281,8 +311,7 @@ cmd_setup() {
     fi
   fi
   if [ "$SUNNA_LISTEN" = lan ]; then
-    echo "Note: listening on your local network. Sunna's encryption doesn't check the host's identity"
-    echo "      yet, so prefer Tailscale on networks you don't control (sunna-host setup --listen tailscale)."
+    echo "Listening on your local network. Current apps verify the host identity in its private link."
   fi
 
   if [ "$mode" = desktop ] && [ "$session" = wayland ]; then
@@ -294,7 +323,7 @@ cmd_setup() {
   if [ "$mode" = desktop ]; then
     systemctl_user disable "$UNIT" >/dev/null 2>&1 || true
     write_autostart
-    systemctl_user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
+    systemctl_user import-environment DISPLAY XAUTHORITY XDG_SESSION_ID XDG_VTNR XDG_SESSION_TYPE WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
   else
     rm -f "$AUTOSTART"
     systemctl_user enable "$UNIT" >/dev/null
@@ -345,10 +374,17 @@ cmd_run() {
     # sunna-desktop.service has started it (the unit waits for that).
     export DISPLAY="$SUNNA_DISPLAY"
     export SUNNA_CAPTURE=x11
+    unset XDG_SESSION_ID XDG_VTNR
     # Share the virtual desktop's own sound output (linux-desktop.sh).
     export SUNNA_AUDIO_SOURCE="${SUNNA_AUDIO_SOURCE:-sunna_desktop_${SUNNA_DISPLAY#:}.monitor}"
   else
     export DISPLAY="${DISPLAY:-$SUNNA_DISPLAY}"
+  fi
+  if [[ "$LAUNCHER" != "$SELF" && -x "$INSTALL_ROOT/recovery" ]]; then
+    exec "$INSTALL_ROOT/recovery" supervise host --source screen --listen "$addr" --name "$SUNNA_NAME"
+  fi
+  if [ -x "$HERE/sunna-update" ]; then
+    exec "$HERE/sunna-update" supervise host --source screen --listen "$addr" --name "$SUNNA_NAME"
   fi
   exec "$(sunnad_path)" --source screen --listen "$addr" --name "$SUNNA_NAME"
 }
@@ -362,7 +398,10 @@ cmd_link() {
   port="${addr##*:}"
   link="sunna://$host"
   [ "$port" = "$DEFAULT_PORT" ] || link="$link:$port"
-  link="$link?key=$SUNNA_TOKEN"
+  local encoded identity
+  encoded=$(printf '%s' "$SUNNA_TOKEN" | python3 -c 'import sys; from urllib.parse import quote; print(quote(sys.stdin.read(), safe=""))')
+  identity=$("$(sunnad_path)" identity)
+  link="$link?key=$encoded&id=$identity"
   echo
   echo "    Address   $host$([ "$port" = "$DEFAULT_PORT" ] || echo ":$port")"
   echo "    Key       $SUNNA_TOKEN"
@@ -403,11 +442,58 @@ sound_status() {
   fi
 }
 
+# Structured local status for the desktop app. stdout may contain a private link.
+cmd_status_json() {
+  local state=off mode="" reach="" address="" start=false manager=cli packages="" missing="" viewer=""
+  if [ -f "$CONFIG" ]; then
+    load
+    mode="$SUNNA_MODE"
+    address="$(listen_address || true)"
+    reach=lan
+    [ "$SUNNA_LISTEN" != tailscale ] || reach=tailscale
+    if systemctl_user is-active --quiet "$UNIT"; then state=on; fi
+    if systemctl_user is-enabled --quiet "$UNIT" || [ -f "$AUTOSTART" ]; then start=true; fi
+    if [ "$state" = on ] && journalctl --user -u "$UNIT" --since "-5s" -o cat 2>/dev/null | grep -q "host window"; then viewer=Someone; fi
+    if [ "$mode" = virtual ]; then missing="$(missing_for_virtual)"; fi
+    if [ -n "$missing" ]; then
+      packages="$(install_hint)"
+      if [ "${SUNNA_DESKTOP:-}" = plasma ]; then
+        case "$packages" in
+          *"apt install"*)
+            local plasma=plasma-workspace
+            if apt-cache show plasma-session-x11 2>/dev/null | grep '^Package:' >/dev/null; then plasma=plasma-session-x11; fi
+            packages="${packages%xfce4}$plasma" ;;
+          *"pacman -S"*) packages="${packages%xfce4}plasma-x11-session" ;;
+          *"dnf install"*) packages="${packages%@xfce-desktop-environment}plasma-workspace-x11" ;;
+        esac
+      fi
+    fi
+  fi
+  if [ -f "$INSTALL_ROOT/installed-by-app" ] && [ "$SELF" = "$(readlink -f "$INSTALL_ROOT/current/bin/sunna-host" || true)" ]; then manager=app; fi
+  local identity=""
+  if [[ $state == on ]]; then identity=$("$(sunnad_path)" identity); fi
+  SUNNA_ID="$identity" SUNNA_TOKEN="${SUNNA_TOKEN:-}" python3 - "$state" "$manager" "$mode" "$reach" "$address" "$start" "$packages" "$missing" "$viewer" <<'PYJSON'
+import json, os, sys
+from urllib.parse import quote
+state, manager, mode, reach, address, start, packages, missing, viewer = sys.argv[1:]
+key = os.environ['SUNNA_TOKEN']
+link = 'sunna://' + address + '?key=' + quote(key, safe='') + '&id=' + os.environ['SUNNA_ID'] if state == 'on' and address and key else None
+print(json.dumps(dict(supported=True, state='error' if missing else state, managed_by=manager,
+    mode=mode or None, reach=reach or None, address=address or None, link=link, viewer=viewer or None,
+    permissions=[], reason='The background desktop needs system packages.' if missing else None,
+    fix=dict(label='Install the desktop packages.', command=packages.strip() or None) if missing else None,
+    starts_by_itself=start == 'true', shows_login_screen=False)))
+PYJSON
+}
+
 cmd_status() {
   load
   local state since
   state="$(systemctl_user is-active "$UNIT" 2>/dev/null || true)"
   echo "Sunna host: $state"
+  if journalctl --user -u "$UNIT" -b -g 'an older app connected without full verification' -n1 -o cat 2>/dev/null | grep -q 'an older app connected'; then
+    echo "  An older app connected without full verification."
+  fi
   echo "  Name       $SUNNA_NAME"
   echo "  Mode       $SUNNA_MODE ($SUNNA_DISPLAY)"
   echo "  Listening  $(listen_address || true)"
@@ -494,13 +580,111 @@ cmd_report() {
   } | if [ -n "$key" ]; then sed "s/$key/<key>/g"; else cat; fi
 }
 
+# An ordinary local status query never reads the system key. The app can
+# explain an administrator-managed host even when its caller has no sudo.
+system_helper=/opt/sunna/host/current/share/sunna/system-host.sh
+if [[ ${1:-} == setup && ${2:-} == --system ]]; then
+  shift 2
+  installer=$(mktemp)
+  trap 'rm -f "$installer"' EXIT
+  curl --proto '=https' --proto-redir '=https' -fsSL \
+    https://github.com/SunnyXdm/sunna/releases/latest/download/install.sh -o "$installer"
+  grep -Fxq '# sunna-linux-system-installer-v1' "$installer" || die "This signed download does not yet offer whole-machine sharing."
+  /bin/sh "$installer" host --system "$@"
+  exit
+fi
+if { [[ ${1:-} == status && ${2:-} == --json ]] && /usr/bin/systemctl cat "$UNIT" >/dev/null 2>&1; } ||
+   { [[ -f /etc/systemd/system/$UNIT ]] && grep -Fxq 'Description=Sunna whole-machine host' "/etc/systemd/system/$UNIT"; }; then
+  elevate=()
+  if (( EUID != 0 )); then elevate=(sudo); fi
+  case "${1:-}" in
+    status)
+      if [[ ${2:-} == --json ]]; then
+        # Only the public unit and its runtime receipts are read here.
+        python3 - "$UNIT" <<'PYSYSTEM'
+import ipaddress, json, re, subprocess, sys
+from pathlib import Path
+
+unit = sys.argv[1]
+def ctl(*args):
+    return subprocess.run(['/usr/bin/systemctl', *args, unit], capture_output=True, text=True)
+def read(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ''
+
+definition = ctl('cat').stdout.splitlines()
+commands = [line.strip() for line in definition if line.strip().startswith('Exec')]
+ours = ([line for line in definition if line.startswith('# /')] == ['# /etc/systemd/system/sunna-host.service']
+        and 'Description=Sunna whole-machine host' in definition
+        and commands in (['ExecStart=/opt/sunna/host/recovery system-serve host --system-host --name %H'],
+                         ['ExecStart=/opt/sunna/host/current/bin/sunna-update supervise host --system-host --listen ${SUNNA_LISTEN_ADDR} --name %H']))
+active = ours and ctl('is-active', '--quiet').returncode == 0
+state, address, reason = 'starting' if active else 'off', None, None
+if active:
+    info = dict(line.split('=', 1) for line in ctl('show', '-p', 'MainPID', '-p', 'InvocationID').stdout.splitlines() if '=' in line)
+    receipt = read('/run/sunna-host/receipt').split()
+    if (len(receipt) == 3 and receipt[0] == info.get('InvocationID') and receipt[1].isascii()
+            and receipt[1].isdigit() and receipt[2] in ('frame', 'empty')):
+        parent = re.search(r'^PPid:\s*(\d+)$', read('/proc/' + receipt[1] + '/status'), re.M)
+        bound = read('/run/sunna-host/listening')
+        try:
+            host, port = bound.rsplit(':', 1)
+            ip = ipaddress.ip_address(host.removeprefix('[').removesuffix(']'))
+            if (parent and parent[1] == info.get('MainPID') and parent[1] != '0' and 0 < int(port) <= 65535
+                    and (ip.version == 4 or host == '[' + str(ip) + ']')):
+                address, state = bound, 'on'
+                if receipt[2] == 'empty':
+                    reason = 'There is no desktop to share yet.'
+        except ValueError:
+            pass
+greeter = {'0': False, '1': True}.get(read('/run/sunna-host/shares-greeter')) if ours else None
+print(json.dumps(dict(supported=ours, state=state, managed_by='system' if ours else 'external',
+    mode='desktop', shows_login_screen=greeter, starts_by_itself=ours and ctl('is-enabled','--quiet').returncode == 0,
+    address=address, link=None, reach=None, viewer=None, permissions=[],
+    reason=reason if ours else 'Sharing is set up outside Sunna.', fix=None)))
+PYSYSTEM
+      else
+        journalctl -b -u "$UNIT" -g 'an older app connected without full verification' -n1 -o cat 2>/dev/null || true
+        systemctl status --no-pager "$UNIT"
+      fi
+      exit ;;
+    logs) exec journalctl -u "$UNIT" -f -n 50 -o cat ;;
+    start|stop|restart) exec "${elevate[@]}" /usr/bin/systemctl "$1" "$UNIT" ;;
+    update|link|new-key|new-identity|uninstall) exec "${elevate[@]}" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root "$system_helper" "$@" ;;
+  esac
+fi
+
 case "${1:-help}" in
+  update) shift; [ ! -f "$CONFIG" ] || load; exec "$(sunnad_path)" update "$@" ;;
   setup) shift; cmd_setup "$@" ;;
   run) cmd_run ;;
   link) cmd_link ;;
-  status) cmd_status ;;
+  status) if [ "${2:-}" = --json ]; then cmd_status_json; else cmd_status; fi ;;
+  migrate-service)
+    load
+    write_units
+    systemctl_user daemon-reload
+    systemctl_user restart "$UNIT"
+    for _ in $(seq 60); do
+      pid=$(systemctl_user show -p MainPID --value "$UNIT")
+      if [[ "$pid" != 0 && ( "/proc/$pid/exe" -ef "$HERE/sunna-update" || "/proc/$pid/exe" -ef "$INSTALL_ROOT/recovery" ) ]]; then
+        for child in $(cat "/proc/$pid/task/$pid/children"); do
+          if [ "/proc/$child/exe" -ef "$HERE/sunnad" ] && "$HERE/sunna-update" running host; then
+            echo 'The migrated host is running through the update supervisor.'
+            exit 0
+          fi
+        done
+      fi
+      sleep 1
+    done
+    die "The migrated host did not become ready. Check sunna-host status." ;;
   start | stop | restart) systemctl_user "$1" "$UNIT" ;;
   logs) journalctl --user -u "$UNIT" -f -n 50 -o cat ;;
+  new-identity)
+    "$(sunnad_path)" new-identity
+    systemctl_user try-restart "$UNIT" || die "Identity rotated, but the running host could not reload it." ;;
   new-key) cmd_new_key ;;
   desktop-stop) systemctl_user stop "$UNIT" "$DESKTOP_UNIT" ;;
   desktop-restart) systemctl_user restart "$DESKTOP_UNIT" ;;

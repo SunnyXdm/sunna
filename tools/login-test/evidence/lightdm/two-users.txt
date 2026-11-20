@@ -1,0 +1,12 @@
+640x400 first frame in 2064 ms
+c2 1001 viewer1 seat0 tty7 online no -
+c4 1002 viewer2 seat0 tty8 active no -
+640x400 first frame in 5448 ms
+c2 1001 viewer1 seat0 tty7 active no -
+c4 1002 viewer2 seat0 tty8 online no -
+640x400 first frame in 6223 ms
+c2 1001 viewer1 seat0 tty7 online no -
+c4 1002 viewer2 seat0 tty8 online no -
+
+(xfce4-session-logout:1657): dbind-WARNING **: 16:13:33.921: AT-SPI: Error retrieving accessibility bus address: org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files
+Error: host refused the session: Its desktop isn't running.

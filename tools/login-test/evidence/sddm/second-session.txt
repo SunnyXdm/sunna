@@ -1,0 +1,4 @@
+640x400 first frame in 3540 ms
+3 1001 viewer1 seat0 tty2 online no -
+7 1002 viewer2 seat0 tty1 active no -
+640x400 first frame in 3857 ms

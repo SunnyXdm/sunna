@@ -1,0 +1,9 @@
+User=101
+Seat=seat0
+Display=:0
+Remote=no
+Scope=session-c1.scope
+Leader=343
+Type=x11
+Class=greeter
+Active=yes

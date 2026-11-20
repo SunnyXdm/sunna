@@ -1,0 +1,12 @@
+755
+Result=success
+ActiveState=active
+
+Result=success
+ActiveState=active
+c1 101 lightdm seat0 - active no -
+saw-greeter
+640x400 first frame in 5384 ms
+Boot to first saved frame (upper bound): 105.31 seconds
+160.84 128.02
+640x400 first frame in 2180 ms

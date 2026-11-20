@@ -1,0 +1,55 @@
+Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Session creation inhibited
+Error: GDBus.Error:org.freedesktop.DBus.Error.Failed: Session creation inhibited
+User=60578
+Name=gdm-greeter
+Seat=seat0
+Type=wayland
+Class=greeter
+Active=yes
+GNOME Shell 49.0
+  interface org.gnome.Mutter.RemoteDesktop {
+    methods:
+      CreateSession(out o session_path);
+    signals:
+    properties:
+      readonly u SupportedDeviceTypes;
+      readonly i Version;
+  };
+RemoteDesktop session request was refused
+  interface org.gnome.Mutter.ScreenCast {
+    methods:
+      CreateSession(in  a{sv} properties,
+                    out o session_path);
+    signals:
+    properties:
+      readonly i Version;
+  };
+ScreenCast session request was refused
+unreachable Nothing answered at 127.0.0.1:48800. Is Sunna sharing on that computer?
+unreachable Nothing answered at 127.0.0.1:48800. Is Sunna sharing on that computer?
+MainPID=671
+Result=success
+NRestarts=0
+total 4
+-rw-r--r-- 1 root root 15 Nov 18 12:39 listening
+    PID USER     COMMAND
+    671 root     sunna-update
+    686 root     sunnad
+not-sharing Nobody is logged in and the login screen can't be shared on this system.
+c77 60579 gdm-greeter-2 seat0 11603 greeter       tty1 no -
+c78 60579 gdm-greeter-2 -     11626 manager-early -    no -
+  "current": "0.1.0",
+  "previous": null,
+  "failed": [],
+  "starts": 2,
+  "healthy": false,
+  "policy": ""
+}
+real	0m5.433s
+user	0m1.820s
+sys	0m0.405s
+Error: host refused the session: Nobody is logged in and the login screen can't be shared on this system.
+
+real	0m7.488s
+user	0m1.933s
+sys	0m0.577s

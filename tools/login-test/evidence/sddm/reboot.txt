@@ -1,0 +1,12 @@
+755
+Result=success
+ActiveState=active
+
+Result=success
+ActiveState=active
+1 101 sddm seat0 tty2 active no -
+saw-greeter
+640x400 first frame in 7371 ms
+Boot to first saved frame (upper bound): 179.62 seconds
+197.60 66.74
+640x400 first frame in 7113 ms

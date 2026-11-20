@@ -7,10 +7,14 @@
 //!
 //! One viewer owns the pipeline; probes and busy refusals run concurrently.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use sunna_capture::FrameSource;
 use sunna_codec::Encoder;
 use sunna_input::InputInjector;
@@ -30,7 +34,7 @@ pub struct StreamConfig {
 }
 
 impl StreamConfig {
-    fn apply(&self, native: (u32, u32), settings: &StreamSettings) -> anyhow::Result<Self> {
+    fn apply(&self, native: (u32, u32), follow: bool, settings: &StreamSettings) -> anyhow::Result<Self> {
         let mut next = self.clone();
         if let Some(codec) = &settings.codec {
             anyhow::ensure!(
@@ -41,7 +45,12 @@ impl StreamConfig {
         }
         if let Some(size) = settings.max_size {
             anyhow::ensure!(size.0 >= 2 && size.1 >= 2, "max_size must be at least 2x2");
-            (next.width, next.height) = fit_within(native, Some(size));
+            (next.width, next.height) = if follow {
+                // What a display can be (Sunna's display driver's limits).
+                (size.0.clamp(640, 7680) & !1, size.1.clamp(480, 4320) & !1)
+            } else {
+                fit_within(native, Some(size))
+            };
         }
         if let Some(fps) = settings.fps {
             anyhow::ensure!(fps > 0, "fps must be positive");
@@ -95,6 +104,7 @@ fn open_encoder(
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
+    pub require_proof: bool,
     /// Share text and images with the authenticated viewer.
     pub clipboard: bool,
     pub name: String,
@@ -117,12 +127,20 @@ pub struct HostConfig {
     pub about: sunna_proto::messages::HostAbout,
     /// Share this machine's sound with viewers that want it.
     pub audio: bool,
+    /// The source makes a display for each viewer (Sunna's own virtual
+    /// display on Windows): a viewer's `max_size` is the stream size, not a
+    /// limit within `width`×`height`.
+    pub display_follows_viewer: bool,
 }
+
+/// Checks that the session bound to a viewer is still selected.
+pub type SessionCheck = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Signals from the control loop into the media thread. This is the seam where
 /// congestion control couples to the encoder: decisions apply to the *next*
 /// frame (research/03 §4 integration rule).
 struct SessionSignals {
+    active: Option<SessionCheck>,
     force_keyframe: AtomicBool,
     target_bitrate_bps: AtomicU32,
     max_bitrate_bps: AtomicU32,
@@ -138,6 +156,15 @@ struct SessionSignals {
     sent: Mutex<SentFrames>,
     /// Datagrams sent again since the last host window (stats only).
     resent: AtomicU32,
+}
+
+fn still_active(active: Option<&SessionCheck>, connection: &Connection) -> bool {
+    if active.is_some_and(|check| !check()) {
+        connection.close(0u32.into(), b"session changed");
+        false
+    } else {
+        true
+    }
 }
 
 /// The last second or so of video sent (bounded in bytes too), so the
@@ -205,7 +232,23 @@ fn keyframe_group(delta_group: u32) -> u32 {
     }
 }
 
+/// The current capture size, or the reason a desktop cannot be shared.
+pub const PORTAL_PERMISSION: &str = "Waiting for permission on that computer.";
+pub type DesktopState = Result<(u32, u32), &'static str>;
+
+/// Desktop devices routed to a session worker in a system installation.
+pub trait SessionDevices: Send + Sync {
+    fn bind_viewer(self: Arc<Self>, connection: &Connection) -> anyhow::Result<((u32, u32), SessionCheck)>;
+    fn audio(self: Arc<Self>) -> Box<dyn sunna_audio::Capture>;
+    fn clipboard(self: Arc<Self>) -> Box<dyn sunna_clipboard::Clipboard>;
+}
+
+mod admission;
+
 struct HostState {
+    devices: Option<Arc<dyn SessionDevices>>,
+    local_desktop: bool,
+    desktop: tokio::sync::watch::Receiver<DesktopState>,
     config: HostConfig,
     new_source: SourceFactory,
     new_encoder: EncoderFactory,
@@ -222,12 +265,14 @@ struct Viewer {
     connection: Connection,
 }
 
-struct SessionSlot(Arc<HostState>);
+struct SessionSlot { host: Arc<HostState>, _update_guard: Option<std::fs::File> }
 
 impl Drop for SessionSlot {
     fn drop(&mut self) {
-        *self.0.viewer.lock().unwrap() = None;
-        self.0.busy.store(false, Ordering::Release);
+        *self.host.viewer.lock().unwrap() = None;
+        #[cfg(target_os = "macos")]
+        macos::viewer_changed(None);
+        self.host.busy.store(false, Ordering::Release);
     }
 }
 
@@ -244,6 +289,8 @@ impl HostState {
                     device: device.to_string(),
                     connection: connection.clone(),
                 });
+                #[cfg(target_os = "macos")]
+                macos::viewer_changed(Some(name));
                 return Ok(());
             }
             let old = {
@@ -273,8 +320,10 @@ impl HostState {
 /// desktop suspends after its own idle time (GNOME: about 15-20 minutes),
 /// and a viewer's input, into a virtual desktop especially, isn't the
 /// person at it: without this, the session just drops.
+#[cfg(not(target_os = "windows"))]
 struct KeepAwake(Option<std::process::Child>);
 
+#[cfg(not(target_os = "windows"))]
 impl KeepAwake {
     fn start() -> Self {
         let host = std::process::id().to_string();
@@ -325,6 +374,7 @@ impl KeepAwake {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl Drop for KeepAwake {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
@@ -332,6 +382,69 @@ impl Drop for KeepAwake {
             let _ = std::process::Command::new("kill").arg("-TERM").arg(format!("-{}", child.id())).status();
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+/// Execution state belongs to a thread, so keep that thread alive for the session.
+#[cfg(target_os = "windows")]
+struct KeepAwake {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl KeepAwake {
+    fn start() -> Self {
+        use windows::Win32::System::Power::{
+            SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+        };
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("sunna-keep-awake".into())
+            .spawn(move || {
+                // Away mode is for unattended media recording: a remote desktop
+                // only needs to prevent idle sleep. Capture owns display power.
+                // SAFETY: These flags change only the calling thread's execution state.
+                if unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) }.0 == 0 {
+                    tracing::warn!(
+                        "can't keep this computer awake: SetThreadExecutionState failed"
+                    );
+                    return;
+                }
+                tracing::info!(
+                    how = "SetThreadExecutionState",
+                    "keeping this computer awake during the session"
+                );
+                while !stopped.load(Ordering::Relaxed) {
+                    std::thread::park();
+                }
+                // SAFETY: Clear the request on the same thread that established it.
+                // Exiting this thread also releases its execution state.
+                unsafe {
+                    SetThreadExecutionState(ES_CONTINUOUS);
+                }
+            });
+        let thread = match thread {
+            Ok(thread) => Some(thread),
+            Err(error) => {
+                tracing::warn!(%error, "can't keep this computer awake: starting the inhibitor thread");
+                None
+            }
+        };
+        Self { stop, thread }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
         }
     }
 }
@@ -352,7 +465,25 @@ pub async fn run_host(
     new_encoder: EncoderFactory,
     new_injector: InjectorFactory,
 ) -> anyhow::Result<()> {
+    sunna_update::host::start();
+    let (_, desktop) = tokio::sync::watch::channel(Ok((config.width, config.height)));
+    run_host_with_desktop(server, config, new_source, new_encoder, new_injector, desktop, None).await
+}
+
+/// Serve a machine whose screen can disappear and return while the endpoint stays up.
+pub async fn run_host_with_desktop(
+    server: Server,
+    config: HostConfig,
+    new_source: SourceFactory,
+    new_encoder: EncoderFactory,
+    new_injector: InjectorFactory,
+    desktop: tokio::sync::watch::Receiver<DesktopState>,
+    devices: Option<Arc<dyn SessionDevices>>,
+) -> anyhow::Result<()> {
     let host = Arc::new(HostState {
+        local_desktop: devices.is_none(),
+        devices,
+        desktop,
         config,
         new_source,
         new_encoder,
@@ -360,21 +491,39 @@ pub async fn run_host(
         busy: AtomicBool::new(false),
         viewer: std::sync::Mutex::new(None),
     });
+    accept_sessions(server, host, Default::default()).await
+}
+
+async fn accept_sessions(server: Server, host: Arc<HostState>, gate: Arc<std::sync::Mutex<admission::Admission>>) -> anyhow::Result<()> {
     let mut sessions = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             incoming = server.endpoint.accept() => {
                 let Some(incoming) = incoming else { return Ok(()) };
+                let Some(permit) = admission::Admission::enter(&gate, incoming.remote_address().ip().to_canonical(), Instant::now()) else {
+                    incoming.refuse();
+                    continue;
+                };
+                let deadline = tokio::time::Instant::now() + admission::DEADLINE;
                 let host = Arc::clone(&host);
                 sessions.spawn(async move {
-                    match incoming.await {
-                        Ok(connection) => {
-                            let remote = connection.remote_address();
-                            if let Err(error) = serve(&connection, host).await {
-                                tracing::info!(%remote, %error, "session ended");
-                            }
+                    let connection = match tokio::time::timeout_at(deadline, incoming).await {
+                        Ok(Ok(connection)) => connection,
+                        _ => return,
+                    };
+                    let (accepted, auth) = tokio::sync::oneshot::channel();
+                    let session = serve(&connection, host, permit, accepted);
+                    tokio::pin!(session);
+                    let result = tokio::select! {
+                        result = &mut session => result,
+                        Ok(()) = auth => session.await,
+                        _ = tokio::time::sleep_until(deadline) => {
+                            connection.close(0u32.into(), b"sign-in timeout");
+                            return;
                         }
-                        Err(error) => tracing::warn!(%error, "incoming connection failed"),
+                    };
+                    if let Err(error) = result {
+                        tracing::info!(%error, "session ended");
                     }
                 });
             }
@@ -387,7 +536,7 @@ pub async fn run_host(
     }
 }
 
-async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<()> {
+async fn serve(connection: &Connection, host: Arc<HostState>, permit: admission::Permit, accepted: tokio::sync::oneshot::Sender<()>) -> anyhow::Result<()> {
     let config = &host.config;
     let mut control = ControlChannel::accept(connection).await?;
     let first = match control.recv().await {
@@ -405,9 +554,58 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         }
         Err(error) => return Err(error.into()),
     };
+    let (first, proved) = match first {
+        ControlMessage::AuthProof { nonce, proof } => {
+            let ack = match sunna_transport::auth::answer(connection, &config.token, &nonce, &proof.0) {
+                Ok((nonce, proof)) => ControlMessage::AuthProofAck { nonce: nonce.to_vec(), proof: sunna_proto::messages::Proof(proof) },
+                Err(e) => {
+                    if matches!(&e, sunna_transport::TransportError::Authentication("The computer's proof didn't match.")) {
+                        permit.failed();
+                    }
+                    let reason = if e.to_string().starts_with("Run sunna-host") { e.to_string() } else { "Sunna is there, but the key doesn't match.".into() };
+                    control.send(&ControlMessage::Refused { reason }).await?;
+                    return Ok(control.finish().await?);
+                }
+            };
+            control.send(&ack).await?;
+            (control.recv().await?, true)
+        }
+        _ if config.require_proof || sunna_transport::auth::supports_proof(connection) => {
+            control.send(&ControlMessage::Refused { reason: "Update your app to connect to this computer.".into() }).await?;
+            return Ok(control.finish().await?);
+        }
+        legacy => (legacy, false)
+    };
+    let matches = |token: &str| if proved { token.is_empty() } else { config.token.is_empty() || tokens_match(token, &config.token) };
+    let authenticated = match &first {
+        ControlMessage::Probe { token } | ControlMessage::Hello { token, .. } => matches(token),
+        ControlMessage::UpdateRequest { token, .. } => !config.token.is_empty() && matches(token),
+        _ => false,
+    };
+    if authenticated {
+        drop(permit);
+        let _ = accepted.send(());
+    } else if !proved && !config.token.is_empty() && match &first {
+        ControlMessage::Hello { version, .. } => *version == sunna_proto::PROTOCOL_VERSION,
+        ControlMessage::Probe { .. } | ControlMessage::UpdateRequest { .. } => true,
+        _ => false,
+    } {
+        permit.failed();
+    }
+    let desktop = match (*host.desktop.borrow(), &first) {
+        // Existing per-user Wayland hosts request permission when connecting.
+        (Err(PORTAL_PERMISSION), ControlMessage::Hello { .. }) if host.local_desktop => Ok((config.width, config.height)),
+        (state, _) => state,
+    };
     let settings = match first {
-        ControlMessage::Probe { token } => {
-            let token_ok = config.token.is_empty() || tokens_match(&token, &config.token);
+        ControlMessage::Probe { .. } => {
+            let token_ok = authenticated;
+                let viewer = host
+                    .viewer
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|viewer| (viewer.name.clone(), viewer.device.clone()));
             control
                 .send(&ControlMessage::ProbeAck {
                     name: if token_ok {
@@ -416,47 +614,64 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
                         String::new()
                     },
                     version: sunna_proto::PROTOCOL_VERSION,
-                    busy: token_ok && host.busy.load(Ordering::Acquire),
+                    busy: token_ok && viewer.is_some(),
                     token_ok,
                 })
                 .await?;
             if token_ok {
                 let mut about = config.about.clone();
-                about.width = config.width;
-                about.height = config.height;
+                (about.width, about.height) = desktop.unwrap_or_default();
                 control.send(&ControlMessage::HostInfo(about)).await?;
-                let viewer = host
-                    .viewer
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|viewer| (viewer.name.clone(), viewer.device.clone()));
                 if let Some((viewer, device)) = viewer {
                     control.send(&ControlMessage::InUse { viewer, device }).await?;
                 }
             }
+            if token_ok {
+                if let Ok(info) = update_info() {
+                    control.send(&ControlMessage::UpdateInfo(info)).await?;
+                }
+                #[cfg(target_os = "macos")]
+                let desktop = macos::unavailable().map_or(desktop, Err);
+                if let Err(detail) = desktop {
+                    control.send(&ControlMessage::NotSharing { detail: detail.into() }).await?;
+                }
+            }
+            control.finish().await?;
+            return Ok(());
+        }
+        ControlMessage::UpdateRequest { action, .. } => {
+            let result = if authenticated {
+                host_update_reply(&action)
+            } else {
+                Err(anyhow::anyhow!("A configured host key is required to manage updates."))
+            };
+            let reply = match result {
+                Ok(status) => ControlMessage::UpdateInfo(status),
+                Err(error) => ControlMessage::Refused { reason: error.to_string() },
+            };
+            control.send(&reply).await?;
             control.finish().await?;
             return Ok(());
         }
         ControlMessage::Hello {
             version,
             name,
-            token,
+            token: _,
             stream,
             device,
         } => {
-            if !config.token.is_empty() && !tokens_match(&token, &config.token) {
+            if !authenticated {
                 control
                     .send(&ControlMessage::Refused {
                         reason: "wrong session token".into(),
                     })
                     .await?;
                 control.finish().await?;
-                anyhow::bail!("client {name:?} presented a wrong session token");
+                anyhow::bail!("client presented a wrong session token");
             }
             if version != sunna_proto::PROTOCOL_VERSION {
                 let reason = format!(
-                    "protocol version mismatch: client {version}, host {} (rebuild both sides)",
+                    "protocol version mismatch: client {version}, host {} (update the host if its protocol is lower; otherwise update the client)",
                     sunna_proto::PROTOCOL_VERSION
                 );
                 control
@@ -467,20 +682,53 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
                 control.finish().await?;
                 anyhow::bail!(reason);
             }
+            if let Err(detail) = desktop {
+                control.send(&ControlMessage::Refused { reason: detail.into() }).await?;
+                control.finish().await?;
+                return Ok(());
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(reason) = macos::unavailable() {
+                control.send(&ControlMessage::Refused { reason: reason.into() }).await?;
+                control.finish().await?;
+                return Ok(());
+            }
+            #[cfg(target_os = "macos")]
+            let guard = macos::session_guard();
+            #[cfg(not(target_os = "macos"))]
+            let guard = sunna_update::session_guard();
+            let update_guard = match guard {
+                Ok(guard) => guard,
+                Err(_) => {
+                    control.send(&ControlMessage::Refused { reason: "Host is restarting for an update; reconnect shortly.".into() }).await?;
+                    control.finish().await?;
+                    return Ok(());
+                }
+            };
             if let Err(reason) = host.claim(&name, &device, connection).await {
                 control.send(&ControlMessage::Refused { reason }).await?;
                 control.finish().await?;
                 return Ok(());
             }
             tracing::info!(viewer = name, "viewer connected");
-            stream
+            (stream, update_guard)
         }
-        other => anyhow::bail!("expected Hello or Probe, got {other:?}"),
+        _ => anyhow::bail!("unexpected first control message"),
     };
-    let slot = Arc::new(SessionSlot(Arc::clone(&host)));
-    let _awake = KeepAwake::start();
+    let slot = Arc::new(SessionSlot { host: Arc::clone(&host), _update_guard: settings.1 });
+    let (native, active) = if let Some(devices) = &host.devices {
+        match devices.clone().bind_viewer(connection) {
+            Ok((size, active)) => (size, Some(active)),
+            Err(_) => {
+                connection.close(0u32.into(), b"session changed");
+                return Ok(());
+            }
+        }
+    } else { (desktop.map_err(anyhow::Error::msg)?, None) };
+    let settings = settings.0;
+    let _awake = host.local_desktop.then(KeepAwake::start);
     let wants_audio = settings.audio.unwrap_or(true);
-    let (width, height) = fit_within((config.width, config.height), None);
+    let (width, height) = fit_within(native, None);
     let initial = StreamConfig {
         width,
         height,
@@ -493,7 +741,11 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
     let builder = Arc::clone(&host);
     let pipeline = tokio::task::spawn_blocking(move || {
         initial
-            .apply((builder.config.width, builder.config.height), &settings)
+            .apply(
+                (width, height),
+                builder.config.display_follows_viewer,
+                &settings,
+            )
             .and_then(|mut stream| {
                 let source = (builder.new_source)(&stream)?;
                 stream.width = source.width();
@@ -517,8 +769,13 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
             return Err(error);
         }
     };
-    let mut audio = AudioControl { available: config.audio, connection: connection.clone(), sender: None };
+    let mut audio = AudioControl { active: active.clone(), devices: host.devices.clone(), available: config.audio, connection: connection.clone(), sender: None };
     audio.set(wants_audio);
+    if !proved {
+        static LEGACY_SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let total = LEGACY_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        tracing::info!(total, "an older app connected without full verification");
+    }
     control
         .send(&ControlMessage::HelloAck {
             version: sunna_proto::PROTOCOL_VERSION,
@@ -535,6 +792,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
     let signals = Arc::new(SessionSignals {
+        active,
         force_keyframe: AtomicBool::new(true),
         target_bitrate_bps: AtomicU32::new(stream.bitrate_bps.min(15_000_000)),
         max_bitrate_bps: AtomicU32::new(stream.bitrate_bps),
@@ -551,7 +809,7 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
     // Its own channel: the session ends when `updates` closes (the media
     // thread is gone), which a watcher holding it would prevent.
     let (cursor_tx, cursor_rx) = tokio::sync::mpsc::unbounded_channel();
-    let cursor_watch = {
+    let cursor_watch = host.local_desktop.then(|| {
         let mut sent = std::collections::HashSet::new();
         sunna_capture::cursor::watch(Arc::clone(&stop), move |image| {
             let first = sent.insert(image.id);
@@ -565,8 +823,8 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
                 rgba: if first { image.rgba } else { Vec::new() },
             }));
         })
-    };
-    if let Err(error) = &cursor_watch {
+    });
+    if let Some(Err(error)) = &cursor_watch {
         tracing::info!(%error, "no pointer shapes this session");
     }
     // Attach input while the source is still here; portal backends share a session.
@@ -592,7 +850,13 @@ async fn serve(connection: &Connection, host: Arc<HostState>) -> anyhow::Result<
         &signals,
         updates_rx,
         cursor_rx,
-        config.clipboard,
+        sunna_clipboard::ClipboardSession::start_with(config.clipboard, {
+            let remote = host.devices.clone().map(|devices| devices.clipboard());
+            move || match remote {
+                Some(clipboard) => Ok(clipboard),
+                None => sunna_clipboard::system_clipboard(),
+            }
+        }),
         &mut audio,
     )
     .await;
@@ -815,12 +1079,17 @@ fn media_loop(
                 &sink,
                 &admission_drops,
                 &cuts,
+                &updates,
             ) else {
                 break None;
             };
             let started = Instant::now();
             let pipeline = stream
-                .apply((host.config.width, host.config.height), &settings)
+                .apply(
+                    host.desktop.borrow().unwrap_or((stream.width, stream.height)),
+                    host.config.display_follows_viewer,
+                    &settings,
+                )
                 .and_then(|mut next| {
                     let source = (host.new_source)(&next)?;
                     next.width = source.width();
@@ -895,6 +1164,7 @@ fn submit_loop(
     sink: &sunna_codec::EncoderSink,
     admission_drops: &AtomicU32,
     cuts: &LocalCut,
+    _updates: &tokio::sync::mpsc::UnboundedSender<ControlMessage>,
 ) -> Option<StreamSettings> {
     // The encoder factory configured the ceiling; align it with the actual
     // starting target before the first frame.
@@ -904,6 +1174,7 @@ fn submit_loop(
         .min(signals.max_bitrate_bps.load(Ordering::Relaxed));
     encoder.set_target_bitrate(applied_bitrate);
     let mut consecutive_failures: u32 = 0;
+    let mut last_picture = Instant::now();
     let max_in_flight = max_in_flight();
     tracing::info!(max_in_flight, "encode pipeline");
 
@@ -936,13 +1207,24 @@ fn submit_loop(
 
         let frame = match source.next_frame() {
             Ok(frame) => frame,
+            // Nothing to show yet: send nothing, so the viewer can tell.
+            Err(error) if error.is::<sunna_capture::NoPicture>() && last_picture.elapsed() < Duration::from_secs(30) => continue,
             Err(error) => {
                 tracing::warn!(%error, "frame source failed, stopping media loop");
-                connection.close(1u32.into(), error.to_string().as_bytes());
+                if connection.close_reason().is_none()
+                    && still_active(signals.active.as_ref(), connection)
+                {
+                    connection.close(1u32.into(), error.to_string().as_bytes());
+                }
                 stop.store(true, Ordering::Relaxed);
                 break;
             }
         };
+        #[cfg(target_os = "linux")]
+        if let Some(shape) = source.take_cursor() {
+            let _ = _updates.send(ControlMessage::Cursor(shape));
+        }
+        last_picture = Instant::now();
         // Admission before encode: if the path is already backed up, skip this
         // capture. The encoder never sees it, so the reference chain stays intact.
         let backlog = send_backlog(connection);
@@ -1026,6 +1308,7 @@ fn send_loop(
                 }
             }
             Some(EncoderOutput::Frame(encoded)) => {
+                if !still_active(signals.active.as_ref(), &connection) { break; }
                 consecutive_failures = 0;
                 window.encoded(&encoded);
                 let delta_group = signals.fec_group.load(Ordering::Relaxed);
@@ -1239,7 +1522,7 @@ async fn control_loop(
     signals: &SessionSignals,
     mut updates: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
     mut cursor: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
-    clipboard: bool,
+    mut clipboard: sunna_clipboard::ClipboardSession,
     audio: &mut AudioControl,
 ) -> anyhow::Result<()> {
     // `recv` isn't cancellation-safe, so it gets its own task (as in the
@@ -1255,7 +1538,6 @@ async fn control_loop(
             }
         }
     });
-    let mut clipboard = sunna_clipboard::ClipboardSession::start(clipboard);
     let (incoming_tx, mut incoming) = tokio::sync::mpsc::channel(2);
     let acceptor = tokio::spawn(accept_clipboard_streams(connection.clone(), incoming_tx));
     let result = handle_control(
@@ -1278,6 +1560,8 @@ async fn control_loop(
 
 /// The session's sound: while on, a thread captures, encodes and sends it.
 struct AudioControl {
+    active: Option<SessionCheck>,
+    devices: Option<Arc<dyn SessionDevices>>,
     /// Sound sharing is enabled and hasn't failed this session.
     available: bool,
     connection: Connection,
@@ -1293,7 +1577,7 @@ impl AudioControl {
         if self.sender.is_some() || !self.available {
             return;
         }
-        match AudioSender::start(self.connection.clone()) {
+        match AudioSender::start(self.connection.clone(), self.devices.clone(), self.active.clone()) {
             Ok(sender) => self.sender = Some(sender),
             Err(error) => {
                 tracing::info!(reason = %format!("{error:#}"), "no sound this session");
@@ -1319,8 +1603,11 @@ impl AudioSender {
     /// buffer runs dry into silence, and the link carries nothing.
     const QUIET_FRAMES: u32 = 20;
 
-    fn start(connection: Connection) -> anyhow::Result<Self> {
-        let mut capture = sunna_audio::open_capture()?;
+    fn start(connection: Connection, devices: Option<Arc<dyn SessionDevices>>, active: Option<SessionCheck>) -> anyhow::Result<Self> {
+        let mut capture = match devices {
+            Some(remote) => remote.audio(),
+            None => sunna_audio::open_capture()?,
+        };
         let mut encoder = sunna_audio::Encoder::new(Self::BITRATE)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
@@ -1350,6 +1637,7 @@ impl AudioSender {
                         }
                     };
                     let datagram = sunna_proto::media::audio_datagram(seq, sunna_proto::now_us(), &packet, &previous);
+                    if !still_active(active.as_ref(), &connection) { break; }
                     bytes += datagram.len() as u64;
                     match connection.send_datagram(datagram) {
                         Ok(()) => sent += 1,
@@ -1445,18 +1733,22 @@ async fn handle_control(
         let message = tokio::select! {
             update = updates.recv() => {
                 let Some(update) = update else { return Ok(()) };
+                if !still_active(signals.active.as_ref(), connection) { return Ok(()); }
                 control.send(&update).await?;
                 continue;
             }
             Some(shape) = cursor.recv() => {
+                if !still_active(signals.active.as_ref(), connection) { return Ok(()); }
                 control.send(&shape).await?;
                 continue;
             }
             data = clipboard.next() => {
+                if !still_active(signals.active.as_ref(), connection) { return Ok(()); }
                 spawn_clipboard_send(connection, data);
                 continue;
             }
             Some(data) = incoming_clipboard.recv() => {
+                if !still_active(signals.active.as_ref(), connection) { return Ok(()); }
                 clipboard.receive(data);
                 continue;
             }
@@ -1465,6 +1757,11 @@ async fn handle_control(
                 None => return Ok(()),
             },
             _ = stats_interval.tick() => {
+                #[cfg(target_os = "macos")]
+                if let Some(reason) = macos::unavailable() {
+                    connection.close(1u32.into(), reason.as_bytes());
+                    anyhow::bail!(reason);
+                }
                 let stats = signals.stats.lock().unwrap().take();
                 if let Some(stats) = stats {
                     control.send(&ControlMessage::HostStats(stats)).await?;
@@ -1494,6 +1791,7 @@ async fn handle_control(
                 signals.force_keyframe.store(true, Ordering::Relaxed);
             }
             Ok(ControlMessage::Resend { epoch, frame_id, chunks }) => {
+                if !still_active(signals.active.as_ref(), connection) { return Ok(()); }
                 let resend = signals.sent.lock().unwrap().resend(epoch, frame_id, &chunks);
                 match resend {
                     Some(datagrams) => {
@@ -1564,7 +1862,7 @@ async fn handle_control(
                 );
             }
             Ok(ControlMessage::Bye) => return Ok(()),
-            Ok(other) => tracing::debug!(?other, "unexpected control message"),
+            Ok(_) => tracing::debug!("unexpected control message"),
             // Peer closed or connection lost: treat as end of session.
             Err(error) => {
                 tracing::debug!(%error, "control stream closed");
@@ -1600,4 +1898,30 @@ mod tests {
         let mut stream = StreamConfig { codec: "hevc".into(), ..stream };
         assert!(open_encoder(&factory, &mut stream, "hevc").is_err());
     }
+}
+
+fn host_update_reply(action: &str) -> anyhow::Result<String> {
+    let updater = sunna_update::Updater::new("host")
+        .context("This computer's update settings are unavailable.")?;
+    anyhow::ensure!(
+        action == "status" || updater.is_managed_process(),
+        "This host is a source or system-package installation; install a signed download locally first."
+    );
+    match action {
+        "status" => {}
+        "update" => updater.request_from(8)?,
+        action if action.starts_with("update/") => updater.request_from(action[7..].parse()?)?,
+        "auto" | "notify" | "off" => updater.set_policy(action)?,
+        _ => anyhow::bail!("unsupported update action"),
+    }
+    update_info()
+}
+
+fn update_info() -> anyhow::Result<String> {
+    let updater = match sunna_update::Updater::new("host") {
+        Ok(updater) => updater,
+        Err(error) => return Ok(serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "supported": false, "state": { "error": error.to_string() } }).to_string()),
+    };
+    let state = updater.state()?;
+    Ok(serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "state": state, "policy": updater.policy()?, "supported": updater.is_managed_process(), "versioned_request": true }).to_string())
 }
