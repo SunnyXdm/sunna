@@ -13,18 +13,18 @@ export function spring(stiffness, damping, mass = 1) {
   let v = 0;
   let t = 0;
   const samples = [0];
-  while (t < 3) {
+  while (t < 2.5) {
     v += ((-stiffness * (x - 1) - damping * v) / mass) * dt;
     x += v * dt;
     t += dt;
     samples.push(x);
-    if (Math.abs(x - 1) < 0.0015 && Math.abs(v) < 0.02) break;
+    if (Math.abs(x - 1) < 0.0006 && Math.abs(v) < 0.006) break;
   }
   const duration = Math.round(t * 1000);
   if (!linearWorks) {
     return { easing: "cubic-bezier(0.2, 0.9, 0.3, 1)", duration: Math.round(duration * 0.85) };
   }
-  const count = Math.min(64, samples.length);
+  const count = 49;
   const points = [];
   for (let i = 0; i < count; i++) {
     const sample = samples[Math.round((i * (samples.length - 1)) / (count - 1))];
@@ -40,9 +40,9 @@ export const springs = {
   /** Things that pop in: sheets, menus, badges. A little overshoot. */
   bouncy: spring(320, 21),
   /** Big, calm moves: layout, flights. */
-  gentle: spring(150, 23),
+  gentle: spring(190, 24),
   /** Zooming into a machine's screen. */
-  zoom: spring(125, 21),
+  zoom: spring(150, 22),
 };
 
 for (const [name, curve] of Object.entries(springs)) {
@@ -115,3 +115,6 @@ export function tilt(target, surface = target, max = 6) {
     kick();
   });
 }
+
+document.documentElement.style.setProperty("--move", springs.gentle.easing);
+document.documentElement.style.setProperty("--move-d", `${springs.gentle.duration}ms`);

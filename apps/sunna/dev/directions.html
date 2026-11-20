@@ -1,0 +1,752 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sunna home screen directions</title>
+<style>
+:root{
+  --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+  --s:1; --sp:ease-out; --spd:500ms; --w:980px; --h:660px; --top:52px;
+}
+*{box-sizing:border-box}
+.pg{font-family:var(--font-sans,var(--ui));color:var(--foreground,#e8e8ea)}
+.pick{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;margin:2px 0 12px}
+.seg{display:inline-flex;padding:3px;border-radius:9px;background:var(--secondary,rgba(128,128,128,.16));gap:2px}
+.seg button{all:unset;cursor:pointer;font:600 13px var(--font-sans,var(--ui));padding:6px 12px;border-radius:7px;color:var(--muted-foreground,#9a9aa0)}
+.seg button b{font-weight:600;opacity:.55;margin-right:6px}
+.seg button.on{background:var(--background,#1c1c1f);color:var(--foreground,#fff);box-shadow:0 0 0 1px var(--border,rgba(128,128,128,.3))}
+.seg button:focus-visible{outline:2px solid var(--ring,#888)}
+.blurb{margin:0;font-size:13px;color:var(--muted-foreground,#9a9aa0);flex-basis:100%;order:3}
+.demo{all:unset;cursor:pointer;margin-left:auto;font:500 12px var(--font-sans,var(--ui));padding:5px 10px;border-radius:7px;border:1px solid var(--border,rgba(128,128,128,.3));color:var(--muted-foreground,#9a9aa0)}
+.demo:hover{color:var(--foreground,#fff)}
+.foot{margin:10px 0 0;font-size:12px;color:var(--muted-foreground,#9a9aa0)}
+.fit{width:calc(var(--w)*var(--s));height:calc(var(--h)*var(--s));margin:0 auto}
+.fit.phone{margin:12px auto}
+
+/* ── the app window ─────────────────────────────────────────── */
+.win{width:var(--w);height:var(--h);transform:scale(var(--s));transform-origin:0 0;position:relative;overflow:hidden;
+  background:#0c0c0d;color:#f2f2f3;border-radius:12px;font-family:var(--ui);
+  box-shadow:0 0 0 1px rgba(255,255,255,.09),0 24px 60px rgba(0,0,0,.45);-webkit-font-smoothing:antialiased;user-select:none}
+.tb{position:absolute;inset:0 0 auto 0;height:52px;display:flex;align-items:center;padding:0 14px 0 20px;z-index:2;transition:opacity .25s}
+.tl{width:12px;height:12px;border-radius:50%;background:#3a3a3d;margin-right:8px}
+.ttl{margin-left:14px;font-size:13px;display:flex;gap:9px;align-items:baseline}
+.ttl b{font-weight:650}
+.ttl span{color:rgba(255,255,255,.42)}
+.tools{margin-left:auto;display:flex;gap:2px}
+.tools button{all:unset;width:30px;height:28px;border-radius:7px;display:grid;place-items:center;color:rgba(255,255,255,.6);cursor:pointer}
+.tools button:hover{background:rgba(255,255,255,.08);color:#fff}
+.view{position:absolute;inset:var(--top) 0 0 0;transition:opacity .25s,transform var(--spd) var(--sp)}
+.win.away .view{opacity:0;transform:scale(.97)}
+.win.away .tb{opacity:0}
+
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;flex:none;background:#6e6e73}
+.dot.ready{background:#30d158}.dot.busy{background:#ff9f0a}.dot.key{background:#ff453a}
+.stat{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:rgba(255,255,255,.58);margin:0;white-space:nowrap}
+.stat em{font-style:normal;color:rgba(255,255,255,.34)}
+.stat .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.go{all:unset;cursor:pointer;height:34px;padding:0 10px 0 15px;border-radius:9px;background:#f2f2f3;color:#0c0c0d;font:600 13.5px var(--ui);display:inline-flex;align-items:center;gap:9px}
+.go:hover{background:#fff}
+.go kbd,.hint kbd{font:600 11px var(--ui);padding:2px 5px;border-radius:4px;background:rgba(0,0,0,.1)}
+.why{margin:0;font-size:13px;color:rgba(255,255,255,.42)}
+.keyf{display:flex;gap:8px;margin:0}
+.keyf input{height:34px;width:250px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.13);border-radius:8px;color:#fff;padding:0 11px;font:13px var(--mono);outline:0;user-select:text}
+.keyf input:focus{border-color:rgba(255,255,255,.4)}
+.keyf input::placeholder{color:rgba(255,255,255,.3);font-family:var(--ui)}
+.keyf button{all:unset;cursor:pointer;height:34px;padding:0 13px;border-radius:8px;background:rgba(255,255,255,.12);font:600 13px var(--ui)}
+.keyf button:hover{background:rgba(255,255,255,.2)}
+
+/* ── a computer's screen ────────────────────────────────────── */
+.shot{position:relative;width:100%;container-type:inline-size;overflow:hidden;border-radius:7px;background:#000;
+  box-shadow:0 0 0 1px rgba(255,255,255,.09),0 16px 44px rgba(0,0,0,.5)}
+.shot .d{position:absolute;inset:0;overflow:hidden;transition:filter .6s}
+.shot.s-offline .d{filter:saturate(.12) brightness(.42)}
+.shot.s-key .d{filter:blur(7px) brightness(.5)}
+.shot .lock{position:absolute;inset:0;display:none;place-items:center;color:#fff}
+.shot.s-key .lock{display:grid}
+.shot .lock svg{width:7cqw;height:7cqw;min-width:18px;min-height:18px}
+.shot .tag{position:absolute;top:8px;right:8px;font:600 11px var(--ui);padding:3px 7px 3px 6px;border-radius:5px;background:rgba(0,0,0,.62);color:#ffd9a0;display:none;align-items:center;gap:5px}
+.shot.s-busy .tag{display:inline-flex}
+.shot pre{margin:0;white-space:pre;font-family:var(--mono)}
+.caret{display:inline-block;width:.6em;height:1.1em;vertical-align:-.18em;background:currentColor;opacity:.8}
+.live .caret{animation:blink 1.06s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* Arch: a tiling desktop */
+.arch{background:radial-gradient(120% 90% at 20% 10%,#17505f 0,#0b2a36 45%,#061820 100%)}
+.arch .bar{position:absolute;left:.8cqw;right:.8cqw;top:.6cqw;height:2.1cqw;border-radius:.6cqw;background:rgba(6,16,22,.74);display:flex;align-items:center;gap:.5cqw;padding:0 .9cqw;font:600 .92cqw var(--mono);color:#9fd3e0}
+.arch .ws{width:.9cqw;height:.9cqw;border-radius:50%;background:#2c5868}
+.arch .ws.on{background:#5fd4ef;width:2.1cqw;border-radius:1cqw}
+.arch .clk{margin-left:auto}
+.arch .t{position:absolute;border-radius:.7cqw;background:rgba(7,18,24,.93);border:.14cqw solid rgba(120,200,220,.15);overflow:hidden}
+.arch .t.f{border-color:#4cc3e0}
+.arch .tab{height:2.3cqw;display:flex;align-items:center;padding:0 1.2cqw;font:.9cqw var(--mono);color:#7fa7b3;border-bottom:.1cqw solid rgba(120,200,220,.12)}
+.arch pre{font-size:1.02cqw;line-height:1.6;color:#c4d6dc;padding:.9cqw 1.2cqw}
+.arch .k{color:#ff8fa3}.arch .ty{color:#7fd6f2}.arch .s{color:#b8e986}.arch .c{color:#5d7f8a}.arch .n{color:#f2c879}
+.arch .g{color:#7ee0a0}.arch .p{color:#5fd4ef}
+.arch .mon{padding:1cqw 1.2cqw;font:.92cqw var(--mono);color:#7fa7b3}
+.arch .mr{display:flex;align-items:center;gap:.8cqw;height:1.75cqw}
+.arch .mr b{width:2.6cqw;font-weight:600;color:#9fd3e0}
+.arch .mr i{flex:1;height:.85cqw;border-radius:.2cqw;background:linear-gradient(90deg,var(--c,#58d68d) var(--v),rgba(255,255,255,.07) 0)}
+.arch .mr u{width:3.4cqw;text-align:right;text-decoration:none}
+
+/* macOS */
+.mac{background:radial-gradient(70% 90% at 80% 14%,#ffb169 0,transparent 60%),radial-gradient(80% 80% at 14% 86%,#3327d8 0,transparent 62%),radial-gradient(60% 70% at 62% 74%,#e0458b 0,transparent 65%),#6a2bd0}
+.mac .mb{position:absolute;inset:0 0 auto 0;height:2.2cqw;background:rgba(30,16,60,.3);display:flex;align-items:center;gap:1.5cqw;padding:0 1.5cqw;font:500 .98cqw var(--ui);color:#fff}
+.mac .mb b{font-weight:700}.mac .mb .r{margin-left:auto}
+.mac .w{position:absolute;border-radius:.9cqw;overflow:hidden;box-shadow:0 1.6cqw 4.4cqw rgba(10,0,40,.5),0 0 0 .08cqw rgba(0,0,0,.25)}
+.mac .hd{height:2.7cqw;display:flex;align-items:center;gap:.55cqw;padding:0 1cqw;font:600 .95cqw var(--ui)}
+.mac .hd i{width:.82cqw;height:.82cqw;border-radius:50%;background:#ff5f57}
+.mac .hd i:nth-child(2){background:#febc2e}.mac .hd i:nth-child(3){background:#28c840}
+.mac .hd span{margin-left:1cqw}
+.mac .doc{background:#fbfaf6;color:#1d1d1f}
+.mac .doc .hd{background:#efede7;color:#55534d}
+.mac .doc .bd{padding:1.8cqw 2.4cqw}
+.mac .doc h4{margin:0 0 .9cqw;font:700 2.1cqw var(--ui);letter-spacing:-.02em}
+.mac .doc p{margin:0 0 .9cqw;font:1cqw/1.55 var(--ui);color:#4a4843}
+.mac .doc .ph{height:11cqw;border-radius:.6cqw;margin:.4cqw 0 1.1cqw;background:linear-gradient(#8fd0ff 0,#d9f0ff 46%,#2f7fc1 47%,#1b4f86 100%);position:relative;overflow:hidden}
+.mac .doc .ph::after{content:"";position:absolute;left:8%;right:38%;bottom:53%;height:34%;background:#f3e6cf;clip-path:polygon(0 100%,12% 40%,24% 62%,40% 8%,58% 55%,72% 30%,100% 100%)}
+.mac .doc li{font:1cqw/1.7 var(--ui);color:#4a4843}
+.mac .doc ul{margin:0;padding-left:1.6cqw}
+.mac .pho{background:#1c1c20;color:#d8d8dc}
+.mac .pho .hd{background:#27272c}
+.mac .pho .gr{display:grid;grid-template-columns:repeat(4,1fr);gap:.55cqw;padding:.9cqw}
+.mac .pho .gr i{aspect-ratio:4/3;border-radius:.35cqw;background:var(--g)}
+.mac .dock{position:absolute;left:50%;transform:translateX(-50%);bottom:1.1cqw;padding:.65cqw;display:flex;gap:.65cqw;border-radius:1.7cqw;background:rgba(255,255,255,.22);box-shadow:inset 0 0 0 .08cqw rgba(255,255,255,.3)}
+.mac .dock i{width:3.9cqw;height:3.9cqw;border-radius:.95cqw;background:var(--g)}
+
+/* Fedora workstation, ultrawide, an editing app */
+.gn{background:#1b1b1e}
+.gn .gb{position:absolute;inset:0 0 auto 0;height:1.5cqw;background:#000;font:600 .72cqw var(--ui);color:#e6e6e6;display:flex;align-items:center;justify-content:space-between;padding:0 1cqw}
+.gn .app{position:absolute;inset:1.5cqw 0 0 0;display:grid;grid-template-columns:13cqw 1fr 14cqw;grid-template-rows:1fr 9.6cqw}
+.gn .lp,.gn .rp{background:#232327;padding:.9cqw;font:.72cqw var(--ui);color:#8e8e96}
+.gn .lp{border-right:.07cqw solid #000}.gn .rp{border-left:.07cqw solid #000}
+.gn .ly{display:flex;align-items:center;gap:.6cqw;height:2.1cqw;border-radius:.3cqw;padding:0 .4cqw;color:#c8c8ce}
+.gn .ly.on{background:#34343b}
+.gn .ly i{width:2.2cqw;height:1.3cqw;border-radius:.2cqw;background:var(--g)}
+.gn .cv{background:#111113;display:grid;place-items:center}
+.gn .art{width:46cqw;aspect-ratio:16/9;position:relative;overflow:hidden;border-radius:.25cqw;background:linear-gradient(#281a5c 0,#8a3391 30%,#f0617a 52%,#ff9a52 66%,#ffd98a 76%,#274a7a 76.2%,#0f1c3d 100%);box-shadow:0 0 0 .07cqw #000}
+.gn .sun{position:absolute;left:58%;top:50%;width:6.4cqw;height:6.4cqw;border-radius:50%;background:#fff1c9;box-shadow:0 0 5cqw 1.5cqw rgba(255,214,150,.55)}
+.gn .mt{position:absolute;left:0;right:0;bottom:23.8%;height:42%}
+.gn .m1{background:#6a2f7a;clip-path:polygon(0 100%,0 62%,14% 30%,27% 58%,41% 12%,56% 60%,70% 36%,84% 64%,100% 40%,100% 100%)}
+.gn .m2{background:#3a2358;clip-path:polygon(0 100%,0 80%,10% 60%,22% 76%,36% 44%,50% 78%,63% 56%,78% 82%,90% 60%,100% 74%,100% 100%)}
+.gn .m3{background:#191433;clip-path:polygon(0 100%,0 92%,16% 78%,30% 90%,46% 70%,60% 92%,76% 80%,100% 94%,100% 100%)}
+.gn .gl{position:absolute;left:55%;width:13%;top:77%;bottom:0;background:linear-gradient(rgba(255,217,138,.6),transparent)}
+.gn .sl{margin:0 0 1.1cqw}
+.gn .sl span{display:block;margin-bottom:.4cqw}
+.gn .sl i{display:block;height:.34cqw;border-radius:.2cqw;background:linear-gradient(90deg,#d9d9de var(--v),#3a3a41 0);position:relative}
+.gn .sl i::after{content:"";position:absolute;left:var(--v);top:50%;width:.95cqw;height:.95cqw;margin:-.475cqw 0 0 -.475cqw;border-radius:50%;background:#f1f1f4}
+.gn .tm{grid-column:1/-1;background:#18181b;border-top:.07cqw solid #000;padding:.8cqw 1cqw;position:relative}
+.gn .tr{height:2.1cqw;margin-bottom:.45cqw;background:#202024;border-radius:.25cqw;position:relative}
+.gn .tr i{position:absolute;top:.2cqw;bottom:.2cqw;left:var(--l);width:var(--w);border-radius:.22cqw;background:var(--g)}
+.gn .ph{position:absolute;top:.3cqw;bottom:.3cqw;left:41.5%;width:.14cqw;background:#fff}
+
+/* Ubuntu */
+.ub{background:linear-gradient(135deg,#2c001e 0,#5e2750 46%,#b8431f 96%,#e95420 120%)}
+.ub .ub-b{position:absolute;inset:0 0 auto 0;height:1.9cqw;background:rgba(20,0,14,.75);font:600 .9cqw var(--ui);color:#eee;display:grid;place-items:center}
+.ub .ub-d{position:absolute;left:0;top:1.9cqw;bottom:0;width:4cqw;background:rgba(20,0,14,.5);display:flex;flex-direction:column;align-items:center;gap:.8cqw;padding-top:.9cqw}
+.ub .ub-d i{width:2.6cqw;height:2.6cqw;border-radius:.6cqw;background:var(--g)}
+.ub .w{position:absolute;border-radius:.8cqw;overflow:hidden;box-shadow:0 1.4cqw 4cqw rgba(0,0,0,.5)}
+.ub .hd{height:2.5cqw;background:#2b2b2b;color:#ddd;font:600 .92cqw var(--ui);display:grid;place-items:center}
+.ub .te{background:#300a24}
+.ub .te pre{font-size:1cqw;line-height:1.6;color:#f4eef1;padding:.9cqw 1.1cqw}
+.ub .te .g{color:#8ae234}.ub .te .p{color:#729fcf}
+.ub .fi{background:#f6f5f4}
+.ub .fi .gr{display:grid;grid-template-columns:repeat(4,1fr);gap:1.6cqw 1.2cqw;padding:1.8cqw}
+.ub .fi .gr div{font:.82cqw var(--ui);color:#3d3846;text-align:center}
+.ub .fi .gr i{display:block;height:3.6cqw;margin:0 15% .5cqw;border-radius:.4cqw;background:linear-gradient(#f08a5a,#e95420)}
+
+/* Windows */
+.w11{background:radial-gradient(70% 90% at 50% 112%,#1746d6 0,transparent 70%),linear-gradient(#08173a,#0a0f24)}
+.w11 .pt{position:absolute;left:50%;bottom:-9cqw;width:20cqw;height:42cqw;border-radius:50%;background:linear-gradient(165deg,#8bdcff,#2a66ff 55%,#0b1f8a);transform-origin:50% 100%;transform:translateX(-50%) rotate(var(--r));opacity:.82}
+.w11 .w{position:absolute;left:7cqw;top:4.6cqw;width:60cqw;height:38cqw;border-radius:.8cqw;overflow:hidden;background:#14161c;box-shadow:0 1.6cqw 4.4cqw rgba(0,0,0,.55);display:grid;grid-template-columns:11cqw 1fr}
+.w11 .sb{background:#1b1e26;padding:1.4cqw 1cqw;font:.92cqw var(--ui);color:#8c93a6}
+.w11 .sb b{display:block;color:#fff;font-size:1.15cqw;margin-bottom:1.2cqw}
+.w11 .sb span{display:block;height:2.1cqw}
+.w11 .mn{padding:1.4cqw 1.6cqw}
+.w11 .mn h4{margin:0 0 1cqw;font:700 1.5cqw var(--ui);color:#fff}
+.w11 .cs{display:grid;grid-template-columns:repeat(5,1fr);gap:1cqw}
+.w11 .cs i{aspect-ratio:2/3;border-radius:.45cqw;background:var(--g)}
+.w11 .tk{position:absolute;inset:auto 0 0 0;height:3.2cqw;background:rgba(18,22,36,.86);display:flex;align-items:center;justify-content:center;gap:.9cqw}
+.w11 .tk i{width:1.9cqw;height:1.9cqw;border-radius:.45cqw;background:var(--g)}
+.w11 .tk span{position:absolute;right:1.4cqw;font:.85cqw var(--ui);color:#dfe5f5}
+
+/* ── A · Stage ──────────────────────────────────────────────── */
+.st{position:absolute;inset:0;overflow:hidden}
+.st-track{position:absolute;left:0;top:20px;display:flex;gap:44px;transition:transform var(--spd) var(--sp);will-change:transform}
+.st-slide{flex:none;height:356px;opacity:.26;transform:scale(.9);transition:opacity .35s,transform var(--spd) var(--sp);cursor:pointer}
+.st-slide.on{opacity:1;transform:none}
+.st-info{position:absolute;left:0;right:0;top:398px;text-align:center}
+.st-info h2{margin:0 0 7px;font:650 26px/1.15 var(--ui);letter-spacing:-.02em}
+.act{margin-top:16px;height:34px;display:flex;justify-content:center;align-items:center}
+.st-tabs{position:absolute;left:0;right:0;bottom:24px;display:flex;justify-content:center}
+.st-tabs .in{position:relative;display:flex;gap:4px}
+.st-tabs button{all:unset;cursor:pointer;font:500 13px var(--ui);padding:6px 11px;color:rgba(255,255,255,.42);display:inline-flex;align-items:center;gap:7px;transition:color .2s}
+.st-tabs button:hover,.st-tabs button.on{color:#fff}
+.mark{position:absolute;bottom:-3px;height:2px;border-radius:1px;background:#fff;transition:left var(--spd) var(--sp),width var(--spd) var(--sp)}
+
+/* ── B · Wall ───────────────────────────────────────────────── */
+.wall{position:absolute;inset:0}
+.wt{position:absolute;cursor:pointer;transition:left var(--spd) var(--sp),top var(--spd) var(--sp),width var(--spd) var(--sp),opacity .25s}
+.wt .shot{transition:transform var(--spd) var(--sp)}
+.wall:has(.wt:hover) .wt:not(:hover){opacity:.42}
+.wt:hover .shot{transform:scale(1.012)}
+.wl{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px 1px 0}
+.wl b{display:block;font:650 14.5px/1.2 var(--ui);letter-spacing:-.01em;margin-bottom:3px;white-space:nowrap}
+.wl .stat{font-size:12.5px;display:flex}
+.wl>div{min-width:0;flex:1}
+.wl .do{font:600 12.5px var(--ui);color:rgba(255,255,255,.4);white-space:nowrap;padding-top:1px;transition:color .2s}
+.wt:hover .do{color:#fff}
+.wl .keyf input{width:auto;flex:1;min-width:0;height:30px}
+.wl .keyf{flex:1}.wl .keyf button{height:30px;padding:0 10px}
+
+/* ── C · Index ──────────────────────────────────────────────── */
+.ix{position:absolute;inset:0}
+.ix-q{position:absolute;left:58px;top:14px;font:500 12px var(--ui);color:rgba(255,255,255,.42);height:16px}
+.ix-q b{color:#fff;font-weight:600}
+.ix-list{position:absolute;left:44px;top:40px;width:370px}
+.ix-row{position:relative;height:76px;padding:9px 0 0 14px;cursor:pointer;opacity:.34;transition:opacity .22s}
+.ix-row.on{opacity:1}.ix-row.out{opacity:.1}
+.ix-row b{display:block;font:620 31px/1.1 var(--ui);letter-spacing:-.028em;margin-bottom:5px;white-space:nowrap}
+.ix-add{height:40px;padding:12px 0 0 14px;font:500 13px var(--ui);color:rgba(255,255,255,.3)}
+.ix-mark{position:absolute;left:0;top:0;width:2px;height:58px;margin-top:10px;border-radius:1px;background:#fff;transition:transform var(--spd) var(--sp)}
+.ix-pre{position:absolute;left:452px;top:46px;width:484px}
+.ix-shot{position:absolute;left:0;top:0;width:484px;opacity:0;transform:scale(.985);transform-origin:50% 0;transition:opacity .2s,transform var(--spd) var(--sp);pointer-events:none;cursor:pointer}
+.ix-shot.on{opacity:1;transform:none;pointer-events:auto}
+.ix-info{position:absolute;left:0;right:0;top:0;transition:transform var(--spd) var(--sp)}
+.ix-info dl{margin:0 0 16px;display:grid;grid-template-columns:74px 1fr;row-gap:6px;font-size:13px}
+.ix-info dt{color:rgba(255,255,255,.36)}.ix-info dd{margin:0;color:rgba(255,255,255,.8)}
+.ix-info .act{justify-content:flex-start;margin-top:0}
+.hint{position:absolute;left:58px;bottom:22px;font:500 12px var(--ui);color:rgba(255,255,255,.3);display:flex;gap:16px}
+.hint kbd{background:rgba(255,255,255,.09);color:rgba(255,255,255,.6);margin-right:5px}
+
+
+/* ── the phone ──────────────────────────────────────────────── */
+.sbar,.homebar{display:none}
+.win.phone{border-radius:46px;box-shadow:0 0 0 1px rgba(255,255,255,.16),0 0 0 9px #060607,0 0 0 10px rgba(255,255,255,.11),0 24px 60px rgba(0,0,0,.45)}
+.phone .sbar{display:flex;position:absolute;inset:0 0 auto 0;height:44px;align-items:center;justify-content:space-between;padding:6px 28px 0;font:600 14px var(--ui);z-index:6;pointer-events:none}
+.phone .sbar::before{content:"";position:absolute;left:50%;top:15px;width:11px;height:11px;margin-left:-5.5px;border-radius:50%;background:#000;box-shadow:0 0 0 1px rgba(255,255,255,.1)}
+.phone .sbar i{width:23px;height:11px;border-radius:3.5px;box-shadow:inset 0 0 0 1.2px rgba(255,255,255,.5);background:linear-gradient(90deg,#f2f2f3 70%,transparent 0) 2px 2px/19px 7px no-repeat}
+.phone .homebar{display:block;position:absolute;left:50%;bottom:8px;width:128px;height:4.5px;margin-left:-64px;border-radius:3px;background:rgba(255,255,255,.55);z-index:6;pointer-events:none}
+.phone .tb{top:44px;padding:0 10px 0 20px}
+.phone .tl{display:none}
+.phone .ttl{margin-left:0;font-size:19px;gap:10px}
+.phone .ttl span{font-size:13px}
+.phone .tools button{width:40px;height:40px;border-radius:20px}
+.phone .pill{top:auto;bottom:112px}.phone .more{top:52px;right:16px;height:30px}
+.phone .more kbd{display:none}
+.phone .go{width:100%;height:50px;border-radius:14px;justify-content:center;font-size:16px;padding:0}
+.phone .go kbd{display:none}
+.phone .keyf{width:100%}
+.phone .keyf input{flex:1;width:auto;min-width:0;height:46px;border-radius:12px;font-size:15px}
+.phone .keyf button{height:46px;border-radius:12px;padding:0 15px;font-size:15px}
+.phone .why{font-size:14px;text-align:center}
+.phone .stat{font-size:14px}
+/* stage */
+.st{touch-action:pan-y}
+.phone .st-track{top:84px;height:236px;align-items:center;gap:14px}
+.phone .st-slide{height:auto;transform:scale(.94)}
+.phone .st-slide.on{transform:none}
+.phone .st-info{top:342px;bottom:0}
+.phone .st-info h2{font-size:29px;margin-bottom:9px}
+.phone .st-info .stat{display:flex;justify-content:center;margin-top:5px}
+.phone .st-info .act{position:absolute;left:16px;right:16px;bottom:44px;height:50px;margin:0}
+.phone .st-tabs{bottom:118px}
+.phone .st-tabs .in{gap:2px}
+.phone .st-tabs button{padding:7px 8px;border-radius:15px}
+.phone .st-tabs button span{display:none}
+.phone .st-tabs button.on{background:rgba(255,255,255,.1);padding:7px 12px 7px 10px}
+.phone .st-tabs button.on span{display:inline}
+.phone .mark{display:none}
+/* wall */
+.phone .wall{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
+.wall-in{position:relative;height:100%}
+.phone .wl .keyf input,.phone .wl .keyf button{height:38px}
+.phone .wl b{font-size:15.5px}
+.phone .wl .do{color:#fff;font-size:13.5px;padding-top:2px}
+/* index */
+.ixp{position:absolute;inset:0;overflow-y:auto;scrollbar-width:none;padding:4px 20px 60px}
+.ixp-row{border-bottom:1px solid rgba(255,255,255,.08)}
+.ixp-h{padding:15px 0 14px;cursor:pointer;opacity:.5;transition:opacity .22s}
+.ixp-row.on .ixp-h{opacity:1}
+.ixp-h b{display:block;font:620 29px/1.1 var(--ui);letter-spacing:-.028em;margin-bottom:6px}
+.ixp-b{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--spd) var(--sp)}
+.ixp-row.on .ixp-b{grid-template-rows:1fr}
+.ixp-in{overflow:hidden;min-height:0}
+.ixp-in .shot{cursor:pointer}
+.ixp-in .act{margin:14px 0 18px;height:50px}
+.ixp-add{padding:18px 0;font:500 15px var(--ui);color:rgba(255,255,255,.34)}
+
+/* ── a session ──────────────────────────────────────────────── */
+.sess{position:absolute;inset:0;z-index:5}
+.sess[hidden]{display:none}
+.sess-bg{position:absolute;inset:0;background:#000}
+.sess-shot{position:absolute;transform-origin:0 0}
+.sess-shot .shot{border-radius:0;box-shadow:none}
+.pill{position:absolute;left:50%;top:12px;transform:translateX(-50%);font:600 12.5px var(--ui);padding:7px 13px;border-radius:9px;background:rgba(18,18,20,.86);box-shadow:0 0 0 1px rgba(255,255,255,.12);display:flex;gap:8px;align-items:center;transition:opacity .4s;white-space:nowrap}
+.more{all:unset;cursor:pointer;position:absolute;right:14px;top:12px;height:26px;padding:0 10px;border-radius:8px;background:rgba(18,18,20,.8);box-shadow:0 0 0 1px rgba(255,255,255,.12);font:600 12px var(--ui);display:flex;align-items:center;gap:7px}
+.more kbd{font:600 10.5px var(--ui);color:rgba(255,255,255,.5)}
+@media (prefers-reduced-motion:reduce){.win *{transition-duration:.01s!important;animation:none!important}}
+</style>
+
+<div class="pg">
+  <div class="pick">
+    <div class="seg" id="seg">
+      <button data-v="stage"><b>A</b>Stage</button>
+      <button data-v="wall"><b>B</b>Wall</button>
+      <button data-v="index"><b>C</b>Index</button>
+    </div>
+    <div class="seg" id="form">
+      <button data-f="desktop">Desktop</button>
+      <button data-f="phone">Phone</button>
+    </div>
+    <p class="blurb" id="blurb"></p>
+    <button class="demo" id="demo"></button>
+  </div>
+  <div class="fit" id="fit">
+    <div class="win" id="win" tabindex="0">
+      <div class="sbar"><span>20:14</span><i></i></div>
+      <div class="tb">
+        <i class="tl"></i><i class="tl"></i><i class="tl"></i>
+        <div class="ttl"><b>Sunna</b><span id="count"></span></div>
+        <div class="tools">
+          <button title="Add a computer" aria-label="Add a computer"><svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M7.5 2v11M2 7.5h11"/></svg></button>
+          <button title="Settings" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 4.5h7M12.5 4.5H14M2 11.5h1.5M7 11.5h7"/><circle cx="10.75" cy="4.5" r="1.75"/><circle cx="5.25" cy="11.5" r="1.75"/></svg></button>
+        </div>
+      </div>
+      <div class="view" id="view"></div>
+      <div class="sess" id="sess" hidden></div>
+      <div class="homebar"></div>
+    </div>
+  </div>
+  <p class="foot">The screens are drawn stand-ins. In the app each one would be that computer's last real picture. Click inside the window first to use the keyboard.</p>
+</div>
+
+<script>
+let W = 980, H = 660, TOP = 52, phone = false;
+const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const win = $('#win'), view = $('#view'), sess = $('#sess');
+let S = 1;
+function fit() {
+  const root = document.documentElement.style;
+  S = Math.min(1, ($('#fit').parentElement.clientWidth - (phone ? 24 : 0)) / W);
+  root.setProperty('--s', S); root.setProperty('--w', W + 'px'); root.setProperty('--h', H + 'px'); root.setProperty('--top', TOP + 'px');
+}
+fit(); addEventListener('resize', fit);
+// An element's box in the window's own (unscaled) pixels.
+function box(el) {
+  const a = el.getBoundingClientRect(), b = win.getBoundingClientRect();
+  return { x: (a.left - b.left) / S, y: (a.top - b.top) / S, w: a.width / S, h: a.height / S };
+}
+
+// A damped spring, sampled into a CSS linear() curve.
+function spring(k, c) {
+  let x = 0, v = 0, t = 0; const dt = 1 / 240, pts = [0];
+  while (t < 2.5) {
+    v += (-k * (x - 1) - c * v) * dt; x += v * dt; t += dt; pts.push(x);
+    if (Math.abs(x - 1) < 0.0006 && Math.abs(v) < 0.006) break;
+  }
+  const n = 48, out = [];
+  for (let i = 0; i <= n; i++) out.push(+pts[Math.round(i / n * (pts.length - 1))].toFixed(4));
+  out[n] = 1;
+  return { easing: `linear(${out.join(',')})`, duration: Math.round(t * 1000) };
+}
+const SP = { move: spring(190, 24), zoom: spring(150, 22) };
+document.documentElement.style.setProperty('--sp', SP.move.easing);
+document.documentElement.style.setProperty('--spd', SP.move.duration + 'ms');
+
+// ── the computers ─────────────────────────────────────────────
+const C = [
+  { id: 'arch', name: 'archlinux', os: 'Arch Linux', kind: 'Desktop', w: 2560, h: 1440, state: 'ready', ms: 12 },
+  { id: 'mac', name: 'MacBook Air', os: 'macOS 26', kind: 'Laptop', w: 2940, h: 1912, state: 'ready', ms: 7 },
+  { id: 'studio', name: 'studio', os: 'Fedora Linux 42', kind: 'Desktop', w: 3440, h: 1440, state: 'busy', by: "Priya's MacBook Pro" },
+  { id: 'ubuntu', name: 'ubuntu', os: 'Ubuntu 22.04', kind: 'Virtual machine', w: 1920, h: 1080, state: 'key', ms: 38 },
+  { id: 'gaming', name: 'gaming-pc', os: 'Windows 11', kind: 'Desktop', w: 2560, h: 1440, state: 'offline', seen: '3 h ago', ms: 9 },
+];
+const byId = (id) => C.find((c) => c.id === id);
+const statusText = (c) => ({
+  ready: `Ready · ${c.ms} ms`, busy: `In use by ${c.by}`, key: "Key doesn't match", offline: `Offline · seen ${c.seen}`,
+})[c.state];
+const stat = (c, more) => `<p class="stat"><i class="dot ${c.state}"></i><span class="tx">${statusText(c)}</span>${more ? `<em>·</em><em>${more}</em>` : ''}</p>`;
+const spec = (c) => `${c.os} · ${c.kind}`;
+const action = (c) => ({
+  ready: `<button class="go" data-go="${c.id}">Connect<kbd>↵</kbd></button>`,
+  busy: `<p class="why">You can connect when they leave.</p>`,
+  key: `<form class="keyf" data-key="${c.id}"><input placeholder="Paste its new key" spellcheck="false" aria-label="New key"><button>Update key</button></form>`,
+  offline: `<p class="why">Shown as it was ${c.seen}. It lights up when it's back.</p>`,
+})[c.state];
+
+// ── what each screen shows ────────────────────────────────────
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const rust = (src) => esc(src).replace(
+  /(\/\/.*$)|("[^"\n]*")|\b(impl|for|fn|let|mut|self|pub|use|struct|if|return|Ok|Err)\b|\b([A-Z][A-Za-z0-9]*)\b|\b(\d[\d_]*)\b/gm,
+  (m, c, s, k, t) => `<span class="${c ? 'c' : s ? 's' : k ? 'k' : t ? 'ty' : 'n'}">${m}</span>`);
+const CODE = `use std::time::{Duration, Instant};
+
+/// Grabs the root window through MIT-SHM.
+pub struct ScreenSource {
+    conn: RustConnection,
+    segment: Segment,
+    width: u32,
+    height: u32,
+    next_deadline: Instant,
+}
+
+impl FrameSource for ScreenSource {
+    fn next_frame(&mut self) -> Result<VideoFrame> {
+        let now = Instant::now();
+        if now < self.next_deadline {
+            std::thread::sleep(self.next_deadline - now);
+        }
+        self.next_deadline += Duration::from_micros(16_667);
+
+        // Unchanged frames are skipped before encoding.
+        let image = self.grab()?;
+        if !self.damage.changed(&image) {
+            return Err(NoPicture.into());
+        }
+        Ok(VideoFrame::bgra(image, self.width, self.height))
+    }
+}`;
+const grads = ['linear-gradient(135deg,#ff9a56,#ff5f6d)', 'linear-gradient(135deg,#5ee7df,#3a7bd5)', 'linear-gradient(135deg,#f6d365,#fda085)',
+  'linear-gradient(135deg,#a18cd1,#5b4fcf)', 'linear-gradient(135deg,#84fab0,#2f9e77)', 'linear-gradient(135deg,#fbc2eb,#e0568f)',
+  'linear-gradient(135deg,#4facfe,#1d4ed8)', 'linear-gradient(135deg,#e2e2e6,#9c9ca6)', 'linear-gradient(135deg,#ffd86f,#fc6262)',
+  'linear-gradient(135deg,#43e97b,#11998e)', 'linear-gradient(135deg,#30cfd0,#330867)', 'linear-gradient(135deg,#f093fb,#f5576c)'];
+const tiles = (n, from = 0) => Array.from({ length: n }, (_, i) => `<i style="--g:${grads[(i + from) % grads.length]}"></i>`).join('');
+const cpu = [62, 18, 87, 34, 9, 71, 26, 44];
+const SCREEN = {
+  arch: () => `<div class="d arch">
+    <div class="bar"><i class="ws on"></i><i class="ws"></i><i class="ws"></i><i class="ws"></i><span class="clk">Tue 17 Nov  20:14</span></div>
+    <div class="t f" style="left:.8cqw;top:3.4cqw;width:57.6cqw;height:52cqw"><div class="tab">crates/capture/src/linux.rs</div><pre>${rust(CODE)}</pre></div>
+    <div class="t" style="left:59.2cqw;top:3.4cqw;width:40cqw;height:27cqw"><pre><span class="p">~/projects/sunna</span> <span class="c">main</span>
+<span class="g">❯</span> cargo test --release -p sunna-capture
+<span class="g">   Compiling</span> sunna-capture v0.0.1
+<span class="g">    Finished</span> \`release\` profile in 41.2s
+<span class="g">     Running</span> unittests src/lib.rs
+
+running 25 tests
+test tiles::changed_squares ... <span class="g">ok</span>
+test tiles::unchanged_is_empty ... <span class="g">ok</span>
+test cursor::shape_roundtrip ... <span class="g">ok</span>
+test result: <span class="g">ok</span>. 25 passed; 0 failed
+
+<span class="g">❯</span> <span class="caret"></span></pre></div>
+    <div class="t mon" style="left:59.2cqw;top:31.2cqw;width:40cqw;height:24.2cqw">
+      ${cpu.map((v, i) => `<div class="mr"><b>${i}</b><i style="--v:${v}%;--c:${v > 80 ? '#f2c879' : '#58d68d'}"></i><u>${v}%</u></div>`).join('')}
+      <div class="mr"><b>Mem</b><i style="--v:41%;--c:#5fd4ef"></i><u>6.2G</u></div>
+      <div class="mr"><b>GPU</b><i style="--v:23%;--c:#c79bf2"></i><u>23%</u></div>
+    </div></div>`,
+  mac: () => `<div class="d mac">
+    <div class="mb"><b>Notes</b><span>File</span><span>Edit</span><span>Format</span><span>View</span><span>Window</span><span>Help</span><span class="r">Tue 17 Nov  8:14 PM</span></div>
+    <div class="w doc" style="left:7cqw;top:6cqw;width:45cqw;height:46cqw"><div class="hd"><i></i><i></i><i></i><span>Lisbon in March</span></div>
+      <div class="bd"><h4>Lisbon in March</h4><p>Four days, flying in on the Thursday. Staying in Alfama, a short walk from the river.</p><div class="ph"></div>
+      <ul><li>Tram 28 early, before the queues</li><li>Belém on Friday: tower, then pastries</li><li>Day trip to Sintra if it's clear</li><li>Book the fado place for Saturday</li></ul></div></div>
+    <div class="w pho" style="left:45cqw;top:15cqw;width:48cqw;height:38cqw"><div class="hd"><i></i><i></i><i></i><span>Photos</span></div><div class="gr">${tiles(16)}</div></div>
+    <div class="dock">${tiles(10, 3)}</div></div>`,
+  studio: () => `<div class="d gn">
+    <div class="gb"><span>Activities</span><span>17 Nov  20:14</span><span>en</span></div>
+    <div class="app">
+      <div class="lp">${['Sun', 'Sky', 'Far ridge', 'Near ridge', 'Water', 'Grade'].map((n, i) => `<div class="ly${i === 2 ? ' on' : ''}"><i style="--g:${grads[(i * 2 + 1) % grads.length]}"></i>${n}</div>`).join('')}</div>
+      <div class="cv"><div class="art"><div class="sun"></div><div class="mt m1"></div><div class="mt m2"></div><div class="mt m3"></div><div class="gl"></div></div></div>
+      <div class="rp">${[['Exposure', 58], ['Contrast', 36], ['Warmth', 74], ['Tint', 47], ['Saturation', 66], ['Grain', 12]].map(([n, v]) => `<div class="sl"><span>${n}</span><i style="--v:${v}%"></i></div>`).join('')}</div>
+      <div class="tm">
+        <div class="tr"><i style="--l:2%;--w:27%;--g:#2f9e8f"></i><i style="--l:30%;--w:38%;--g:#3a7bd5"></i><i style="--l:69%;--w:22%;--g:#2f9e8f"></i></div>
+        <div class="tr"><i style="--l:8%;--w:44%;--g:#c2772e"></i><i style="--l:55%;--w:30%;--g:#b24a6c"></i></div>
+        <div class="tr"><i style="--l:2%;--w:92%;--g:#5b4fcf"></i></div><div class="ph"></div>
+      </div>
+    </div></div>`,
+  ubuntu: () => `<div class="d ub">
+    <div class="ub-b">17 Nov  14:44</div>
+    <div class="ub-d">${tiles(7, 5)}</div>
+    <div class="w te" style="left:9cqw;top:6cqw;width:50cqw;height:30cqw"><div class="hd">sunny@ubuntu: ~</div><pre><span class="g">sunny@ubuntu</span>:<span class="p">~</span>$ sunna-host status
+Sunna host   running since Mon 09:12
+Listening    0.0.0.0:48800
+Desktop      :40  1710x1112
+Sound        on
+Viewer       none
+
+<span class="g">sunny@ubuntu</span>:<span class="p">~</span>$ <span class="caret"></span></pre></div>
+    <div class="w fi" style="left:46cqw;top:24cqw;width:46cqw;height:27cqw"><div class="hd">Home</div><div class="gr">${['Desktop', 'Documents', 'Downloads', 'Music', 'Pictures', 'projects', 'sunna-logs', 'Videos'].map((n) => `<div><i></i>${n}</div>`).join('')}</div></div></div>`,
+  gaming: () => `<div class="d w11">
+    ${[-52, -26, 0, 26, 52].map((r) => `<i class="pt" style="--r:${r}deg"></i>`).join('')}
+    <div class="w"><div class="sb"><b>Library</b><span>Home</span><span>Installed</span><span>Favourites</span><span>Recent</span><span>Downloads</span></div>
+      <div class="mn"><h4>Recent</h4><div class="cs">${tiles(10, 1)}</div></div></div>
+    <div class="tk">${tiles(8, 6)}<span>20:14</span></div></div>`,
+};
+const LOCK = `<div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.2"/><path d="M8.2 10.5V8a3.8 3.8 0 0 1 7.6 0v2.5"/></svg></div>`;
+const shot = (c, live) => `<div class="shot ${live ? 'live' : 's-' + c.state}" data-shot="${c.id}" style="aspect-ratio:${c.w}/${c.h}">${SCREEN[c.id]()}${live ? '' : LOCK + '<span class="tag"><i class="dot busy"></i>In use</span>'}</div>`;
+
+// ── the three home screens ────────────────────────────────────
+let sel = 0, cur = 'stage', query = '';
+const V = {
+  stage: {
+    blurb: () => phone ? 'One computer per page. Swipe to move, tap the screen or the button to connect.' : 'One computer at a time, as large as the window allows. ← → to move, ↵ to connect.',
+    render() {
+      view.innerHTML = `<div class="st">
+        <div class="st-track">${C.map((c, i) => `<div class="st-slide" data-i="${i}" style="width:${phone ? 342 : Math.round(356 * c.w / c.h)}px">${shot(c)}</div>`).join('')}</div>
+        <div class="st-info"></div>
+        <div class="st-tabs"><div class="in">${C.map((c, i) => `<button data-i="${i}"><i class="dot ${c.state}"></i><span>${c.name}</span></button>`).join('')}<span class="mark"></span></div></div></div>`;
+      this.refresh(true);
+    },
+    refresh(instant) {
+      const track = $('.st-track'), slide = $$('.st-slide')[sel], c = C[sel];
+      $$('.st-slide').forEach((el, i) => el.classList.toggle('on', i === sel));
+      if (instant) track.style.transition = 'none';
+      track.style.transform = `translateX(${W / 2 - slide.offsetLeft - slide.offsetWidth / 2}px)`;
+      const info = $('.st-info');
+      info.innerHTML = `<h2>${c.name}</h2>${phone ? stat(c) + `<p class="stat"><em>${spec(c)} · ${c.w} × ${c.h}</em></p>` : stat(c, `${spec(c)} · ${c.w} × ${c.h}`)}<div class="act">${action(c)}</div>`;
+      if (!instant) info.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: 'ease-out' });
+      $$('.st-tabs button').forEach((b, i) => { b.classList.toggle('on', i === sel); b.firstChild.className = 'dot ' + C[i].state; });
+      const tab = $$('.st-tabs button')[sel], mark = $('.mark');
+      if (instant) mark.style.transition = 'none';
+      mark.style.left = tab.offsetLeft + 11 + 'px'; mark.style.width = tab.offsetWidth - 22 + 'px';
+      if (instant) { track.offsetWidth; track.style.transition = mark.style.transition = ''; }
+    },
+    source: () => $('.st-slide.on .shot'),
+    keys: { ArrowLeft: -1, ArrowRight: 1 },
+  },
+  wall: {
+    blurb: () => 'Every computer at once, each at its true shape, the ones you can use now first.',
+    // Rows of equal height that fill the width (as photo walls do); of the ways
+    // to cut the list into rows, take the one that shows the most screen.
+    layout() {
+      const rank = { ready: 0, busy: 1, key: 2, offline: 3 };
+      const order = [...C].sort((a, b) => rank[a.state] - rank[b.state]), n = order.length;
+      if (phone) {
+        // One column: a full row for each computer you can use, the rest two to a row.
+        const pad = 16, gap = 12, label = 52, rowGap = 12, availW = W - pad * 2, rows = [];
+        let pair = null;
+        order.forEach((c) => {
+          if (c.state === 'ready' || c.fixing) { rows.push([c]); pair = null; }
+          else if (pair && pair.length < 2) pair.push(c);
+          else rows.push(pair = [c]);
+        });
+        const pos = {};
+        let y = 6;
+        rows.forEach((row) => {
+          const lone = row.length === 1 && row[0].state !== 'ready' && !row[0].fixing;
+          const h = lone ? (availW - gap) / 2 / (row[0].w / row[0].h) : (availW - gap * (row.length - 1)) / row.reduce((s, c) => s + c.w / c.h, 0);
+          let x = pad;
+          row.forEach((c) => { const w = h * c.w / c.h; pos[c.id] = { x, y, w }; x += w + gap; });
+          y += h + label + rowGap;
+        });
+        pos.height = y + 30;
+        return pos;
+      }
+      const pad = 30, gap = 22, label = 50, rowGap = 18, availW = W - pad * 2, availH = H - TOP - 30;
+      let best = null;
+      for (let mask = 0; mask < 1 << (n - 1); mask++) {
+        const rows = [[]];
+        order.forEach((c, i) => { rows.at(-1).push(c); if (mask >> i & 1) rows.push([]); });
+        if (rows.length > 3) continue;
+        const chrome = rows.length * label + (rows.length - 1) * rowGap;
+        let hs = rows.map((row) => (availW - gap * (row.length - 1)) / row.reduce((s, c) => s + c.w / c.h, 0));
+        const k = Math.min(1, (availH - chrome) / hs.reduce((s, h) => s + h, 0));
+        hs = hs.map((h) => h * k);
+        const score = rows.reduce((s, row, r) => s + row.reduce((t, c) => t + hs[r] * hs[r] * c.w / c.h * (c.state === 'ready' ? 1.6 : 1), 0), 0);
+        if (!best || score > best.score) best = { score, rows, hs, total: hs.reduce((s, h) => s + h, 0) + chrome };
+      }
+      const pos = {};
+      let y = (H - TOP - best.total) / 2 - 2;
+      best.rows.forEach((row, r) => {
+        let x = pad;
+        row.forEach((c) => { const w = best.hs[r] * c.w / c.h; pos[c.id] = { x, y, w }; x += w + gap; });
+        y += best.hs[r] + label + rowGap;
+      });
+      return pos;
+    },
+    label: (c) => c.state === 'key' && c.fixing
+      ? action(c)
+      : `<div><b>${c.name}</b>${stat(c)}</div>${c.state === 'ready' ? '<span class="do">Connect</span>' : c.state === 'key' ? '<span class="do">Fix</span>' : ''}`,
+    render() {
+      view.innerHTML = `<div class="wall"><div class="wall-in">${C.map((c) => `<div class="wt" data-id="${c.id}">${shot(c)}<div class="wl"></div></div>`).join('')}</div></div>`;
+      this.refresh(true);
+    },
+    refresh(instant) {
+      const pos = this.layout();
+      $('.wall-in').style.height = pos.height ? pos.height + 'px' : '';
+      const fixing = C.find((c) => c.fixing);
+      if (phone && fixing) $('.wall').scrollTo({ top: Math.max(0, pos[fixing.id].y - 150), behavior: 'smooth' });
+      $$('.wt').forEach((el) => {
+        const c = byId(el.dataset.id), p = pos[c.id];
+        if (instant) el.style.transition = 'none';
+        Object.assign(el.style, { left: p.x + 'px', top: p.y + 'px', width: p.w + 'px' });
+        const want = c.state + (c.fixing ? 'f' : '');
+        if (el.dataset.was !== want) { $('.wl', el).innerHTML = this.label(c); el.dataset.was = want; }
+        if (instant) { el.offsetWidth; el.style.transition = ''; }
+      });
+    },
+    source: () => { const c = C[sel]; return $(`.wt[data-id="${c.id}"] .shot`); },
+    keys: {},
+  },
+  index: {
+    blurb: () => phone ? 'Names first. Tap one to open it.' : 'Names first. Type a few letters, press ↵.',
+    render() {
+      if (phone) {
+        view.innerHTML = `<div class="ixp">${C.map((c, i) => `<div class="ixp-row" data-i="${i}"><div class="ixp-h"><b>${c.name}</b><span class="rs"></span></div>
+          <div class="ixp-b"><div class="ixp-in">${shot(c)}<div class="act"></div></div></div></div>`).join('')}<div class="ixp-add">Add a computer…</div></div>`;
+        return this.refresh(true);
+      }
+      view.innerHTML = `<div class="ix"><div class="ix-q"></div>
+        <div class="ix-list">${C.map((c, i) => `<div class="ix-row" data-i="${i}"><b>${c.name}</b><span class="rs"></span></div>`).join('')}<div class="ix-add">Add a computer…</div><span class="ix-mark"></span></div>
+        <div class="ix-pre">${C.map((c, i) => `<div class="ix-shot" data-i="${i}">${shot(c)}</div>`).join('')}<div class="ix-info"></div></div>
+        <div class="hint"><span><kbd>A–Z</kbd>find</span><span><kbd>↑</kbd><kbd>↓</kbd>move</span><span><kbd>↵</kbd>connect</span></div></div>`;
+      this.refresh(true);
+    },
+    refresh(instant) {
+      if (phone) {
+        $$('.ixp-row').forEach((el, i) => {
+          if (instant) $('.ixp-b', el).style.transition = 'none';
+          el.classList.toggle('on', i === sel);
+          $('.rs', el).innerHTML = stat(C[i], i === sel ? spec(C[i]) : '');
+          const act = $('.act', el), want = C[i].state;
+          if (act.dataset.was !== want) { act.innerHTML = action(C[i]); act.dataset.was = want; }
+          if (instant) { el.offsetWidth; $('.ixp-b', el).style.transition = ''; }
+        });
+        return;
+      }
+      const c = C[sel], q = query.toLowerCase();
+      $$('.ix-row').forEach((el, i) => {
+        el.classList.toggle('on', i === sel);
+        el.classList.toggle('out', !!q && !C[i].name.toLowerCase().includes(q));
+        $('.rs', el).innerHTML = stat(C[i]);
+      });
+      $$('.ix-shot').forEach((el, i) => el.classList.toggle('on', i === sel));
+      $('.ix-q').innerHTML = q ? `Finding <b>${esc(query)}</b>` : '';
+      const mark = $('.ix-mark'), info = $('.ix-info');
+      if (instant) mark.style.transition = info.style.transition = 'none';
+      mark.style.transform = `translateY(${sel * 76}px)`;
+      info.style.transform = `translateY(${Math.round(484 * c.h / c.w) + 22}px)`;
+      const html = `<dl><dt>System</dt><dd>${spec(c)}</dd><dt>Screen</dt><dd>${c.w} × ${c.h}</dd></dl><div class="act">${action(c)}</div>`;
+      if (info.dataset.was !== c.id + c.state) { info.innerHTML = html; info.dataset.was = c.id + c.state; }
+      if (instant) { mark.offsetWidth; mark.style.transition = info.style.transition = ''; }
+    },
+    source: () => $(phone ? '.ixp-row.on .shot' : '.ix-shot.on .shot'),
+    keys: { ArrowUp: -1, ArrowDown: 1 },
+  },
+};
+
+function show(v) {
+  cur = v; query = '';
+  $$('#seg button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
+  $('#blurb').textContent = V[v].blurb();
+  V[v].render();
+  const parts = v === 'stage' ? [$('.st-track'), $('.st-info'), $('.st-tabs')] : v === 'wall' ? $$('.wt') : phone ? $$('.ixp-row') : [...$$('.ix-row'), $('.ix-pre')];
+  parts.forEach((el, i) => el.animate(
+    [{ opacity: 0, translate: '0 14px' }, { opacity: 1, translate: '0 0' }],
+    { duration: SP.move.duration, easing: SP.move.easing, delay: i * 45, fill: 'backwards' }));
+}
+function setForm(p) {
+  phone = p; W = p ? 390 : 980; H = p ? 844 : 660; TOP = p ? 96 : 52;
+  win.classList.toggle('phone', p); $('#fit').classList.toggle('phone', p);
+  $$('#form button').forEach((b) => b.classList.toggle('on', (b.dataset.f === 'phone') === p));
+  fit(); show(cur);
+}
+function select(i) {
+  if (i < 0 || i >= C.length || i === sel) return;
+  sel = i; V[cur].refresh();
+}
+function setState(c, state) {
+  c.state = state; c.fixing = false;
+  $$(`[data-shot="${c.id}"]`, view).forEach((el) => { el.className = 'shot s-' + state; });
+  counts(); V[cur].refresh();
+}
+function counts() {
+  $('#count').textContent = `${C.filter((c) => c.state === 'ready').length} of ${C.length} ready`;
+  $('#demo').textContent = byId('gaming').state === 'offline' ? 'Demo: bring gaming-pc online' : 'Demo: take gaming-pc offline';
+}
+const nudge = (el) => el.animate({ translate: ['0', '-7px', '5px', '-2px', '0'] }, { duration: 340, easing: 'ease-out' });
+
+// ── connecting: the screen grows into the session ─────────────
+let live = null;
+function connect(c) {
+  const from = V[cur].source();
+  if (live || !from) return;
+  if (c.state === 'key') { c.fixing = true; V[cur].refresh(); $('.keyf input', view)?.focus({ preventScroll: true }); return; }
+  if (c.state !== 'ready') { nudge(from); return; }
+  const a = c.w / c.h, w = Math.min(W, H * a), h = w / a, x = (W - w) / 2, y = (H - h) / 2, r = box(from);
+  sess.innerHTML = `<div class="sess-bg"></div><div class="sess-shot" style="left:${x}px;top:${y}px;width:${w}px">${shot(c, true)}</div>
+    <div class="pill"><i class="dot busy"></i>Connecting to ${c.name}…</div><button class="more">Leave<kbd>esc</kbd></button>`;
+  sess.hidden = false; from.style.visibility = 'hidden'; win.classList.add('away');
+  const small = `translate(${r.x - x}px,${r.y - y}px) scale(${r.w / w})`;
+  $('.sess-shot').animate([{ transform: small }, { transform: 'none' }], { duration: SP.zoom.duration, easing: SP.zoom.easing, fill: 'both' });
+  $('.sess-bg').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 320, fill: 'both' });
+  live = { c, from, timers: [
+    setTimeout(() => { const p = $('.pill'); if (p) p.innerHTML = `<i class="dot ready"></i>Connected · ${c.ms} ms`; }, 700),
+    setTimeout(() => { const p = $('.pill'); if (p) p.style.opacity = 0; }, 2300),
+  ] };
+}
+function leave() {
+  if (!live) return;
+  const { from, timers } = live; timers.forEach(clearTimeout); live = null;
+  const el = $('.sess-shot'), r = box(from), x = parseFloat(el.style.left), y = parseFloat(el.style.top), w = parseFloat(el.style.width);
+  $('.pill').style.opacity = 0; $('.more').style.opacity = 0; win.classList.remove('away');
+  $('.sess-bg').animate([{ opacity: 1 }, { opacity: 0 }], { duration: 260, fill: 'both' });
+  el.animate([{ transform: 'none' }, { transform: `translate(${r.x - x}px,${r.y - y}px) scale(${r.w / w})` }],
+    { duration: SP.move.duration, easing: SP.move.easing, fill: 'both' }).finished.then(() => {
+    from.style.visibility = ''; sess.hidden = true; sess.innerHTML = '';
+  });
+}
+
+// ── input ─────────────────────────────────────────────────────
+$('#seg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !live) show(b.dataset.v); });
+$('#demo').addEventListener('click', () => { const g = byId('gaming'); if (!live) setState(g, g.state === 'offline' ? 'ready' : 'offline'); });
+$('#form').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && !live) setForm(b.dataset.f === 'phone'); });
+// Dragging the stage sideways moves between computers.
+let drag = null, dragged = false;
+win.addEventListener('pointerdown', (e) => {
+  const track = $('.st-track');
+  if (!track || live || e.target.closest('.act, .st-tabs, .tb')) return;
+  drag = { x: e.clientX, base: new DOMMatrix(getComputedStyle(track).transform).m41, moved: false };
+});
+addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const dx = (e.clientX - drag.x) / S, track = $('.st-track');
+  if (!drag.moved && Math.abs(dx) < 6) return;
+  drag.moved = true;
+  const edge = (sel === 0 && dx > 0) || (sel === C.length - 1 && dx < 0);
+  track.style.transition = 'none';
+  track.style.transform = `translateX(${drag.base + dx * (edge ? 0.3 : 1)}px)`;
+});
+addEventListener('pointerup', (e) => {
+  if (!drag) return;
+  const dx = (e.clientX - drag.x) / S, moved = drag.moved; drag = null;
+  if (!moved) return;
+  dragged = true; setTimeout(() => { dragged = false; }, 60);
+  $('.st-track').style.transition = '';
+  sel = Math.max(0, Math.min(C.length - 1, sel + (dx < -48 ? 1 : dx > 48 ? -1 : 0)));
+  V.stage.refresh();
+});
+win.addEventListener('click', (e) => {
+  if (e.target.closest('.more')) return leave();
+  if (live || dragged || e.target.closest('.keyf')) return;
+  const head = e.target.closest('.ixp-h'); if (head) return select(+head.parentElement.dataset.i);
+  const open = e.target.closest('.ixp-row .shot'); if (open) return connect(C[sel]);
+  const go = e.target.closest('[data-go]');
+  if (go) return connect(byId(go.dataset.go));
+  const tab = e.target.closest('.st-tabs button'); if (tab) return select(+tab.dataset.i);
+  const slide = e.target.closest('.st-slide'); if (slide) return slide.classList.contains('on') ? connect(C[sel]) : select(+slide.dataset.i);
+  const tile = e.target.closest('.wt'); if (tile) { sel = C.indexOf(byId(tile.dataset.id)); return connect(C[sel]); }
+  const row = e.target.closest('.ix-row, .ix-shot'); if (row) { select(+row.dataset.i); return connect(C[sel]); }
+});
+win.addEventListener('mouseover', (e) => { const row = e.target.closest('.ix-row'); if (row && !live) select(+row.dataset.i); });
+win.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.target.closest('[data-key]'); if (!f) return;
+  if ($('input', f).value.trim()) setState(byId(f.dataset.key), 'ready'); else nudge(f);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { if (live) return leave(); if (query) { query = ''; V[cur].refresh(); } const c = C[sel]; if (c.fixing) { c.fixing = false; V[cur].refresh(); } return; }
+  if (live || e.target.matches?.('input') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const step = V[cur].keys[e.key];
+  if (step) { e.preventDefault(); return select(sel + step); }
+  if (e.key === 'Enter') { e.preventDefault(); return connect(C[sel]); }
+  if (cur === 'index' && (e.key === 'Backspace' || /^[a-z0-9 -]$/i.test(e.key))) {
+    e.preventDefault();
+    query = e.key === 'Backspace' ? query.slice(0, -1) : query + e.key;
+    const hit = C.findIndex((c) => c.name.toLowerCase().includes(query.toLowerCase()));
+    if (query && hit >= 0) sel = hit;
+    V[cur].refresh();
+  }
+});
+counts(); setForm(new URLSearchParams(location.search).get('form') !== 'desktop');
+</script>

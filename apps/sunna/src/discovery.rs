@@ -17,6 +17,7 @@ pub struct Found {
     pub device: String,
     /// ready | busy | wrong-key | update-needed | not-sharing | offline
     pub state: String,
+    pub detail: String,
 }
 
 /// One look at the tailnet: who we are, and every other device.
@@ -61,7 +62,7 @@ impl Peer {
 
 /// The Tailscale CLI: apps opened from Finder get a minimal PATH, so look
 /// in the usual places too.
-fn tailscale() -> String {
+pub(crate) fn tailscale() -> String {
     let candidates = [
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         "/opt/homebrew/bin/tailscale",
@@ -108,8 +109,8 @@ pub async fn scan(key: &str) -> Result<Scan, String> {
         let key = key.to_string();
         tokio::spawn(async move {
             let ip = peer.ipv4().unwrap_or_default();
-            let (state, os, device) = if !peer.online || ip.is_empty() {
-                ("offline".to_string(), pretty_os(&peer.os), String::new())
+            let (state, os, device, detail) = if !peer.online || ip.is_empty() {
+                ("offline".to_string(), pretty_os(&peer.os), String::new(), String::new())
             } else {
                 let check = machines::check(&ip, &key).await;
                 let state = match check.state.as_str() {
@@ -121,7 +122,8 @@ pub async fn scan(key: &str) -> Result<Scan, String> {
                 } else {
                     check.os
                 };
-                (state, os, check.device)
+                let detail = if check.state == "not-sharing" { check.detail } else { String::new() };
+                (state, os, check.device, detail)
             };
             Found {
                 name: peer.host_name,
@@ -130,6 +132,7 @@ pub async fn scan(key: &str) -> Result<Scan, String> {
                 os,
                 device,
                 state,
+                detail,
             }
         })
     });

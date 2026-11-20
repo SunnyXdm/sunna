@@ -8,17 +8,17 @@
 //   await page.goto("http://127.0.0.1:8766/ui/?time=19:30");
 //   await page.shot("/tmp/home.png");
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function launch({ width = 980, height = 660, scale = 2, port = 9333 } = {}) {
-  rmSync(`${tmpdir()}/sunna-cdp-profile`, { recursive: true, force: true });
+  const profile = mkdtempSync(`${tmpdir()}/sunna-cdp-`);
   const chrome = spawn("google-chrome", [
     "--headless=new", `--remote-debugging-port=${port}`, `--window-size=${width},${height}`,
     `--force-device-scale-factor=${scale}`, "--hide-scrollbars", "--no-first-run",
-    "--no-default-browser-check", `--user-data-dir=${tmpdir()}/sunna-cdp-profile`, "--disable-gpu", "about:blank",
+    "--no-default-browser-check", `--user-data-dir=${profile}`, "--disable-gpu", "about:blank",
   ], { stdio: "ignore" });
   let targets = [];
   for (let i = 0; i < 50; i++) {
@@ -135,9 +135,12 @@ export async function launch({ width = 980, height = 660, scale = 2, port = 9333
   };
   return {
     page,
-    close: () => {
+    close: async () => {
+      // google-chrome may be a wrapper; close the browser, not only its shell.
+      try { await Promise.race([send("Browser.close"), sleep(500)]); } catch {}
       try { ws.close(); } catch {}
       chrome.kill();
+      rmSync(profile, { recursive: true, force: true, maxRetries: 3 });
     },
   };
 }

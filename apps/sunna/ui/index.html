@@ -6,11 +6,14 @@
   <title>Sunna</title>
   <link rel="stylesheet" href="style.css">
   <script type="module" src="main.js"></script>
+  <link rel="stylesheet" href="computers.css">
+  <link rel="stylesheet" href="updates.css">
 </head>
 <body>
   <!-- Icons (the interface ones after Feather, MIT) -->
   <svg class="sprite" aria-hidden="true">
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-view" viewBox="0 0 24 24"><rect x="4" y="5" width="7" height="6" rx="1.5"/><rect x="13" y="5" width="7" height="6" rx="1.5"/><rect x="4" y="13" width="7" height="6" rx="1.5"/><rect x="13" y="13" width="7" height="6" rx="1.5"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
@@ -58,6 +61,8 @@
         <p id="summary">&nbsp;</p>
       </div>
       <span class="spacer"></span>
+      <button type="button" class="app-update-notice" id="app-update-notice" aria-haspopup="menu" hidden>Updates</button>
+      <button class="tool view-button" id="view-button" title="View (⌘1–5)" aria-label="View" aria-haspopup="menu"><svg class="icon"><use href="#i-view"/></svg></button>
       <button class="tool" id="add-button" title="Add a Computer (⌘N)" aria-label="Add a computer">
         <svg class="icon"><use href="#i-plus"/></svg>
       </button>
@@ -67,7 +72,7 @@
     </header>
 
     <main class="home" id="home">
-      <section class="grid" id="grid" role="list" aria-label="Your computers"></section>
+      <div id="computer-host"></div>
 
       <section class="welcome" id="welcome" hidden>
         <div class="nosignal" aria-hidden="true">
@@ -91,6 +96,7 @@
 
   <!-- Connecting: the machine's screen grows to fill the window and boots. -->
   <div class="launch" id="launch" hidden>
+    <div class="launch-background" id="launch-background"></div>
     <div class="launch-screen" id="launch-screen">
       <span class="wallpaper"><span class="wall"></span></span>
       <span class="desk"><i></i><i></i><i></i></span>
@@ -203,6 +209,20 @@
               <span class="field-label">Name</span>
               <span class="input"><input name="name" spellcheck="false" placeholder="Optional"></span>
             </label>
+            <p class="row-hint identity-line" hidden></p>
+            <label class="row older-row" hidden>
+              <span class="row-text"><span class="row-title">Allow this older computer</span><span class="row-hint">Even background checks send your full key to whoever answers as an older computer.</span></span>
+              <input type="checkbox" class="switch" role="switch" name="allow_older">
+            </label>
+            <label class="field kind-field">
+              <span class="field-label">Kind</span>
+              <span class="input"><select name="kind"><option value="">Automatic</option><option value="laptop">Laptop</option><option value="desktop">Desktop</option><option value="mini">Mini PC</option><option value="server">Server</option><option value="vm">Virtual machine</option></select></span>
+            </label>
+            <label class="field host-policy-field" hidden>
+              <span class="field-label">Host updates</span>
+              <span class="input"><select class="host-update-policy" aria-label="Host updates"><option value="auto">Automatic</option><option value="notify">Tell me</option><option value="off">Off</option></select></span>
+              <span class="row-hint host-policy-hint"></span>
+            </label>
           </div>
           <p class="check-line" aria-live="polite"><span class="check-icon"></span><span class="check-text"></span></p>
           <footer class="sheet-footer">
@@ -234,23 +254,39 @@
         <button type="button" class="icon-button close" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
       </header>
       <div class="sheet-scroll">
+        <h3 class="group-title view-title">View</h3>
+        <div class="view-choices" role="radiogroup" aria-label="View"></div>
+        <div class="row pictures-row">
+          <div class="row-text">
+            <span class="row-title">Screen pictures</span>
+            <span class="row-hint">What each computer shows here after a session: its screen as you left it. Taken once, as you leave, and kept on this device only. Blurred keeps just the colours.</span>
+          </div>
+          <div class="segmented pictures-mode" role="radiogroup" aria-label="Screen pictures">
+            <button type="button" role="radio" data-value="sharp">Sharp</button>
+            <button type="button" role="radio" data-value="blurred">Blurred</button>
+            <button type="button" role="radio" data-value="off">Off</button>
+          </div>
+        </div>
         <section class="this-computer">
           <div class="this-device"><svg class="icon"><use href="#i-laptop"/></svg></div>
           <div class="this-text">
-            <span class="this-name"></span>
-            <span class="this-sharing"><span class="dot"></span><span class="this-sharing-text">Checking…</span></span>
+            <label class="this-name" for="share-host">Share this computer</label>
+            <span class="this-sharing" role="status"><span class="dot"></span><span id="share-host-status" class="this-sharing-text">Checking…</span></span>
           </div>
+          <input id="share-host" aria-describedby="share-host-status" type="checkbox" role="switch" class="switch" disabled>
         </section>
+        <div class="share-actions" hidden></div>
+        <div class="share-network"><button type="button" class="network-note">Network security</button></div>
         <div class="group">
           <div class="row">
             <div class="row-text">
-              <span class="row-title">This computer's key</span>
-              <span class="row-hint">Other computers need it to connect to this one. New computers you add start with it.</span>
+              <span class="row-title">Default connection key</span>
+              <span class="row-hint">New computers you add start with this key.</span>
             </div>
           </div>
           <div class="row key-row">
             <span class="input mono">
-              <input name="key" type="password" spellcheck="false" autocapitalize="off" aria-label="This computer's key">
+              <input name="key" type="password" spellcheck="false" autocapitalize="off" aria-label="Default connection key">
               <button type="button" class="icon-button small reveal" title="Show" aria-label="Show key"><svg class="icon"><use href="#i-eye"/></svg></button>
               <button type="button" class="icon-button small copy-key" title="Copy" aria-label="Copy key"><svg class="icon"><use href="#i-copy"/></svg></button>
             </span>
@@ -324,12 +360,36 @@
           <div class="row"><span class="row-title">Stats bar</span><span class="keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>S</kbd></span></div>
           <div class="row"><span class="row-title">Disconnect</span><span class="keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>Q</kbd></span></div>
         </div>
+        <section id="updates-settings" aria-labelledby="updates-title">
+          <h3 class="group-title" id="updates-title">Updates</h3>
+          <div class="group">
+            <div class="row update-status-row">
+              <div class="row-text"><span class="row-title update-version"></span><span class="row-hint update-state" role="status"></span></div>
+              <div class="update-actions">
+                <button type="button" class="button secondary small update-check">Check for updates</button>
+                <button type="button" class="button primary small update-restart" hidden>Restart to update</button>
+              </div>
+            </div>
+            <p class="update-explanation" role="status" hidden></p>
+            <label class="row update-policy-row">
+              <span class="row-text"><span class="row-title">App updates</span><span class="row-hint update-policy-hint"></span></span>
+              <span class="input"><select class="app-update-policy" aria-label="App updates"><option value="auto">Automatically</option><option value="notify">Ask first</option><option value="off">Never</option></select></span>
+            </label>
+          </div>
+        </section>
+        <button class="button secondary licenses-button">Open source software</button>
         <p class="about"></p>
         <p class="about credits">The Linux penguin is drawn after Tux by Larry Ewing (lewing@isc.tamu.edu), made with The GIMP.</p>
       </div>
     </div>
   </template>
 
+  <template id="licenses-template">
+    <div class="sheet licenses-sheet" role="dialog" aria-modal="true" aria-labelledby="licenses-title">
+      <header class="sheet-header"><h2 id="licenses-title">Open source software</h2><button class="icon-button close" aria-label="Close">×</button></header>
+      <div class="sheet-scroll"><h3>Inter</h3><p>Inter is bundled locally under the SIL Open Font License 1.1.</p><pre class="license-text"></pre></div>
+    </div>
+  </template>
   <template id="qr-sheet-template">
     <div class="sheet qr-sheet" role="dialog" aria-modal="true" aria-labelledby="qr-title" aria-describedby="qr-description qr-warning">
       <header class="sheet-header">
@@ -344,6 +404,18 @@
       <footer class="sheet-footer">
         <button type="button" class="button primary done">Done</button>
       </footer>
+    </div>
+  </template>
+
+  <template id="host-update-template">
+    <div class="sheet host-update-sheet" role="alertdialog" aria-modal="true" aria-labelledby="host-update-title" aria-describedby="host-update-body">
+      <header class="sheet-header"><h2 id="host-update-title"></h2></header>
+      <div class="sheet-scroll">
+        <p class="host-update-detail" role="status">Checking update support…</p>
+        <p class="host-update-body" id="host-update-body"></p>
+        <code class="host-install-command" hidden></code>
+      </div>
+      <footer class="sheet-footer"><span class="spacer"></span><button type="button" class="button secondary cancel">Cancel</button><button type="button" class="button primary confirm" disabled>Update computer</button></footer>
     </div>
   </template>
 

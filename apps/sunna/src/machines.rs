@@ -15,6 +15,12 @@ static STORE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Machine {
+    #[serde(default)]
+    pub upgraded: bool,
+    #[serde(default)]
+    pub identity: Option<String>,
+    #[serde(default)]
+    pub allow_older: bool,
     pub id: String,
     pub name: String,
     /// As entered: "100.124.64.79", "archlinux:48800", "[fd7a::1]".
@@ -25,6 +31,8 @@ pub struct Machine {
     pub os: String,
     #[serde(default)]
     pub device: String,
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -43,6 +51,12 @@ pub struct Machine {
 /// What the add and edit forms send.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Draft {
+    #[serde(default)]
+    pub from_link: bool,
+    #[serde(default)]
+    pub identity: Option<String>,
+    #[serde(default)]
+    pub allow_older: bool,
     pub name: String,
     pub address: String,
     pub key: String,
@@ -50,6 +64,8 @@ pub struct Draft {
     /// before the first status round.
     #[serde(default)]
     pub about: Option<Check>,
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -81,14 +97,11 @@ fn save(store: &Store) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(store).map_err(|error| error.to_string())?;
     // Write then rename, so a crash can't leave half a file.
     let path = path();
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, json).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&temporary, &path).map_err(|error| error.to_string())
+    let mut temporary = tempfile::NamedTempFile::new_in(crate::settings::dir()).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut temporary, &json).map_err(|e| e.to_string())?;
+    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+    temporary.persist(&path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn modify<T>(change: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, String> {
@@ -101,32 +114,54 @@ fn modify<T>(change: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, 
     Ok(value)
 }
 
+fn edit_record(from_link: bool, change: impl FnOnce(&mut Store) -> Result<Machine, String>) -> Result<Machine, String> {
+    let _guard = STORE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut store = load();
+    let machine = change(&mut store)?;
+    let records = serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?;
+    machine.trust().save_records(&records, from_link).map_err(|e| e.to_string())?;
+    Ok(machine)
+}
+
 pub fn list() -> Vec<Machine> {
     let _guard = STORE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    load().machines
+    let mut machines = load().machines;
+    for machine in &mut machines {
+        if let Ok(Some(pin)) = machine.trust().pin() {
+            machine.upgraded = true;
+            machine.identity = Some(pin);
+            machine.allow_older = false;
+        }
+    }
+    machines
 }
 
 pub fn get(id: &str) -> Option<Machine> {
     list().into_iter().find(|machine| machine.id == id)
 }
 
-fn new_id() -> String {
+fn new_id() -> Result<String, String> {
     let mut bytes = [0u8; 8];
-    if getrandom(&mut bytes).is_err() {
-        bytes = now().to_le_bytes();
-    }
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn getrandom(bytes: &mut [u8]) -> std::io::Result<()> {
-    use std::io::Read;
-    std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+impl Machine {
+    pub fn trust(&self) -> sunna_client::auth::Trust {
+        sunna_client::auth::Trust { upgraded: self.upgraded, identity: self.identity.clone(), allow_older: self.allow_older, record: Some(self.id.clone()) }
+    }
 }
 
 fn validate(draft: &Draft) -> Result<(), String> {
     parse(&draft.address)?;
+    if let Some(pin) = &draft.identity {
+        sunna_client::auth::Trust { identity: Some(pin.clone()), ..Default::default() }.pin().map_err(|e| e.to_string())?;
+    }
+    if !["", "laptop", "desktop", "mini", "server", "vm"].contains(&draft.kind.as_str()) {
+        return Err("Choose a computer kind from the list.".into());
+    }
     if draft.key.contains(['\n', '\r']) {
         return Err("The key can't contain line breaks.".into());
     }
@@ -134,6 +169,11 @@ fn validate(draft: &Draft) -> Result<(), String> {
 }
 
 fn learn(machine: &mut Machine, check: &Check) {
+    if machine.identity.is_none() && check.identity.is_some() {
+        machine.upgraded = true;
+        machine.identity = check.identity.clone();
+        machine.allow_older = false;
+    }
     if !check.os.is_empty() {
         machine.os = check.os.clone();
     }
@@ -154,14 +194,29 @@ fn learn(machine: &mut Machine, check: &Check) {
 
 pub fn add(draft: Draft) -> Result<Machine, String> {
     validate(&draft)?;
-    modify(|store| {
+    edit_record(draft.from_link, |store| {
+        if let Some(pin) = draft.identity.as_ref().filter(|_| draft.from_link) {
+            if let Some(saved) = store.machines.iter_mut().find(|m| m.address == draft.address.trim()) {
+                saved.upgraded = true;
+                saved.identity = Some(pin.clone());
+                saved.allow_older = false;
+                saved.key = draft.key.trim().to_string();
+                saved.name = display_name(&draft);
+                if let Some(check) = &draft.about { learn(saved, check); }
+                return Ok(saved.clone());
+            }
+        }
         let mut machine = Machine {
-            id: new_id(),
+            id: new_id()?,
+            upgraded: draft.identity.is_some(),
+            identity: draft.identity.clone(),
+            allow_older: false,
             name: display_name(&draft),
             address: draft.address.trim().to_string(),
             key: draft.key.trim().to_string(),
             os: String::new(),
             device: String::new(),
+            kind: draft.kind.clone(),
             model: String::new(),
             width: 0,
             height: 0,
@@ -179,7 +234,7 @@ pub fn add(draft: Draft) -> Result<Machine, String> {
 
 pub fn update(id: &str, draft: Draft) -> Result<Machine, String> {
     validate(&draft)?;
-    modify(|store| {
+    edit_record(draft.from_link, |store| {
         let machine = store
             .machines
             .iter_mut()
@@ -187,6 +242,15 @@ pub fn update(id: &str, draft: Draft) -> Result<Machine, String> {
             .ok_or("That computer is no longer in your list.")?;
         let moved = machine.address != draft.address.trim();
         machine.name = display_name(&draft);
+        if let Some(pin) = &draft.identity {
+            if !draft.from_link && machine.trust().pin().map_err(|e| e.to_string())?.as_ref().is_some_and(|known| known != pin) {
+                return Err("The saved identity changed. Open Edit again.".into());
+            }
+            machine.upgraded = true;
+            machine.identity = Some(pin.clone());
+        }
+        machine.allow_older = !machine.upgraded && !moved && machine.trust().pin().map_err(|e| e.to_string())?.is_none() && draft.allow_older;
+        machine.kind = draft.kind.clone();
         machine.address = draft.address.trim().to_string();
         machine.key = draft.key.trim().to_string();
         if moved {
@@ -206,6 +270,16 @@ pub fn update(id: &str, draft: Draft) -> Result<Machine, String> {
 
 pub fn remove(id: &str) -> Result<(), String> {
     modify(|store| {
+        if store.machines.iter().any(|machine| machine.id == id) {
+            let picture = picture_path(id);
+            for path in [picture.with_extension("jpg.tmp"), picture] {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+        }
         store.machines.retain(|machine| machine.id != id);
         Ok(())
     })
@@ -258,7 +332,8 @@ pub async fn statuses() -> HashMap<String, Check> {
             machine.address.clone(),
             machine.key.clone(),
         );
-        tokio::spawn(async move { (id, check(&address, &key).await) })
+        let trust = machine.trust();
+        tokio::spawn(async move { (id, sunna_client::reach::check_with(&address, &key, &trust).await) })
     });
     let mut results = HashMap::new();
     for probe in probes.collect::<Vec<_>>() {
@@ -271,7 +346,7 @@ pub async fn statuses() -> HashMap<String, Check> {
         results.get(&machine.id).is_some_and(|check| {
             let mut learned = machine.clone();
             learn(&mut learned, check);
-            learned.os != machine.os
+            learned.identity != machine.identity || learned.os != machine.os
                 || learned.device != machine.device
                 || learned.model != machine.model
                 || (learned.width, learned.height) != (machine.width, machine.height)
@@ -281,6 +356,7 @@ pub async fn statuses() -> HashMap<String, Check> {
     if changed {
         let _ = modify(|store| {
             for machine in &mut store.machines {
+                if !machines.iter().any(|prior| prior.id == machine.id && prior.address == machine.address && prior.key == machine.key && prior.identity == machine.identity) { continue; }
                 if let Some(check) = results.get(&machine.id) {
                     learn(machine, check);
                 }
@@ -289,4 +365,66 @@ pub async fn statuses() -> HashMap<String, Check> {
         });
     }
     results
+}
+
+/// IDs originate in the local store; callers still cannot supply path components.
+pub fn picture_path(id: &str) -> std::path::PathBuf {
+    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    crate::settings::dir()
+        .join("pictures")
+        .join(format!("{safe}.jpg"))
+}
+
+/// Forget every kept picture.
+pub fn clear_pictures() {
+    let _ = std::fs::remove_dir_all(crate::settings::dir().join("pictures"));
+}
+
+pub fn picture(id: &str) -> Option<Vec<u8>> {
+    get(id)?;
+    std::fs::read(picture_path(id)).ok()
+}
+
+#[cfg(all(test, unix))]
+mod replacement_tests {
+    use super::*;
+    #[test]
+    fn failed_save_keeps_previous_pin() {
+        if std::env::var_os("SUNNA_REPLACE_CHILD").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            assert!(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "machines::replacement_tests::failed_save_keeps_previous_pin"])
+                .env("SUNNA_REPLACE_CHILD", "1").env("HOME", home.path()).status().unwrap().success());
+            return;
+        }
+        let draft = |pin: &str| Draft { identity: Some(pin.into()), from_link: true,
+            address: "localhost".into(), key: "fixture".into(), name: "Office".into(),
+            kind: String::new(), about: None, allow_older: false };
+        let first = "A".repeat(43);
+        let next = format!("B{}", "A".repeat(42));
+        let record = add(draft(&first)).unwrap();
+        let backup = std::fs::read(path()).unwrap();
+        let sidecar = crate::settings::dir().join("identities").join(&record.id);
+        let old_policy = std::fs::read(&sidecar).unwrap();
+        // Make replacement of machines.json fail while its existing contents remain readable.
+        let stage = crate::settings::dir().join(format!(".records-{}.tmp", record.id));
+        // The directory collision also forces a deterministic write failure
+        // for a privileged test runner that can bypass directory modes.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::set_permissions(crate::settings::dir(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = add(draft(&next)).is_err();
+        std::fs::set_permissions(crate::settings::dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir(stage).unwrap();
+        assert!(failed);
+        assert_eq!(record.trust().pin().unwrap(), Some(first.clone()));
+        let rotated = add(draft(&next)).unwrap();
+        assert_eq!(record.id, rotated.id);
+        std::fs::write(path(), backup).unwrap();
+        assert!(get(&record.id).unwrap().trust().pin().is_err());
+        std::fs::remove_file(&sidecar).unwrap();
+        assert_eq!(get(&record.id).unwrap().trust().pin().unwrap(), Some(first.clone()));
+        std::fs::write(sidecar, old_policy).unwrap();
+        assert_eq!(get(&record.id).unwrap().trust().pin().unwrap(), Some(first));
+    }
 }

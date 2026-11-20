@@ -9,6 +9,9 @@ description = "Sunna: remote desktop that feels native"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tempfile = "3"
+getrandom = "0.3"
+sunna-update.workspace = true
 qrcode.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,11 +20,24 @@ sunna-proto.workspace = true
 sunna-telemetry.workspace = true
 sunna-viewer.workspace = true
 tauri = { version = "2", features = [] }
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 sunna-input.workspace = true
+sunna-capture.workspace = true
+sunna-host.workspace = true
+sunnad = { path = "../sunnad" }
+sunna-transport.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["env"] }
+url = "2"
+fs2 = "0.4"
+libc = "0.2"
+objc2.workspace = true
+dispatch2 = "0.3"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSRunningApplication", "NSResponder", "NSStatusItem", "NSStatusBar", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSAlert", "NSImage", "NSButton", "NSControl", "NSView", "NSPasteboard"] }
 
 [features]
 # The production build (scripts/install-mac-app.sh): the UI comes from the

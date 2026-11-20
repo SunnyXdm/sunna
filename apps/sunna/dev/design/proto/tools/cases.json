@@ -1,0 +1,2618 @@
+[
+  {
+    "id": "L01.1",
+    "surface": "Computers home and machine cards",
+    "label": "initial loading",
+    "config": {
+      "view": "computer",
+      "state": "loading"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.2",
+    "surface": "Computers home and machine cards",
+    "label": "empty first run",
+    "config": {
+      "view": "add",
+      "computers": 0
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.3",
+    "surface": "Computers home and machine cards",
+    "label": "populated grid",
+    "config": {
+      "view": "overview"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.4",
+    "surface": "Computers home and machine cards",
+    "label": "idle address preview",
+    "config": {
+      "view": "computer",
+      "state": "idle"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.5",
+    "surface": "Computers home and machine cards",
+    "label": "checking",
+    "config": {
+      "view": "computer",
+      "state": "checking"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.6",
+    "surface": "Computers home and machine cards",
+    "label": "ready without latency",
+    "config": {
+      "view": "computer",
+      "state": "ready-no-latency"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.7",
+    "surface": "Computers home and machine cards",
+    "label": "ready with latency",
+    "config": {
+      "view": "computer",
+      "state": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.8",
+    "surface": "Computers home and machine cards",
+    "label": "busy without viewer",
+    "config": {
+      "view": "computer",
+      "state": "busy-anonymous"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.9",
+    "surface": "Computers home and machine cards",
+    "label": "busy with viewer",
+    "config": {
+      "view": "computer",
+      "state": "busy"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.10",
+    "surface": "Computers home and machine cards",
+    "label": "wrong-key",
+    "config": {
+      "view": "computer",
+      "state": "key"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.11",
+    "surface": "Computers home and machine cards",
+    "label": "update-needed",
+    "config": {
+      "view": "computer",
+      "state": "update"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.12",
+    "surface": "Computers home and machine cards",
+    "label": "not-found",
+    "config": {
+      "view": "computer",
+      "state": "not-found"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.13",
+    "surface": "Computers home and machine cards",
+    "label": "invalid",
+    "config": {
+      "view": "computer",
+      "state": "invalid"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.14",
+    "surface": "Computers home and machine cards",
+    "label": "unreachable never seen",
+    "config": {
+      "view": "computer",
+      "state": "unreachable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L01.15",
+    "surface": "Computers home and machine cards",
+    "label": "unreachable previously seen",
+    "config": {
+      "view": "computer",
+      "state": "offline"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.1",
+    "surface": "Add / edit computer sheet",
+    "label": "new blank",
+    "config": {
+      "view": "add",
+      "form": "idle"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.2",
+    "surface": "Add / edit computer sheet",
+    "label": "editing saved",
+    "config": {
+      "view": "edit",
+      "form": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.3",
+    "surface": "Add / edit computer sheet",
+    "label": "link pasted",
+    "config": {
+      "view": "add",
+      "form": "ready",
+      "link": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.4",
+    "surface": "Add / edit computer sheet",
+    "label": "checking",
+    "config": {
+      "view": "add",
+      "form": "checking"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.5",
+    "surface": "Add / edit computer sheet",
+    "label": "ready",
+    "config": {
+      "view": "add",
+      "form": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.6",
+    "surface": "Add / edit computer sheet",
+    "label": "busy",
+    "config": {
+      "view": "add",
+      "form": "busy"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.7",
+    "surface": "Add / edit computer sheet",
+    "label": "wrong-key",
+    "config": {
+      "view": "add",
+      "form": "key"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.8",
+    "surface": "Add / edit computer sheet",
+    "label": "update-needed",
+    "config": {
+      "view": "add",
+      "form": "update"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.9",
+    "surface": "Add / edit computer sheet",
+    "label": "unreachable",
+    "config": {
+      "view": "add",
+      "form": "unreachable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.10",
+    "surface": "Add / edit computer sheet",
+    "label": "not-found",
+    "config": {
+      "view": "add",
+      "form": "not-found"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.11",
+    "surface": "Add / edit computer sheet",
+    "label": "invalid",
+    "config": {
+      "view": "add",
+      "form": "invalid"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.12",
+    "surface": "Add / edit computer sheet",
+    "label": "key revealed",
+    "config": {
+      "view": "add",
+      "form": "ready",
+      "reveal": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.13",
+    "surface": "Add / edit computer sheet",
+    "label": "submit pending",
+    "config": {
+      "view": "add",
+      "form": "pending"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L02.14",
+    "surface": "Add / edit computer sheet",
+    "label": "save failure",
+    "config": {
+      "view": "add",
+      "form": "save-error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.1",
+    "surface": "Find on Tailscale page",
+    "label": "loading",
+    "config": {
+      "view": "find",
+      "discovery": "loading"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.2",
+    "surface": "Find on Tailscale page",
+    "label": "sharing results",
+    "config": {
+      "view": "find",
+      "discovery": "results"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.3",
+    "surface": "Find on Tailscale page",
+    "label": "no sharing computers",
+    "config": {
+      "view": "find",
+      "discovery": "empty"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.4",
+    "surface": "Find on Tailscale page",
+    "label": "scan error",
+    "config": {
+      "view": "find",
+      "discovery": "error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.5",
+    "surface": "Find on Tailscale page",
+    "label": "rescan",
+    "config": {
+      "view": "find",
+      "discovery": "rescan"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.6",
+    "surface": "Find on Tailscale page",
+    "label": "already added",
+    "config": {
+      "view": "find",
+      "discovery": "results"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.7",
+    "surface": "Find on Tailscale page",
+    "label": "not sharing",
+    "config": {
+      "view": "find",
+      "discovery": "results",
+      "scroll": 230
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L03.8",
+    "surface": "Find on Tailscale page",
+    "label": "offline",
+    "config": {
+      "view": "find",
+      "discovery": "results",
+      "scroll": 230
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.1",
+    "surface": "Settings sheet",
+    "label": "loading self status",
+    "config": {
+      "view": "settings",
+      "self": "loading"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.2",
+    "surface": "Settings sheet",
+    "label": "sharing ready",
+    "config": {
+      "view": "settings",
+      "self": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.3",
+    "surface": "Settings sheet",
+    "label": "sharing busy",
+    "config": {
+      "view": "settings",
+      "self": "busy"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.4",
+    "surface": "Settings sheet",
+    "label": "sharing different key",
+    "config": {
+      "view": "settings",
+      "self": "key"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.5",
+    "surface": "Settings sheet",
+    "label": "no Tailscale address",
+    "config": {
+      "view": "settings",
+      "self": "network"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.6",
+    "surface": "Settings sheet",
+    "label": "not sharing Linux",
+    "config": {
+      "view": "settings",
+      "self": "linux"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.7",
+    "surface": "Settings sheet",
+    "label": "not sharing Mac",
+    "config": {
+      "view": "settings",
+      "self": "mac"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.8",
+    "surface": "Settings sheet",
+    "label": "key masked",
+    "config": {
+      "view": "settings"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.9",
+    "surface": "Settings sheet",
+    "label": "key revealed",
+    "config": {
+      "view": "settings",
+      "reveal": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.10",
+    "surface": "Settings sheet",
+    "label": "permission denied",
+    "config": {
+      "view": "settings",
+      "permission": "denied",
+      "scroll": 250
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.11",
+    "surface": "Settings sheet",
+    "label": "permission allowed",
+    "config": {
+      "view": "settings",
+      "permission": "allowed"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.12",
+    "surface": "Settings sheet",
+    "label": "permission reset offered",
+    "config": {
+      "view": "settings",
+      "permission": "reset",
+      "scroll": 250
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L04.13",
+    "surface": "Settings sheet",
+    "label": "settings save error",
+    "config": {
+      "view": "settings",
+      "toast": "io: permission denied",
+      "saveError": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L05.1",
+    "surface": "Computer-link QR sheet",
+    "label": "generating",
+    "config": {
+      "view": "qr",
+      "qr": "generating"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L05.2",
+    "surface": "Computer-link QR sheet",
+    "label": "code ready",
+    "config": {
+      "view": "qr",
+      "qr": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L05.3",
+    "surface": "Computer-link QR sheet",
+    "label": "generation failed",
+    "config": {
+      "view": "qr",
+      "qr": "error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L06.1",
+    "surface": "Remove confirmation",
+    "label": "awaiting decision",
+    "config": {
+      "view": "computer",
+      "remove": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L06.2",
+    "surface": "Remove confirmation",
+    "label": "cancelled",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L06.3",
+    "surface": "Remove confirmation",
+    "label": "confirmed",
+    "config": {
+      "view": "computer",
+      "removed": true,
+      "toast": "Removed archlinux."
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L06.4",
+    "surface": "Remove confirmation",
+    "label": "delete failed",
+    "config": {
+      "view": "computer",
+      "remove": true,
+      "removeError": true,
+      "toast": "io: permission denied"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L07.1",
+    "surface": "macOS Accessibility handoff",
+    "label": "permission missing on startup",
+    "config": {
+      "view": "computer",
+      "permission": "denied",
+      "permissionShown": true,
+      "scroll": 250
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L07.2",
+    "surface": "macOS Accessibility handoff",
+    "label": "system settings opened",
+    "config": {
+      "view": "settings",
+      "permission": "opened",
+      "scroll": 250
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L07.3",
+    "surface": "macOS Accessibility handoff",
+    "label": "permission granted",
+    "config": {
+      "view": "settings",
+      "permission": "allowed"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L07.4",
+    "surface": "macOS Accessibility handoff",
+    "label": "old entry reset",
+    "config": {
+      "view": "settings",
+      "permission": "reset",
+      "scroll": 250
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L07.5",
+    "surface": "macOS Accessibility handoff",
+    "label": "reset failed",
+    "config": {
+      "view": "settings",
+      "permission": "reset-failed",
+      "scroll": 250
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L08.1",
+    "surface": "Machine context menu",
+    "label": "open ready",
+    "config": {
+      "view": "computer",
+      "context": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L08.2",
+    "surface": "Machine context menu",
+    "label": "open not ready",
+    "config": {
+      "view": "computer",
+      "state": "offline",
+      "context": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L08.3",
+    "surface": "Machine context menu",
+    "label": "dismissed",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L09.1",
+    "surface": "Connecting transition",
+    "label": "reaching",
+    "config": {
+      "view": "connecting",
+      "phase": "reaching"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L09.2",
+    "surface": "Connecting transition",
+    "label": "starting video",
+    "config": {
+      "view": "connecting",
+      "phase": "video"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L09.3",
+    "surface": "Connecting transition",
+    "label": "connected",
+    "config": {
+      "view": "session",
+      "notice": "Connected \u00b7 12 ms"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L09.4",
+    "surface": "Connecting transition",
+    "label": "ended",
+    "config": {
+      "view": "computer",
+      "ended": "unexpected"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L09.5",
+    "surface": "Connecting transition",
+    "label": "cancel requested",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L09.6",
+    "surface": "Connecting transition",
+    "label": "startup failure",
+    "config": {
+      "view": "computer",
+      "fail": "spawn"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L10.1",
+    "surface": "Toast / copy feedback",
+    "label": "informational",
+    "config": {
+      "view": "computer",
+      "toast": "Still looking for archlinux\u2026"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L10.2",
+    "surface": "Toast / copy feedback",
+    "label": "error",
+    "config": {
+      "view": "computer",
+      "toast": "io: permission denied"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L10.3",
+    "surface": "Toast / copy feedback",
+    "label": "success",
+    "config": {
+      "view": "computer",
+      "toast": "Copied."
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L10.4",
+    "surface": "Toast / copy feedback",
+    "label": "action available",
+    "config": {
+      "view": "computer",
+      "toast": "archlinux isn't responding.",
+      "toastAction": "edit"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "L10.5",
+    "surface": "Toast / copy feedback",
+    "label": "dismissed or replaced",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.1",
+    "surface": "Remote desktop window",
+    "label": "waiting for first picture",
+    "config": {
+      "view": "connecting",
+      "phase": "video"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.2",
+    "surface": "Remote desktop window",
+    "label": "fullscreen",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.3",
+    "surface": "Remote desktop window",
+    "label": "windowed",
+    "config": {
+      "view": "session",
+      "fullscreen": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.4",
+    "surface": "Remote desktop window",
+    "label": "live picture",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.5",
+    "surface": "Remote desktop window",
+    "label": "focused",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.6",
+    "surface": "Remote desktop window",
+    "label": "unfocused",
+    "config": {
+      "view": "session",
+      "pointer": "outside"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V01.7",
+    "surface": "Remote desktop window",
+    "label": "native renderer unavailable",
+    "config": {
+      "view": "session",
+      "stats": false,
+      "menu": false
+    },
+    "limitation": "Native CPU fallback renderer is not implemented; representative screen with overlays hidden only. This browser draws HTML stand-ins."
+  },
+  {
+    "id": "V01.8",
+    "surface": "Remote desktop window",
+    "label": "session ending",
+    "config": {
+      "view": "computer",
+      "ended": "host"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.1",
+    "surface": "Live stats bar",
+    "label": "hidden",
+    "config": {
+      "view": "session",
+      "stats": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.2",
+    "surface": "Live stats bar",
+    "label": "connecting",
+    "config": {
+      "view": "session",
+      "phase": "waiting",
+      "stats": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.3",
+    "surface": "Live stats bar",
+    "label": "streaming basic",
+    "config": {
+      "view": "session",
+      "statsDetail": "basic",
+      "stats": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.4",
+    "surface": "Live stats bar",
+    "label": "host metrics available",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "host"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.5",
+    "surface": "Live stats bar",
+    "label": "latency available",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "latency"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.6",
+    "surface": "Live stats bar",
+    "label": "decoder metrics available",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "decoder"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.7",
+    "surface": "Live stats bar",
+    "label": "RTT available",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "rtt"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.8",
+    "surface": "Live stats bar",
+    "label": "loss present",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "loss"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.9",
+    "surface": "Live stats bar",
+    "label": "sound buffer available",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "sound"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V02.10",
+    "surface": "Live stats bar",
+    "label": "fast-lane tiles present",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "full"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.1",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "none",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.2",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "startup keyboard help",
+    "config": {
+      "view": "session",
+      "notice": "help"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.3",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "capture unavailable",
+    "config": {
+      "view": "session",
+      "notice": "unavailable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.4",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "capture enabled",
+    "config": {
+      "view": "session",
+      "notice": "captured"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.5",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "capture released",
+    "config": {
+      "view": "session",
+      "notice": "released"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.6",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "stream changing",
+    "config": {
+      "view": "session",
+      "notice": "changing"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.7",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "stream changed",
+    "config": {
+      "view": "session",
+      "notice": "changed"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.8",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "stream change failed",
+    "config": {
+      "view": "session",
+      "notice": "stream-error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.9",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "clipboard enabled",
+    "config": {
+      "view": "session",
+      "notice": "clipboard-on"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.10",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "clipboard paused",
+    "config": {
+      "view": "session",
+      "notice": "clipboard-off"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.11",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "clipboard empty",
+    "config": {
+      "view": "session",
+      "notice": "clipboard-empty"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.12",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "clipboard typing",
+    "config": {
+      "view": "session",
+      "notice": "skipped"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.13",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "shortcut sent",
+    "config": {
+      "view": "session",
+      "notice": "sent"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.14",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "sound on",
+    "config": {
+      "view": "session",
+      "notice": "sound-on"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.15",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "sound off",
+    "config": {
+      "view": "session",
+      "notice": "sound-off"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.16",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "menu button hidden",
+    "config": {
+      "view": "session",
+      "notice": "hidden",
+      "menu": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.17",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "host not drawing",
+    "config": {
+      "view": "session",
+      "notice": "no-drawing"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V03.18",
+    "surface": "Notice overlay and missing-picture warning",
+    "label": "video not arriving",
+    "config": {
+      "view": "session",
+      "notice": "no-video"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V04.1",
+    "surface": "\u2022\u2022\u2022 menu button",
+    "label": "visible idle",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V04.2",
+    "surface": "\u2022\u2022\u2022 menu button",
+    "label": "hovered",
+    "config": {
+      "view": "session",
+      "menuHover": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V04.3",
+    "surface": "\u2022\u2022\u2022 menu button",
+    "label": "menu open",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V04.4",
+    "surface": "\u2022\u2022\u2022 menu button",
+    "label": "hidden",
+    "config": {
+      "view": "session",
+      "menu": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V05.1",
+    "surface": "Root session menu",
+    "label": "closed",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V05.2",
+    "surface": "Root session menu",
+    "label": "open connecting",
+    "config": {
+      "view": "menu",
+      "phase": "waiting"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V05.3",
+    "surface": "Root session menu",
+    "label": "open streaming",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V05.4",
+    "surface": "Root session menu",
+    "label": "fullscreen checked",
+    "config": {
+      "view": "menu",
+      "fullscreen": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V05.5",
+    "surface": "Root session menu",
+    "label": "stats checked",
+    "config": {
+      "view": "menu",
+      "stats": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V05.6",
+    "surface": "Root session menu",
+    "label": "sound checked",
+    "config": {
+      "view": "menu",
+      "sound": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V06.1",
+    "surface": "Keyboard submenu",
+    "label": "capture available and on",
+    "config": {
+      "view": "menu",
+      "submenu": "keyboard",
+      "capture": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V06.2",
+    "surface": "Keyboard submenu",
+    "label": "capture available and off",
+    "config": {
+      "view": "menu",
+      "submenu": "keyboard",
+      "capture": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V06.3",
+    "surface": "Keyboard submenu",
+    "label": "capture unavailable",
+    "config": {
+      "view": "menu",
+      "submenu": "keyboard",
+      "permission": "denied"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V06.4",
+    "surface": "Keyboard submenu",
+    "label": "Mac host shortcuts",
+    "config": {
+      "view": "menu",
+      "submenu": "keyboard",
+      "sel": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V06.5",
+    "surface": "Keyboard submenu",
+    "label": "non-Mac host shortcuts",
+    "config": {
+      "view": "menu",
+      "submenu": "keyboard",
+      "sel": 0
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V07.1",
+    "surface": "Clipboard submenu",
+    "label": "sharing on",
+    "config": {
+      "view": "menu",
+      "submenu": "clipboard",
+      "clipboard": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V07.2",
+    "surface": "Clipboard submenu",
+    "label": "sharing paused",
+    "config": {
+      "view": "menu",
+      "submenu": "clipboard",
+      "clipboard": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V07.3",
+    "surface": "Clipboard submenu",
+    "label": "type requested with no text",
+    "config": {
+      "view": "session",
+      "notice": "clipboard-empty"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V07.4",
+    "surface": "Clipboard submenu",
+    "label": "type requested with supported text",
+    "config": {
+      "view": "session",
+      "notice": "typing"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V07.5",
+    "surface": "Clipboard submenu",
+    "label": "type requested with skipped characters",
+    "config": {
+      "view": "session",
+      "notice": "skipped"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V08.1",
+    "surface": "Video submenu",
+    "label": "unavailable before codec",
+    "config": {
+      "view": "menu",
+      "submenu": "video",
+      "phase": "waiting"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V08.2",
+    "surface": "Video submenu",
+    "label": "available",
+    "config": {
+      "view": "menu",
+      "submenu": "video"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V08.3",
+    "surface": "Video submenu",
+    "label": "change pending",
+    "config": {
+      "view": "session",
+      "notice": "changing"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V08.4",
+    "surface": "Video submenu",
+    "label": "change succeeded",
+    "config": {
+      "view": "session",
+      "notice": "changed"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V08.5",
+    "surface": "Video submenu",
+    "label": "change rejected",
+    "config": {
+      "view": "session",
+      "notice": "stream-error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V09.1",
+    "surface": "Remote pointer and capture feedback",
+    "label": "remote bitmap visible",
+    "config": {
+      "view": "session"
+    },
+    "limitation": "Arbitrary remote RGBA cursor transport is not implemented; a drawn arrow represents the pointer."
+  },
+  {
+    "id": "V09.2",
+    "surface": "Remote pointer and capture feedback",
+    "label": "pointer outside",
+    "config": {
+      "view": "session",
+      "pointer": "outside"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V09.3",
+    "surface": "Remote pointer and capture feedback",
+    "label": "menu pointer",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "V09.4",
+    "surface": "Remote pointer and capture feedback",
+    "label": "fallback cursor",
+    "config": {
+      "view": "session",
+      "pointer": "fallback"
+    },
+    "limitation": "Native cursor fallback is represented by the same drawn arrow; no native cursor API."
+  },
+  {
+    "id": "V09.5",
+    "surface": "Remote pointer and capture feedback",
+    "label": "scaled bitmap",
+    "config": {
+      "view": "session",
+      "zoom": 1.3
+    },
+    "limitation": "Native cursor bitmap scaling is not implemented; local picture zoom represents the visual state."
+  },
+  {
+    "id": "A01.1",
+    "surface": "Computers home and cards",
+    "label": "initial loading",
+    "config": {
+      "view": "computer",
+      "state": "loading"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.2",
+    "surface": "Computers home and cards",
+    "label": "empty",
+    "config": {
+      "view": "add",
+      "computers": 0
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.3",
+    "surface": "Computers home and cards",
+    "label": "populated",
+    "config": {
+      "view": "overview"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.4",
+    "surface": "Computers home and cards",
+    "label": "checking",
+    "config": {
+      "view": "computer",
+      "state": "checking"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.5",
+    "surface": "Computers home and cards",
+    "label": "ready without latency",
+    "config": {
+      "view": "computer",
+      "state": "ready-no-latency"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.6",
+    "surface": "Computers home and cards",
+    "label": "ready with latency",
+    "config": {
+      "view": "computer",
+      "state": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.7",
+    "surface": "Computers home and cards",
+    "label": "busy without viewer",
+    "config": {
+      "view": "computer",
+      "state": "busy-anonymous"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.8",
+    "surface": "Computers home and cards",
+    "label": "busy with viewer",
+    "config": {
+      "view": "computer",
+      "state": "busy"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.9",
+    "surface": "Computers home and cards",
+    "label": "wrong-key",
+    "config": {
+      "view": "computer",
+      "state": "key"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.10",
+    "surface": "Computers home and cards",
+    "label": "update-needed",
+    "config": {
+      "view": "computer",
+      "state": "update"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.11",
+    "surface": "Computers home and cards",
+    "label": "not-found",
+    "config": {
+      "view": "computer",
+      "state": "not-found"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.12",
+    "surface": "Computers home and cards",
+    "label": "invalid",
+    "config": {
+      "view": "computer",
+      "state": "invalid"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.13",
+    "surface": "Computers home and cards",
+    "label": "offline never seen",
+    "config": {
+      "view": "computer",
+      "state": "unreachable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A01.14",
+    "surface": "Computers home and cards",
+    "label": "offline previously seen",
+    "config": {
+      "view": "computer",
+      "state": "offline"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.1",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "blank add",
+    "config": {
+      "view": "add",
+      "form": "idle"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.2",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "editing",
+    "config": {
+      "view": "edit",
+      "form": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.3",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "deep link populated",
+    "config": {
+      "view": "add",
+      "form": "ready",
+      "link": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.4",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "clipboard pasted",
+    "config": {
+      "view": "add",
+      "form": "ready",
+      "link": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.5",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "idle preview",
+    "config": {
+      "view": "add",
+      "form": "idle"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.6",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "checking",
+    "config": {
+      "view": "add",
+      "form": "checking"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.7",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "ready",
+    "config": {
+      "view": "add",
+      "form": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.8",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "busy",
+    "config": {
+      "view": "add",
+      "form": "busy"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.9",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "wrong-key",
+    "config": {
+      "view": "add",
+      "form": "key"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.10",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "update-needed",
+    "config": {
+      "view": "add",
+      "form": "update"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.11",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "not-found",
+    "config": {
+      "view": "add",
+      "form": "not-found"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.12",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "invalid",
+    "config": {
+      "view": "add",
+      "form": "invalid"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.13",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "unreachable",
+    "config": {
+      "view": "add",
+      "form": "unreachable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.14",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "key revealed",
+    "config": {
+      "view": "add",
+      "form": "ready",
+      "reveal": 1
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.15",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "validation failure",
+    "config": {
+      "view": "add",
+      "form": "invalid-key"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A02.16",
+    "surface": "Add / edit machine bottom sheet",
+    "label": "storage failure",
+    "config": {
+      "view": "add",
+      "form": "save-error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A03.1",
+    "surface": "Machine popup menu",
+    "label": "ready",
+    "config": {
+      "view": "computer",
+      "context": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A03.2",
+    "surface": "Machine popup menu",
+    "label": "not ready",
+    "config": {
+      "view": "computer",
+      "context": true,
+      "state": "offline"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A03.3",
+    "surface": "Machine popup menu",
+    "label": "dismissed",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A04.1",
+    "surface": "Remove confirmation",
+    "label": "awaiting choice",
+    "config": {
+      "view": "computer",
+      "remove": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A04.2",
+    "surface": "Remove confirmation",
+    "label": "cancelled",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A04.3",
+    "surface": "Remove confirmation",
+    "label": "confirmed",
+    "config": {
+      "view": "computer",
+      "removed": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A04.4",
+    "surface": "Remove confirmation",
+    "label": "storage failure",
+    "config": {
+      "view": "computer",
+      "remove": true,
+      "removeError": true,
+      "toast": "Couldn't remove it: the phone's storage may be full."
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A05.1",
+    "surface": "Settings screen",
+    "label": "open",
+    "config": {
+      "view": "settings"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A05.2",
+    "surface": "Settings screen",
+    "label": "phone name editing",
+    "config": {
+      "view": "settings",
+      "focus": "ownName"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A05.3",
+    "surface": "Settings screen",
+    "label": "preferences changed",
+    "config": {
+      "view": "settings",
+      "sound": false,
+      "suggestions": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A05.4",
+    "surface": "Settings screen",
+    "label": "closing",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A06.1",
+    "surface": "Open Source Software sheet",
+    "label": "loaded",
+    "config": {
+      "view": "licenses"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A06.2",
+    "surface": "Open Source Software sheet",
+    "label": "asset missing or unreadable",
+    "config": {
+      "view": "licenses",
+      "licensesEmpty": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A06.3",
+    "surface": "Open Source Software sheet",
+    "label": "dismissed",
+    "config": {
+      "view": "settings"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A07.1",
+    "surface": "Connecting screen / return transition",
+    "label": "reaching",
+    "config": {
+      "view": "connecting",
+      "phase": "reaching"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A07.2",
+    "surface": "Connecting screen / return transition",
+    "label": "starting video",
+    "config": {
+      "view": "connecting",
+      "phase": "video"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A07.3",
+    "surface": "Connecting screen / return transition",
+    "label": "first frame revealing",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A07.4",
+    "surface": "Connecting screen / return transition",
+    "label": "cancel requested",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A07.5",
+    "surface": "Connecting screen / return transition",
+    "label": "failure before stream",
+    "config": {
+      "view": "computer",
+      "fail": "unreachable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A07.6",
+    "surface": "Connecting screen / return transition",
+    "label": "disconnected after stream",
+    "config": {
+      "view": "computer",
+      "ended": "host"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.1",
+    "surface": "Remote session picture / gestures",
+    "label": "live foreground",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.2",
+    "surface": "Remote session picture / gestures",
+    "label": "background retained",
+    "config": {
+      "view": "session",
+      "notification": "background"
+    },
+    "limitation": "No native background service in a static browser prototype; notification example is available in Test."
+  },
+  {
+    "id": "A08.3",
+    "surface": "Remote session picture / gestures",
+    "label": "trackpad mode",
+    "config": {
+      "view": "session",
+      "touch": "Trackpad"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.4",
+    "surface": "Remote session picture / gestures",
+    "label": "direct touch mode",
+    "config": {
+      "view": "session",
+      "touch": "Touch"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.5",
+    "surface": "Remote session picture / gestures",
+    "label": "zoomed",
+    "config": {
+      "view": "session",
+      "zoom": 1.5
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.6",
+    "surface": "Remote session picture / gestures",
+    "label": "keyboard visible",
+    "config": {
+      "view": "session",
+      "keyboard": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.7",
+    "surface": "Remote session picture / gestures",
+    "label": "menu visible",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A08.8",
+    "surface": "Remote session picture / gestures",
+    "label": "ending",
+    "config": {
+      "view": "computer",
+      "ended": "host"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A09.1",
+    "surface": "Movable session toolbar",
+    "label": "keyboard button shown",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A09.2",
+    "surface": "Movable session toolbar",
+    "label": "keyboard button hidden",
+    "config": {
+      "view": "session",
+      "keyboardButton": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A09.3",
+    "surface": "Movable session toolbar",
+    "label": "keyboard up",
+    "config": {
+      "view": "session",
+      "keyboard": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A09.4",
+    "surface": "Movable session toolbar",
+    "label": "menu open",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A09.5",
+    "surface": "Movable session toolbar",
+    "label": "idle dim",
+    "config": {
+      "view": "session",
+      "idle": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A09.6",
+    "surface": "Movable session toolbar",
+    "label": "dragging position",
+    "config": {
+      "view": "session",
+      "floatX": 230
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A10.1",
+    "surface": "Session stats",
+    "label": "off",
+    "config": {
+      "view": "session",
+      "stats": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A10.2",
+    "surface": "Session stats",
+    "label": "connecting",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "phase": "waiting"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A10.3",
+    "surface": "Session stats",
+    "label": "basic stream",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "statsDetail": "basic"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A10.4",
+    "surface": "Session stats",
+    "label": "optional host and transport metrics",
+    "config": {
+      "view": "session",
+      "stats": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A10.5",
+    "surface": "Session stats",
+    "label": "hardware decoder",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "decoder": "hardware"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A10.6",
+    "surface": "Session stats",
+    "label": "software decoder",
+    "config": {
+      "view": "session",
+      "stats": true,
+      "decoder": "software"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.1",
+    "surface": "Session menu sheet",
+    "label": "open",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.2",
+    "surface": "Session menu sheet",
+    "label": "touch selected",
+    "config": {
+      "view": "menu",
+      "touch": "Touch"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.3",
+    "surface": "Session menu sheet",
+    "label": "trackpad selected",
+    "config": {
+      "view": "menu",
+      "touch": "Trackpad"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.4",
+    "surface": "Session menu sheet",
+    "label": "sound on",
+    "config": {
+      "view": "menu",
+      "sound": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.5",
+    "surface": "Session menu sheet",
+    "label": "sound off",
+    "config": {
+      "view": "menu",
+      "sound": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.6",
+    "surface": "Session menu sheet",
+    "label": "stats on",
+    "config": {
+      "view": "menu",
+      "stats": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.7",
+    "surface": "Session menu sheet",
+    "label": "stats off",
+    "config": {
+      "view": "menu",
+      "stats": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.8",
+    "surface": "Session menu sheet",
+    "label": "clipboard on",
+    "config": {
+      "view": "menu",
+      "submenu": "clipboard",
+      "clipboard": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.9",
+    "surface": "Session menu sheet",
+    "label": "clipboard off",
+    "config": {
+      "view": "menu",
+      "submenu": "clipboard",
+      "clipboard": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.10",
+    "surface": "Session menu sheet",
+    "label": "video selection changed",
+    "config": {
+      "view": "menu",
+      "submenu": "video",
+      "resolution": "75%"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A11.11",
+    "surface": "Session menu sheet",
+    "label": "stream change rejected",
+    "config": {
+      "view": "menu",
+      "submenu": "video",
+      "notice": "stream-error",
+      "streamError": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.1",
+    "surface": "IME and accessory key strip",
+    "label": "hidden",
+    "config": {
+      "view": "session"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.2",
+    "surface": "IME and accessory key strip",
+    "label": "suggestions off",
+    "config": {
+      "view": "session",
+      "keyboard": true,
+      "suggestions": false
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.3",
+    "surface": "IME and accessory key strip",
+    "label": "suggestions on",
+    "config": {
+      "view": "session",
+      "keyboard": true,
+      "suggestions": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.4",
+    "surface": "IME and accessory key strip",
+    "label": "modifier off",
+    "config": {
+      "view": "session",
+      "keyboard": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.5",
+    "surface": "IME and accessory key strip",
+    "label": "modifier next key",
+    "config": {
+      "view": "session",
+      "keyboard": true,
+      "modifier": "armed"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.6",
+    "surface": "IME and accessory key strip",
+    "label": "modifier locked",
+    "config": {
+      "view": "session",
+      "keyboard": true,
+      "modifier": "locked"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A12.7",
+    "surface": "IME and accessory key strip",
+    "label": "unsupported character warning",
+    "config": {
+      "view": "session",
+      "keyboard": true,
+      "notice": "unsupported"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A13.1",
+    "surface": "Pointer and gesture feedback",
+    "label": "fallback arrow",
+    "config": {
+      "view": "session",
+      "pointer": "fallback"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A13.2",
+    "surface": "Pointer and gesture feedback",
+    "label": "remote bitmap",
+    "config": {
+      "view": "session"
+    },
+    "limitation": "Arbitrary host cursor bitmap decoding is not implemented; drawn arrow represents it."
+  },
+  {
+    "id": "A13.3",
+    "surface": "Pointer and gesture feedback",
+    "label": "tap pulse",
+    "config": {
+      "view": "session",
+      "pulse": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A13.4",
+    "surface": "Pointer and gesture feedback",
+    "label": "zoomed pointer",
+    "config": {
+      "view": "session",
+      "zoom": 1.5
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A13.5",
+    "surface": "Pointer and gesture feedback",
+    "label": "shape unavailable",
+    "config": {
+      "view": "session",
+      "pointer": "fallback"
+    },
+    "limitation": "Invalid host bitmap handling is not implemented; fallback arrow represents it."
+  },
+  {
+    "id": "A14.1",
+    "surface": "Transient notice",
+    "label": "normal",
+    "config": {
+      "view": "computer",
+      "toast": "Copied 100.101.102.103"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A14.2",
+    "surface": "Transient notice",
+    "label": "action Edit",
+    "config": {
+      "view": "computer",
+      "toast": "archlinux isn't responding.",
+      "toastAction": "edit"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A14.3",
+    "surface": "Transient notice",
+    "label": "first-session gesture help",
+    "config": {
+      "view": "session",
+      "notice": "help"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A14.4",
+    "surface": "Transient notice",
+    "label": "connection failure",
+    "config": {
+      "view": "computer",
+      "fail": "unreachable"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A14.5",
+    "surface": "Transient notice",
+    "label": "clipboard result",
+    "config": {
+      "view": "session",
+      "notice": "typing"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A14.6",
+    "surface": "Transient notice",
+    "label": "typing unsupported",
+    "config": {
+      "view": "session",
+      "notice": "unsupported"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A14.7",
+    "surface": "Transient notice",
+    "label": "video change failure",
+    "config": {
+      "view": "session",
+      "notice": "stream-error"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A15.1",
+    "surface": "Foreground service notification",
+    "label": "starting connection",
+    "config": {
+      "view": "connecting",
+      "notification": "starting",
+      "testOpen": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A15.2",
+    "surface": "Foreground service notification",
+    "label": "connected foreground",
+    "config": {
+      "view": "session",
+      "notification": "connected",
+      "testOpen": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A15.3",
+    "surface": "Foreground service notification",
+    "label": "connected background",
+    "config": {
+      "view": "session",
+      "notification": "background",
+      "testOpen": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A15.4",
+    "surface": "Foreground service notification",
+    "label": "notifications denied",
+    "config": {
+      "view": "session",
+      "notification": "denied",
+      "testOpen": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A15.5",
+    "surface": "Foreground service notification",
+    "label": "disconnected",
+    "config": {
+      "view": "computer",
+      "notification": "disconnected",
+      "testOpen": true
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A16.1",
+    "surface": "Android notification permission handoff",
+    "label": "not yet requested",
+    "config": {
+      "view": "settings",
+      "permission": "not-requested",
+      "permissionShown": true,
+      "scroll": 500
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A16.2",
+    "surface": "Android notification permission handoff",
+    "label": "system prompt",
+    "config": {
+      "view": "settings",
+      "permission": "opened",
+      "permissionShown": true,
+      "scroll": 500
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A16.3",
+    "surface": "Android notification permission handoff",
+    "label": "granted",
+    "config": {
+      "view": "settings",
+      "permission": "allowed",
+      "permissionShown": true,
+      "scroll": 500
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A16.4",
+    "surface": "Android notification permission handoff",
+    "label": "denied",
+    "config": {
+      "view": "settings",
+      "permission": "denied",
+      "permissionShown": true,
+      "scroll": 500
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A17.1",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "opening",
+    "config": {
+      "view": "add",
+      "form": "idle"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A17.2",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "open narrow",
+    "config": {
+      "view": "add",
+      "form": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A17.3",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "open tablet",
+    "config": {
+      "view": "add",
+      "form": "ready"
+    },
+    "limitation": ""
+  },
+  {
+    "id": "A17.4",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "IME raised",
+    "config": {
+      "view": "session",
+      "keyboard": true
+    },
+    "limitation": "The real system IME is not raised. A drawn keyboard is used in sessions as requested; form inputs use the browser keyboard when tapped."
+  },
+  {
+    "id": "A17.5",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "dragging",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": "Native sheet drag-to-dismiss was replaced by the guide\u2019s in-place views and half-step-out menu; Back/Close is available."
+  },
+  {
+    "id": "A17.6",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "drag cancelled",
+    "config": {
+      "view": "menu"
+    },
+    "limitation": "Native cancelled sheet drag is not in the prototype because guide views replace that sheet shell."
+  },
+  {
+    "id": "A17.7",
+    "surface": "Shared sheet interaction / modal shell",
+    "label": "dismissed",
+    "config": {
+      "view": "computer"
+    },
+    "limitation": ""
+  }
+]

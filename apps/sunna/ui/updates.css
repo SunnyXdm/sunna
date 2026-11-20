@@ -1,0 +1,52 @@
+/* Update notes use the same quiet type and glass as the existing chrome. */
+.app-update-notice{position:absolute;right:130px;top:12px;height:28px;padding:0 12px;border-radius:99px;background:#242428d9;color:#e4e4e7;box-shadow:0 0 0 1px #ffffff20;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);font:500 12px var(--font);pointer-events:auto;white-space:nowrap}
+.app-update-notice:hover{background:#343438ed}
+body[data-view='space'] .app-update-notice{background:#f5f5f7e8;color:#3f3f46;box-shadow:0 0 0 1px #00000018}
+body[data-view='space'] .app-update-notice:hover{background:#fff}
+body:has(.app-update-notice:not([hidden])) .toolbar-title{max-width:calc(100% - 280px);overflow:hidden}
+#updates-settings{margin-bottom:22px}
+.update-status-row{flex-wrap:wrap;gap:12px}
+.update-actions{display:flex;flex-wrap:wrap;gap:8px}
+.update-policy-row{align-items:flex-start;gap:18px}
+.update-policy-row>.input{flex:none;width:146px}
+.update-policy-row select{font-size:12px}
+.update-explanation{font-size:12px;line-height:1.5;color:var(--text-2);margin:0;padding:0 12px 14px;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
+.host-update-sheet .sheet-header{padding-top:20px;padding-bottom:4px}
+.host-update-sheet h2{overflow-wrap:anywhere}
+.host-update-sheet p{font-size:13px;line-height:1.6;color:var(--text-2);margin:8px 0}
+.host-update-sheet .host-update-body{color:var(--text)}
+.host-install-command{display:block;font:12px/1.7 var(--font-mono);overflow-wrap:anywhere;white-space:normal;user-select:text;-webkit-user-select:text;background:#ffffff08;border-radius:10px;padding:12px;margin-top:14px}
+body[data-view='space'] .host-install-command{background:#00000006}
+.host-policy-field[hidden],.host-install-command[hidden]{display:none}
+.computer-update{pointer-events:auto;display:block;font:400 11px/1.4 var(--font);color:#a1a1aa;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.L1 .tag .computer-update{margin-top:4px;font-size:13px}
+.L1 .cap .update-link{display:inline-block;margin-left:14px;vertical-align:middle;font-size:12px;max-width:45%;padding:8px 0;color:#d4d4d8}
+.L1 .cap .update-link:hover{text-decoration:underline;text-underline-offset:4px}
+.L2 .lab .computer-update{font-size:12px;color:#c4c4cb;line-height:1.5;margin-top:4px}
+.L3 .lb .computer-update{pointer-events:auto;display:block;margin-top:4px;font-size:11px;color:#52525b}
+.L4 nav .type-name sup .computer-update{font-size:10px;line-height:1.6;max-width:110px;color:#a1a1aa}
+.L4 .type-detail .computer-update{margin-top:4px}
+.L5 .lab .computer-update{flex-basis:100%;font-size:11px;color:#a1a1aa;line-height:1.5}
+@media(max-height:560px){.L1 .cap .update-link{margin-left:12px;font-size:11px}.L1 .tag .computer-update{font-size:12px}}
+/* The extra Edit field scrolls with the address fields; keep its title and actions visible. */
+.machine-sheet:has(.host-policy-field:not([hidden])) .fields{min-height:0;overflow-y:auto}
+.machine-sheet:has(.host-policy-field:not([hidden])) .fields>.field{flex-shrink:0}
+.machine-sheet:has(.host-policy-field:not([hidden])) .sheet-header,
+.machine-sheet:has(.host-policy-field:not([hidden])) .preview-slot,
+.machine-sheet:has(.host-policy-field:not([hidden])) .check-line,
+.machine-sheet:has(.host-policy-field:not([hidden])) .sheet-footer{flex-shrink:0}
+
+/* Craft pass, 2026-11-18. Updates is a quiet word with a dot in the toolbar, not a pill. */
+.app-update-notice{right:132px;top:13px;height:28px;padding:0 10px 0 22px;border-radius:8px;background:none;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;color:#a1a1aa;font-size:13px}
+.app-update-notice::before{content:"";position:absolute;left:9px;top:11px;width:6px;height:6px;border-radius:50%;background:#f4f4f5}
+.app-update-notice:hover{background:rgba(255,255,255,.08);color:#f4f4f5}
+body[data-view='space'] .app-update-notice{background:none;box-shadow:none;color:#52525b}
+body[data-view='space'] .app-update-notice::before{background:#111113}
+body[data-view='space'] .app-update-notice:hover{background:rgba(0,0,0,.06);color:#111113}
+/* An update under way is said under the Connect button, not beside it. */
+.L1 .cap:has(.update-link){top:calc(var(--line) + 24px)}
+.L1 .cap .update-link{display:block;margin:4px auto 0;max-width:80%;pointer-events:auto}
+@media(max-height:560px){.L1 .cap:has(.update-link){top:calc(var(--line) + 12px)}}
+
+/* Leave room below the toolbar when many hosts have updates. */
+.updates-menu { max-height: calc(100vh - 60px); overflow-y: auto; }

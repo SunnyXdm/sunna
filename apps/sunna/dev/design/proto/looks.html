@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sunna looks</title>
+<style>
+@font-face { font-family: Inter; src: url(fonts/InterVariable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+:root { --bar: 48px; --ok: #30d158; --busy: #ff9f0a; --bad: #ff453a; --off: #8e8e93; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; }
+body { background: #19191c; color: #f4f4f5; font: 14px/1.35 Inter, system-ui, sans-serif; font-feature-settings: "cv11", "ss03"; -webkit-font-smoothing: antialiased; overflow: hidden; user-select: none; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+svg { display: block; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--off); margin-right: 8px; flex: none; }
+.dot.ready { background: var(--ok); } .dot.busy { background: var(--busy); } .dot.key { background: var(--bad); }
+
+/* ---------- the prototype's own bar (not part of the app) ---------- */
+#bar { position: fixed; inset: 0 0 auto 0; height: var(--bar); display: flex; align-items: center; gap: 14px; padding: 0 14px; background: #0e0e10; border-bottom: 1px solid #27272b; z-index: 50; white-space: nowrap; }
+#bar > b { font-weight: 650; letter-spacing: -.01em; }
+.seg { display: inline-flex; background: #1f1f23; border-radius: 9px; padding: 3px; gap: 2px; }
+.seg button { padding: 5px 13px; border-radius: 7px; color: #a1a1aa; font-weight: 550; font-size: 13px; }
+.seg button.on { background: #f4f4f5; color: #0b0b0c; }
+.seg button kbd { font: inherit; opacity: .45; margin-right: 6px; }
+#bar .tip { color: #71717a; font-size: 12.5px; margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+#host { position: fixed; inset: var(--bar) 0 0 0; display: grid; place-items: center; padding: 22px; }
+#win { position: relative; overflow: hidden; background: #000; }
+#app { position: absolute; inset: 0; overflow: hidden; }
+body.desktop #win { width: 100%; height: 100%; max-width: 1440px; max-height: 900px; border-radius: 12px; box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 30px 90px rgba(0,0,0,.6); }
+body.phone #win { width: 390px; height: min(844px, 100%); border-radius: 48px; box-shadow: 0 0 0 9px #0b0b0c, 0 0 0 10.5px #3a3a3f, 0 40px 90px rgba(0,0,0,.6); }
+.tl { position: absolute; left: 18px; top: 18px; display: flex; gap: 8px; z-index: 30; pointer-events: none; }
+.tl i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.2); } .tl i:nth-child(2) { background: #febc2e; } .tl i:nth-child(3) { background: #28c840; }
+.sb { position: absolute; inset: 0 0 auto 0; height: 50px; z-index: 30; pointer-events: none; display: flex; align-items: center; justify-content: space-between; padding: 6px 30px 0 34px; font-weight: 650; font-size: 15.5px; color: var(--sbc, #fff); }
+.sb i { width: 22px; height: 11px; border-radius: 3.5px; background: currentColor; opacity: .9; }
+body.desktop .sb, body.phone .tl, body.real .sb { display: none; }
+body.lk-space .sb { color: #111113; }
+@media (max-width: 700px) {
+  :root { --bar: 46px; }
+  #bar { padding: 0 8px; gap: 8px; } #bar > b, #bar .tip, .formsw { display: none; }
+  .seg { flex: 1; } .seg button { flex: 1; padding: 6px 0; } .seg button kbd { display: none; }
+  #host { padding: 0; }
+  body #win { width: 100% !important; height: 100% !important; max-width: none; max-height: none; border-radius: 0 !important; box-shadow: none !important; }
+}
+
+/* ---------- shared: a computer's screen ---------- */
+.scr { position: relative; overflow: hidden; background: #060607; }
+.scr img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.scr img.b { opacity: 0; }
+body.alt .scr.ready img.b, body.alt .scr.busy img.b { opacity: 1; }
+.scr.off img.a { filter: grayscale(.85) brightness(.3); }
+.scr.key { background: linear-gradient(160deg, #1b1b1f, #0b0b0d); display: grid; place-items: center; color: #6b6b73; }
+.scr.key svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.ic { width: 34px; height: 34px; border-radius: 50%; display: inline-grid; place-items: center; }
+.ic svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+
+/* ---------- session ---------- */
+.sess { position: absolute; inset: 0; z-index: 40; }
+.sbg { position: absolute; inset: 0; background: #000; }
+.fly { position: absolute; overflow: hidden; background: #000; }
+.fly img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hud { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); display: flex; align-items: center; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: rgba(22,22,25,.72); backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5); box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.4); font-size: 13px; white-space: nowrap; opacity: 0; transition: opacity .25s; }
+.hud.in { opacity: 1; } .hud b { font-weight: 600; } .hud span { color: #a1a1aa; margin: 0 12px 0 8px; font-variant-numeric: tabular-nums; }
+.hud button { height: 26px; padding: 0 12px; border-radius: 99px; background: rgba(255,255,255,.14); font-weight: 550; }
+body.phone .hud { top: 58px; } body.real .hud { top: 12px; }
+
+/* ================= 1 · DEVICES ================= */
+.L1 { position: absolute; inset: 0; background: linear-gradient(#0e0e11, #0a0a0c 60%); --line: 62%; }
+.L1.ph { --line: 47%; }
+.L1 .amb { position: absolute; inset: 0 0 calc(100% - var(--line)) 0; overflow: hidden; }
+.L1 .amb img { position: absolute; left: 10%; top: 4%; width: 80%; height: 110%; object-fit: cover; filter: blur(90px) saturate(1.4); opacity: 0; transition: opacity .7s; }
+.L1 .amb img.on { opacity: .3; }
+.L1 .desk { position: absolute; left: 0; right: 0; top: var(--line); bottom: 0; background: linear-gradient(#131316, #09090b 55%); border-top: 1px solid rgba(255,255,255,.06); }
+.L1 header { position: absolute; inset: 0 0 auto 0; height: 52px; display: flex; align-items: center; padding: 0 12px 0 92px; z-index: 5; color: #a1a1aa; }
+.L1 header b { color: #f4f4f5; font-weight: 600; margin-right: 10px; } .L1 header em { flex: 1; }
+.L1.ph header { top: 50px; padding: 0 12px 0 22px; } .L1.ph header b { font-size: 17px; } body.real .L1.ph header { top: 6px; }
+.L1 .stage { position: absolute; left: 0; right: 0; top: 0; height: var(--line); touch-action: pan-y; }
+.L1 .dev { position: absolute; left: 50%; bottom: 0; transform-origin: 50% 100%; transition: transform var(--move-d) var(--move); cursor: pointer; }
+.L1 .unit { transition: filter .35s; filter: brightness(.5); }
+.L1 .refl { position: absolute; left: -10%; right: -10%; top: 100%; height: 124px; pointer-events: none; -webkit-mask-image: linear-gradient(rgba(0,0,0,.5), transparent 96%); mask-image: linear-gradient(rgba(0,0,0,.5), transparent 96%); }
+.L1 .refl .unit { position: absolute; left: 8.3333%; width: 83.3333%; bottom: 100%; transform: scaleY(-1); transform-origin: 50% 100%; filter: brightness(.5) blur(1.2px); }
+.L1 .dev.on .refl .unit { filter: blur(1.2px); }
+.L1 .dev.away .refl .scr { visibility: hidden; }
+.L1 .dev.on .unit { filter: none; }
+.L1 .bezel { padding: 6px; background: #09090a; border-radius: 12px; box-shadow: 0 0 0 1px #2e2e33, 0 -1px 0 1px #45454b, 0 40px 70px -30px #000; }
+.L1 .bezel .scr { border-radius: 5px; }
+.L1 .neck { width: 7%; height: 38px; margin: 0 auto; background: linear-gradient(90deg, #232327, #56565c 42%, #39393e 70%, #1f1f23); }
+.L1 .foot { width: 25%; height: 5px; margin: 0 auto; border-radius: 4px 4px 1px 1px; background: linear-gradient(#5d5d63, #2b2b2f); }
+.L1 .deck { width: 118%; margin-left: -9%; height: 11px; border-radius: 2px 2px 12px 12px; background: linear-gradient(#6a6a70, #38383d 40%, #202024); position: relative; }
+.L1 .deck::after { content: ""; position: absolute; left: 43%; right: 43%; top: 0; height: 4px; border-radius: 0 0 5px 5px; background: #2a2a2e; }
+.L1 .laptop .bezel { border-radius: 12px 12px 3px 3px; }
+.L1 .spill { position: absolute; left: -35%; right: -35%; top: calc(100% - var(--h) * .28); height: calc(var(--h) * .9); pointer-events: none; opacity: 0; transition: opacity .5s; -webkit-mask-image: radial-gradient(50% 50% at 50% 50%, #000 10%, transparent 100%); mask-image: radial-gradient(50% 50% at 50% 50%, #000 10%, transparent 100%); }
+.L1 .dev.on .spill { opacity: .42; }
+.L1 .spill img { width: 100%; height: 100%; object-fit: cover; transform: scaleY(-1); filter: blur(40px) saturate(1.5); display: block; }
+.L1 .tag { position: absolute; left: 0; right: 0; top: calc(100% + 136px); text-align: center; font-size: 22px; font-weight: 550; color: #8e8e96; transition: opacity .25s; white-space: nowrap; }
+.L1 .dev.on .tag { opacity: 0; }
+.L1 .cap { position: absolute; left: 0; right: 0; top: calc(var(--line) + 98px); text-align: center; pointer-events: none; }
+.L1 .cap h1 { margin: 0; font-size: 46px; line-height: 1.05; font-weight: 680; letter-spacing: -.035em; }
+.L1 .cap p { margin: 12px 0 0; color: #d4d4d8; font-size: 15px; display: flex; justify-content: center; align-items: center; font-variant-numeric: tabular-nums; }
+.L1 .cap p span { color: #7c7c85; margin-left: 14px; padding-left: 14px; border-left: 1px solid #333338; }
+.L1 .go { pointer-events: auto; margin-top: 22px; height: 42px; padding: 0 26px; border-radius: 99px; background: #f4f4f5; color: #0b0b0c; font-weight: 620; font-size: 15px; }
+.L1 .go kbd { font: inherit; opacity: .4; margin-left: 10px; }
+.L1 .go.alt { background: rgba(255,255,255,.1); color: #f4f4f5; }
+.L1 .pips { position: absolute; left: 0; right: 0; bottom: 22px; display: flex; justify-content: center; gap: 7px; }
+.L1 .pips i { width: 6px; height: 6px; border-radius: 50%; background: #3f3f46; transition: background .2s; } .L1 .pips i.on { background: #f4f4f5; }
+.L1.ph .cap { top: calc(var(--line) + 92px); } .L1.ph .cap h1 { font-size: 40px; }
+.L1.ph .cap p { flex-direction: column; gap: 6px; } .L1.ph .cap p span { border: 0; margin: 0; padding: 0; }
+.L1.ph .cap p .st { display: flex; align-items: center; }
+.L1.ph .go { position: absolute; left: 22px; right: 22px; top: 142px; margin: 0; height: 52px; font-size: 17px; }
+.L1.ph .go kbd { display: none; } .L1.ph .tag { display: none; }
+.L1.ph .refl { height: 78px; -webkit-mask-image: linear-gradient(rgba(0,0,0,.38), transparent 92%); mask-image: linear-gradient(rgba(0,0,0,.38), transparent 92%); }
+
+/* ================= 2 · WALL ================= */
+.L2 { position: absolute; inset: 0; background: #000; }
+.L2 .grid { position: absolute; inset: 0; overflow: hidden auto; scrollbar-width: none; }
+.L2 .tile { position: absolute; overflow: hidden; cursor: pointer; }
+.L2 .tile .scr { position: absolute; inset: 0; transition: filter .22s; }
+.L2 .tile::after { content: ""; position: absolute; inset: 45% 0 0 0; background: linear-gradient(transparent, rgba(0,0,0,.42) 45%, rgba(0,0,0,.84)); pointer-events: none; }
+.L2 .lab { position: absolute; left: 18px; bottom: 15px; right: 110px; z-index: 2; pointer-events: none; }
+.L2 .lab b { display: block; font-size: 24px; font-weight: 660; letter-spacing: -.025em; line-height: 1.15; }
+.L2 .lab span { display: flex; align-items: center; margin-top: 4px; font-size: 13.5px; color: #e4e4e7; font-variant-numeric: tabular-nums; }
+.L2 .hint { position: absolute; right: 16px; bottom: 16px; z-index: 2; height: 32px; padding: 0 15px; border-radius: 99px; background: #f4f4f5; color: #0b0b0c; font-weight: 620; font-size: 13.5px; display: flex; align-items: center; opacity: 0; transform: translateY(4px); transition: opacity .18s, transform .18s; pointer-events: none; }
+.L2.hov .tile:not(.on) .scr { filter: brightness(.42); }
+.L2 .tile.on .hint { opacity: 1; transform: none; }
+.L2 .shade { position: absolute; inset: 0 0 auto 0; height: 70px; background: linear-gradient(rgba(0,0,0,.55), transparent); pointer-events: none; }
+.L2 .tools { position: absolute; right: 12px; top: 10px; display: flex; padding: 2px; border-radius: 99px; background: rgba(22,22,25,.66); backdrop-filter: blur(24px) saturate(1.5); -webkit-backdrop-filter: blur(24px) saturate(1.5); box-shadow: 0 0 0 1px rgba(255,255,255,.12); }
+.L2.ph .tools { top: auto; right: 16px; bottom: 22px; padding: 5px 8px; gap: 8px; box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 12px 30px rgba(0,0,0,.5); }
+.L2.ph .ic { width: 42px; height: 42px; } .L2.ph .lab b { font-size: 22px; } .L2.ph .hint { display: none; } .L2.ph .lab { right: 18px; }
+
+/* ================= 3 · SPACE ================= */
+.L3 { position: absolute; inset: 0; color: #111113; --sbc: #111; background: radial-gradient(120% 60% at 50% 108%, #c3c5cd 0%, rgba(195,197,205,0) 70%), linear-gradient(#f4f4f6, #e7e8ec 58%, #d9dae0); }
+.L3 header { position: absolute; inset: 0 0 auto 0; height: 52px; display: flex; align-items: center; padding: 0 12px 0 92px; z-index: 5; color: #71717a; }
+.L3 header b { color: #111113; font-weight: 600; margin-right: 10px; } .L3 header em { flex: 1; } .L3 header .ic { color: #3f3f46; }
+.L3 .scene { position: absolute; inset: 0; perspective: 1500px; perspective-origin: 50% 40%; }
+.L3 .world { position: absolute; inset: 0; transform-style: preserve-3d; }
+.L3 .pan { position: absolute; left: 50%; top: 60%; transform-style: preserve-3d; transform: translate(-50%, -50%) translate3d(var(--x), var(--y), var(--z)) rotateY(calc(var(--r) * var(--k, 1))); transition: transform .6s var(--move); cursor: pointer; }
+.L3 .pn { transform-style: preserve-3d; transition: transform .6s var(--move); }
+.L3 .pan:hover { --k: .15; } .L3 .pan:hover .pn { transform: translateZ(90px); }
+.L3 .fl { animation: fl 6s ease-in-out infinite alternate; }
+@keyframes fl { to { transform: translateY(-7px); } }
+.L3 .pan .scr { border-radius: 10px; box-shadow: 0 0 0 1px rgba(0,0,0,.28), 0 60px 70px -34px rgba(24,26,44,.55), 0 18px 30px -12px rgba(24,26,44,.25); }
+.L3 .lb { margin-top: 16px; text-align: center; }
+.L3 .lb b { display: block; font-size: 19px; font-weight: 640; letter-spacing: -.02em; }
+.L3 .lb span { display: inline-flex; align-items: center; margin-top: 3px; font-size: 13.5px; color: #52525b; font-variant-numeric: tabular-nums; }
+.L3 .pan.back .lb { margin-top: 13px; }
+.L3 .pan.back .scr { box-shadow: 0 0 0 1px rgba(0,0,0,.2), 0 40px 60px -30px rgba(24,26,44,.4); }
+.L3 .sh { position: absolute; left: 4%; right: 4%; top: calc(100% + 34px); height: 30px; background: radial-gradient(50% 50% at 50% 50%, rgba(20,22,40,.3), transparent); filter: blur(8px); pointer-events: none; }
+/* phone: a tilted stack */
+.L3 .stack { position: absolute; inset: 0; overflow: hidden auto; padding: 108px 0 60px; scrollbar-width: none; }
+body.real .L3 .stack { padding-top: 64px; }
+.L3.ph header { top: 50px; padding: 0 12px 0 22px; z-index: 6; } .L3.ph header b { font-size: 17px; } body.real .L3.ph header { top: 6px; }
+.L3 .card { height: 132px; perspective: 1000px; perspective-origin: 50% 0; position: relative; }
+.L3 .card:last-child { height: auto; }
+.L3 .card .pn { width: 90%; margin: 0 auto; transform-origin: 50% 0; transform: rotateX(-34deg); background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 0 0 1px rgba(0,0,0,.1), 0 -16px 34px -10px rgba(24,26,44,.34); transition: transform .32s cubic-bezier(.2,.8,.2,1); }
+.L3 .card.up .pn { transform: none; }
+.L3 .card .hd { height: 46px; display: flex; align-items: center; padding: 0 16px; font-size: 16.5px; }
+.L3 .card .hd b { font-weight: 640; letter-spacing: -.015em; } .L3 .card .hd span { margin-left: auto; color: #71717a; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+
+/* ================= 4 · TYPE ================= */
+.L4 { position: absolute; inset: 0; background: #08080a; }
+.L4 .amb img { position: absolute; left: 30%; top: 0; width: 80%; height: 100%; object-fit: cover; filter: blur(100px) saturate(1.4); opacity: 0; transition: opacity .7s; }
+.L4 .amb img.on { opacity: .3; }
+.L4 .pic { position: absolute; opacity: 0; transform: translateX(46px); transition: opacity .28s, transform var(--move-d) var(--move); pointer-events: none; }
+.L4 .pic.on { opacity: 1; transform: none; pointer-events: auto; cursor: pointer; }
+.L4 .pic .scr { width: 100%; height: 100%; border-radius: 10px; box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 50px 100px -30px #000; }
+.L4 .pic p { position: absolute; left: 2px; top: calc(100% + 14px); margin: 0; color: #a1a1aa; font-size: 13.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.L4 .pic p u { text-decoration: none; color: #f4f4f5; margin-left: 14px; }
+.L4 nav { position: absolute; left: 56px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: flex-start; z-index: 3; }
+.L4 nav a, .L4 .row > a { display: flex; align-items: flex-start; font-size: var(--fs, 72px); line-height: 1.08; font-weight: 700; letter-spacing: -.048em; color: rgba(244,244,245,.24); transition: color .16s; cursor: pointer; }
+.L4 nav a.on, .L4 .row.on > a { color: #f4f4f5; }
+.L4 sup { display: inline-flex; align-items: center; font-size: 13px; font-weight: 550; letter-spacing: 0; line-height: 1; margin: .95em 0 0 14px; color: #a1a1aa; white-space: nowrap; font-variant-numeric: tabular-nums; opacity: .75; }
+.L4 a.on sup, .L4 .row.on sup { opacity: 1; } .L4 sup .dot { margin-right: 7px; width: 7px; height: 7px; }
+.L4 footer { position: absolute; left: 56px; right: 28px; bottom: 22px; display: flex; gap: 26px; color: #8e8e96; font-size: 13.5px; z-index: 3; }
+.L4 footer b { color: #f4f4f5; font-weight: 650; } .L4 footer em { flex: 1; } .L4 footer a { color: #d4d4d8; cursor: pointer; }
+.L4 .list { position: absolute; inset: 0; overflow: hidden auto; padding: 104px 22px 80px; scrollbar-width: none; }
+body.real .L4 .list { padding-top: 34px; }
+.L4 .fold { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .42s cubic-bezier(.2,.85,.2,1); }
+.L4 .row.on .fold { grid-template-rows: 1fr; }
+.L4 .fold .in { overflow: hidden; min-height: 0; }
+.L4 .fold .scr { margin-top: 12px; border-radius: 9px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+.L4 .fold p { margin: 11px 0 20px; color: #a1a1aa; font-size: 13.5px; display: flex; justify-content: space-between; }
+.L4 .fold p u { text-decoration: none; color: #f4f4f5; font-weight: 600; }
+.L4.ph footer { left: 22px; right: 22px; bottom: 26px; gap: 22px; white-space: nowrap; } .L4.ph footer span { display: none; }
+
+/* ================= 5 · GALLERY ================= */
+.L5 { position: absolute; inset: 0; background: #0b0b0d; }
+.L5 header { position: absolute; inset: 0 0 auto 0; height: 52px; display: flex; align-items: center; padding: 0 12px 0 92px; z-index: 5; color: #a1a1aa; }
+.L5 header b { color: #f4f4f5; font-weight: 600; margin-right: 10px; } .L5 header em { flex: 1; }
+.L5.ph header { top: 50px; padding: 0 12px 0 20px; } .L5.ph header b { font-size: 17px; } body.real .L5.ph header { top: 6px; }
+.L5 .grid { position: absolute; inset: 0; overflow: hidden auto; scrollbar-width: none; }
+.L5 .tile { position: absolute; cursor: pointer; transition: transform var(--move-d) var(--move); }
+.L5 .tile .scr { width: 100%; border-radius: 9px; box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 24px 50px -22px #000; transition: box-shadow .2s; }
+.L5 .tile:hover { transform: scale(1.018); } .L5 .tile:hover .scr { box-shadow: 0 0 0 1px rgba(255,255,255,.34), 0 30px 60px -22px #000; }
+.L5 .lab { display: flex; align-items: baseline; gap: 12px; margin-top: 12px; padding: 0 2px; white-space: nowrap; overflow: hidden; }
+.L5 .lab b { font-size: 17px; font-weight: 640; letter-spacing: -.02em; }
+.L5 .lab span { display: inline-flex; align-items: center; font-size: 13.5px; color: #a1a1aa; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.L5 .tile.big .lab b { font-size: 22px; }
+.L5 .lab .dot { align-self: center; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>Sunna looks</b>
+  <span class="seg" id="looks"></span>
+  <span class="seg formsw" id="forms"><button data-f="desktop">Desktop</button><button data-f="phone">Phone</button></span>
+  <span class="tip">Keys 1–5 switch the look · D / P switch desktop and phone · click a screen to connect · Esc to leave</span>
+</div>
+<div id="host"><div id="win">
+  <div id="app"></div>
+  <div class="tl"><i></i><i></i><i></i></div>
+  <div class="sb"><span>9:41</span><i></i></div>
+</div></div>
+<script>
+const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const app = $('#app');
+
+/* A damped spring, sampled into a CSS linear() easing. */
+function spring(k, c) {
+  let x = 0, v = 0, t = 0; const dt = 1 / 240, pts = [0];
+  while (t < 2.5) { v += (-k * (x - 1) - c * v) * dt; x += v * dt; t += dt; pts.push(x); if (Math.abs(x - 1) < 0.0006 && Math.abs(v) < 0.006) break; }
+  const n = 48, out = []; for (let i = 0; i <= n; i++) out.push(+pts[Math.round(i / n * (pts.length - 1))].toFixed(4));
+  out[n] = 1; return { easing: `linear(${out.join(',')})`, duration: Math.round(t * 1000) };
+}
+const SP = { move: spring(190, 24), zoom: spring(150, 22) };
+document.documentElement.style.setProperty('--move', SP.move.easing);
+document.documentElement.style.setProperty('--move-d', SP.move.duration + 'ms');
+
+const C = [
+  { id: 'arch', name: 'archlinux', os: 'KDE Plasma', kind: 'monitor', img: '01-plasma-rust', w: 2560, h: 1440, state: 'ready', ms: 4 },
+  { id: 'thinkpad', name: 'thinkpad', os: 'GNOME', kind: 'laptop', img: '02-gnome-notes', w: 1920, h: 1080, state: 'ready', ms: 11 },
+  { id: 'studio', name: 'studio', os: 'KDE Plasma', kind: 'wide', img: '03-plasma-krita', w: 3440, h: 1440, state: 'busy' },
+  { id: 'mumbai', name: 'mumbai', os: 'Xfce', kind: 'monitor', img: '04-xfce-docs', w: 1920, h: 1080, state: 'ready', ms: 38 },
+  { id: 'office', name: 'office', os: 'MATE', kind: 'monitor', img: '05-mate-planning', w: 1920, h: 1080, state: 'off', seen: '3 h ago' },
+  { id: 'valkyris', name: 'valkyris', os: 'Windows 11', kind: 'monitor', w: 2560, h: 1440, state: 'key' },
+];
+const by = id => C.find(c => c.id === id);
+const st = c => c.state === 'ready' ? `Ready · ${c.ms} ms` : c.state === 'busy' ? 'In use' : c.state === 'off' ? `Offline · seen ${c.seen}` : 'Key doesn’t match';
+const short = c => c.state === 'ready' ? `${c.ms} ms` : c.state === 'busy' ? 'in use' : c.state === 'off' ? 'offline' : 'key doesn’t match';
+const dot = c => `<i class="dot ${c.state}"></i>`;
+const can = c => c.state === 'ready' || c.state === 'busy';
+const nReady = C.filter(c => c.state === 'ready').length;
+const ICON = {
+  plus: '<button class="ic" title="Add a computer"><svg viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg></button>',
+  gear: '<button class="ic" title="Settings"><svg viewBox="0 0 20 20"><path d="M3 6h7M16 6h1M3 14h1M10 14h7"/><circle cx="13" cy="6" r="2.2"/><circle cx="7" cy="14" r="2.2"/></svg></button>',
+  lock: '<svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
+};
+const scr = (c, style = '') => c.img
+  ? `<div class="scr ${c.state}" data-id="${c.id}" style="aspect-ratio:${c.w}/${c.h};${style}"><img class="a" src="frames/${c.img}.jpg" draggable="false"><img class="b" src="frames/${c.img}-b.jpg" draggable="false"></div>`
+  : `<div class="scr key" data-id="${c.id}" style="aspect-ratio:${c.w}/${c.h};${style}">${ICON.lock}</div>`;
+setInterval(() => document.body.classList.toggle('alt'), 2600);
+
+/* ---------- connect: the screen itself grows to fill the window ---------- */
+let sess = null;
+const px = r => ({ left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+function rel(el) { const a = app.getBoundingClientRect(), r = el.getBoundingClientRect(); return { left: r.left - a.left, top: r.top - a.top, width: r.width, height: r.height }; }
+function nudge(el) { el.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-7px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(-3px)' }, { transform: 'translateX(0)' }], { duration: 320, easing: 'ease-out' }); }
+function connect(c, src, done) {
+  if (sess) return;
+  if (!can(c)) { nudge(src); done?.(); return; }
+  const W = app.clientWidth, H = app.clientHeight, a = c.w / c.h;
+  let fw = W, fh = W / a; if (fh > H) { fh = H; fw = H * a; }
+  const to = { left: (W - fw) / 2, top: (H - fh) / 2, width: fw, height: fh }, from = rel(src);
+  const layer = document.createElement('div'); layer.className = 'sess';
+  layer.innerHTML = `<div class="sbg"></div><div class="fly"><img src="frames/${c.img}${document.body.classList.contains('alt') ? '-b' : ''}.jpg"></div><div class="hud">${dot(c)}<b>${c.name}</b><span>${c.ms ? c.ms + ' ms' : 'shared'}</span><button>Leave</button></div>`;
+  app.append(layer); src.style.visibility = 'hidden';
+  const fly = $('.fly', layer), rad = getComputedStyle(src).borderRadius;
+  fly.animate([{ ...px(from), borderRadius: rad }, { ...px(to), borderRadius: '0px' }], { duration: SP.zoom.duration, easing: SP.zoom.easing, fill: 'both' });
+  $('.sbg', layer).animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out', fill: 'both' });
+  setTimeout(() => $('.hud', layer)?.classList.add('in'), 420);
+  $('.hud button', layer).onclick = leave;
+  sess = { c, src, layer, fly, to, rad, done };
+}
+function leave() {
+  if (!sess || sess.leaving) return; sess.leaving = true;
+  const { src, layer, fly, to, rad, done } = sess, from = rel(src);
+  $('.hud', layer).remove();
+  fly.animate([{ ...px(to), borderRadius: '0px' }, { ...px(from), borderRadius: rad }], { duration: SP.move.duration, easing: SP.move.easing, fill: 'both' });
+  $('.sbg', layer).animate([{ opacity: 1 }, { opacity: 0 }], { duration: 280, easing: 'ease-in', fill: 'both' });
+  setTimeout(() => { layer.remove(); src.style.visibility = ''; sess = null; done?.(); }, SP.move.duration);
+}
+function endNow() { if (!sess) return; sess.layer.remove(); sess.src.style.visibility = ''; sess = null; }
+
+const mem = {};
+const VIEWS = {};
+
+/* ================= 1 · DEVICES ================= */
+VIEWS.devices = (app, ph) => {
+  const list = ['thinkpad', 'arch', 'studio', 'mumbai', 'office', 'valkyris'].map(by);
+  let sel = mem.devices ?? 1;
+  const unit = c => `<div class="unit"><div class="bezel">${scr(c)}</div>${c.kind === 'laptop' ? '<div class="deck"></div>' : '<div class="neck"></div><div class="foot"></div>'}</div>`;
+  const open = i => { const d = devs[i]; d.classList.add('away'); connect(list[i], $('.scr', d), () => d.classList.remove('away')); };
+  app.innerHTML = `<div class="L1${ph ? ' ph' : ''}">
+    <div class="amb">${list.map(c => c.img && c.state !== 'off' ? `<img data-id="${c.id}" src="frames/${c.img}.jpg">` : '').join('')}</div>
+    <div class="desk"></div>
+    <header><b>Computers</b><span>${nReady} of ${C.length} ready</span><em></em>${ICON.plus}${ICON.gear}</header>
+    <div class="stage">${list.map((c, i) => `<div class="dev ${c.kind}" data-i="${i}">
+      <div class="spill">${c.img && c.state !== 'off' ? `<img src="frames/${c.img}.jpg">` : ''}</div>
+      ${unit(c)}<div class="refl">${unit(c)}</div>
+      <div class="tag">${c.name}</div></div>`).join('')}</div>
+    <div class="cap"></div><div class="pips">${list.map(() => '<i></i>').join('')}</div></div>`;
+  const root = $('.L1', app), devs = $$('.dev', root), cap = $('.cap', root);
+  function place(quiet) {
+    const W = app.clientWidth, H = app.clientHeight;
+    const maxW = ph ? W * .76 : W * .52, maxH = ph ? H * .25 : H * .46;
+    const sz = list.map(c => { const a = c.w / c.h; let w = maxW, h = w / a; if (h > maxH) { h = maxH; w = h * a; } return { w, h }; });
+    const s = ph ? .8 : .56, gap = ph ? 16 : 56, x = []; x[sel] = 0;
+    for (let i = sel + 1; i < list.length; i++) x[i] = x[i - 1] + (i - 1 === sel ? sz[i - 1].w : sz[i - 1].w * s) / 2 + gap + sz[i].w * s / 2;
+    for (let i = sel - 1; i >= 0; i--) x[i] = x[i + 1] - (i + 1 === sel ? sz[i + 1].w : sz[i + 1].w * s) / 2 - gap - sz[i].w * s / 2;
+    devs.forEach((d, i) => {
+      d.style.width = sz[i].w + 'px'; d.style.setProperty('--h', sz[i].h + 'px');
+      d.style.transform = `translateX(${x[i] - sz[i].w / 2}px) scale(${i === sel ? 1 : s})`;
+      d.classList.toggle('on', i === sel);
+    });
+    const c = list[sel];
+    $$('.amb img', root).forEach(m => m.classList.toggle('on', m.dataset.id === c.id));
+    $$('.pips i', root).forEach((p, i) => p.classList.toggle('on', i === sel));
+    cap.innerHTML = `<h1>${c.name}</h1><p><span class="st" style="all:unset;display:flex;align-items:center">${dot(c)}${st(c)}</span><span>${c.os} · ${c.w} × ${c.h}</span></p>` +
+      (can(c) ? `<button class="go">Connect<kbd>↵</kbd></button>` : c.state === 'key' ? `<button class="go alt">Fix the key…</button>` : '');
+    if (!quiet) cap.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'ease-out' });
+    const go = $('.go', cap); if (go && can(c)) go.onclick = () => open(sel);
+    mem.devices = sel;
+  }
+  const pick = i => { const n = Math.max(0, Math.min(list.length - 1, i)); if (n !== sel) { sel = n; place(); } };
+  let down = null, dragged = false;
+  const stage = $('.stage', root);
+  root.onpointerdown = e => { down = e.clientX; dragged = false; };
+  root.onpointerup = e => { if (down == null) return; const dx = e.clientX - down; down = null; if (Math.abs(dx) > 36) { dragged = true; pick(sel + (dx < 0 ? 1 : -1)); } };
+  stage.onclick = e => { if (dragged) return; const d = e.target.closest('.dev'); if (!d) return; const i = +d.dataset.i; i === sel ? open(i) : pick(i); };
+  let cool = 0;
+  root.onwheel = e => { const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY; if (Math.abs(d) < 12 || Date.now() < cool) return; cool = Date.now() + 320; pick(sel + (d > 0 ? 1 : -1)); };
+  place(true);
+  return { resize: () => place(true), keys: e => { if (e.key === 'ArrowRight') pick(sel + 1); else if (e.key === 'ArrowLeft') pick(sel - 1); else if (e.key === 'Enter') open(sel); } };
+};
+
+/* ================= 2 · WALL ================= */
+function bestRows(a, W, H) {
+  const n = a.length; let best = null;
+  for (let m = 0; m < 1 << (n - 1); m++) {
+    const rows = [[0]]; for (let i = 1; i < n; i++) (m >> (i - 1)) & 1 ? rows.push([i]) : rows.at(-1).push(i);
+    const T = rows.reduce((s, r) => s + W / r.reduce((q, i) => q + a[i], 0), 0);
+    const score = Math.abs(Math.log(H / T)) + (n > 2 ? .2 * rows.filter(r => r.length === 1).length : 0);
+    if (!best || score < best.score) best = { rows, T, score };
+  }
+  return best;
+}
+VIEWS.wall = (app, ph) => {
+  app.innerHTML = `<div class="L2${ph ? ' ph' : ''}"><div class="grid">${C.map(c => `<div class="tile ${c.state}" data-id="${c.id}">${scr(c, 'aspect-ratio:auto')}
+    <div class="lab"><b>${c.name}</b><span>${dot(c)}${st(c)}</span></div>${can(c) ? '<div class="hint">Connect</div>' : c.state === 'key' ? '<div class="hint">Fix the key…</div>' : ''}</div>`).join('')}</div>
+    <div class="shade"></div><div class="tools">${ICON.plus}${ICON.gear}</div></div>`;
+  const root = $('.L2', app), tiles = $$('.tile', root), G = 2;
+  function lay() {
+    const W = app.clientWidth, H = app.clientHeight, a = C.map(c => c.w / c.h);
+    let rows, f = 1;
+    if (ph) rows = C.map((_, i) => [i]);
+    else { const b = bestRows(a, W, H); rows = b.rows; f = Math.max(.7, Math.min(1.4, (H - G * (rows.length - 1)) / b.T)); }
+    let y = 0;
+    rows.forEach(r => {
+      const hn = (W - G * (r.length - 1)) / r.reduce((q, i) => q + a[i], 0), h = hn * f; let x = 0;
+      r.forEach(i => { const w = a[i] * hn; Object.assign(tiles[i].style, px({ left: x, top: y, width: w, height: h })); x += w + G; });
+      y += h + G;
+    });
+  }
+  lay();
+  let sel = -1;
+  const mark = i => { sel = i; root.classList.toggle('hov', i >= 0); tiles.forEach((t, j) => t.classList.toggle('on', j === i)); };
+  if (!ph) { root.onmouseover = e => { const t = e.target.closest('.tile'); mark(t ? tiles.indexOf(t) : -1); }; root.onmouseleave = () => mark(-1); }
+  root.onclick = e => { const t = e.target.closest('.tile'); if (t) connect(by(t.dataset.id), $('.scr', t)); };
+  return { resize: lay, keys: e => { if (e.key === 'ArrowRight' || e.key === 'ArrowDown') mark((sel + 1) % C.length); else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') mark((sel + C.length - 1) % C.length); else if (e.key === 'Enter' && sel >= 0) connect(C[sel], $('.scr', tiles[sel])); } };
+};
+
+/* ================= 3 · SPACE ================= */
+VIEWS.space = (app, ph) => {
+  if (ph) {
+    app.innerHTML = `<div class="L3 ph"><header><b>Computers</b><span>${nReady} of ${C.length} ready</span><em></em>${ICON.plus}${ICON.gear}</header>
+      <div class="stack">${C.map(c => `<div class="card" data-id="${c.id}"><div class="pn"><div class="hd">${dot(c)}<b>${c.name}</b><span>${short(c)}</span></div>${scr(c, 'aspect-ratio:16/9')}</div></div>`).join('')}</div></div>`;
+    $('.stack', app).onclick = e => {
+      const card = e.target.closest('.card'); if (!card || sess) return; const c = by(card.dataset.id);
+      card.classList.add('up'); card.style.zIndex = 5;
+      setTimeout(() => connect(c, $('.scr', card), () => { card.classList.remove('up'); setTimeout(() => card.style.zIndex = '', 320); }), 240);
+    };
+    return {};
+  }
+  const front = ['thinkpad', 'arch', 'mumbai'].map(by), back = ['office', 'studio', 'valkyris'].map(by);
+  const panel = (c, cls, i) => `<div class="pan ${cls}" data-id="${c.id}"><div class="pn"><div class="fl" style="animation-delay:${-i * 1.7}s">${scr(c)}<div class="lb"><b>${c.name}</b><span>${dot(c)}${st(c)}</span></div>${cls === 'front' ? '<div class="sh"></div>' : ''}</div></div></div>`;
+  app.innerHTML = `<div class="L3"><header><b>Computers</b><span>${nReady} of ${C.length} ready</span><em></em>${ICON.plus}${ICON.gear}</header>
+    <div class="scene"><div class="world">${back.map((c, i) => panel(c, 'back', i + 3)).join('')}${front.map((c, i) => panel(c, 'front', i)).join('')}</div></div></div>`;
+  const root = $('.L3', app), world = $('.world', root), pans = $$('.pan', root);
+  function row(list, els, pw, y, z0) {
+    const R = pw * 4, gap = pw * .14, ws = list.map(c => c.kind === 'wide' ? pw * 1.34 : pw);
+    let s = -(ws.reduce((q, w) => q + w, 0) + gap * (ws.length - 1)) / 2;
+    list.forEach((c, i) => {
+      const th = (s + ws[i] / 2) / R, p = els[i]; s += ws[i] + gap;
+      p.style.width = ws[i] + 'px';
+      p.style.setProperty('--x', R * Math.sin(th) + 'px'); p.style.setProperty('--y', y + 'px');
+      p.style.setProperty('--z', z0 + R * (1 - Math.cos(th)) + 'px'); p.style.setProperty('--r', -th * 180 / Math.PI + 'deg');
+    });
+  }
+  function lay() {
+    const W = app.clientWidth, H = app.clientHeight, pw = Math.min(W * .26, H * .46);
+    row(back, pans.slice(0, 3), pw, -pw * .98, -pw * 1.5); row(front, pans.slice(3), pw, 0, 0);
+  }
+  lay();
+  let tx = 0, ty = 0, cx = 0, cy = 0, raf;
+  root.onpointermove = e => { const r = app.getBoundingClientRect(); tx = (e.clientX - r.left) / r.width - .5; ty = (e.clientY - r.top) / r.height - .5; };
+  root.onpointerleave = () => { tx = ty = 0; };
+  (function tick() { cx += (tx - cx) * .07; cy += (ty - cy) * .07; world.style.transform = `rotateY(${(cx * 9).toFixed(3)}deg) rotateX(${(-cy * 5).toFixed(3)}deg)`; raf = requestAnimationFrame(tick); })();
+  root.onclick = e => { const p = e.target.closest('.pan'); if (p) connect(by(p.dataset.id), $('.scr', p)); };
+  return { resize: lay, cleanup: () => cancelAnimationFrame(raf) };
+};
+
+/* ================= 4 · TYPE ================= */
+VIEWS.type = (app, ph) => {
+  let sel = mem.type ?? 'arch';
+  const amb = `<div class="amb">${C.map(c => c.img && c.state !== 'off' ? `<img data-id="${c.id}" src="frames/${c.img}.jpg">` : '').join('')}</div>`;
+  const foot = `<footer><b>Sunna</b><span>${nReady} of ${C.length} ready</span><em></em><a>Add a computer</a><a>Settings</a></footer>`;
+  const act = c => can(c) ? 'Connect' : c.state === 'key' ? 'Fix the key…' : '';
+  if (ph) {
+    app.innerHTML = `<div class="L4 ph">${amb}<div class="list">${C.map(c => `<div class="row" data-id="${c.id}"><a><b>${c.name}</b><sup>${dot(c)}${short(c)}</sup></a>
+      <div class="fold"><div class="in">${scr(c)}<p><span>${c.os} · ${c.w} × ${c.h}</span><u>${act(c)}</u></p></div></div></div>`).join('')}</div>${foot}</div>`;
+    const root = $('.L4', app); root.style.setProperty('--fs', '46px');
+    const show = () => { $$('.row', root).forEach(r => r.classList.toggle('on', r.dataset.id === sel)); $$('.amb img', root).forEach(m => m.classList.toggle('on', m.dataset.id === sel)); mem.type = sel; };
+    show();
+    $('.list', root).onclick = e => { const r = e.target.closest('.row'); if (!r) return; if (r.dataset.id !== sel) { sel = r.dataset.id; show(); } else if (e.target.closest('.fold')) connect(by(sel), $('.scr', r)); };
+    return {};
+  }
+  app.innerHTML = `<div class="L4">${amb}<div class="pics">${C.map(c => `<div class="pic" data-id="${c.id}">${scr(c, 'aspect-ratio:auto')}<p>${c.os} · ${c.w} × ${c.h} · ${st(c)}<u>${act(c)}${can(c) ? ' ↵' : ''}</u></p></div>`).join('')}</div>
+    <nav>${C.map(c => `<a data-id="${c.id}"><b>${c.name}</b><sup>${dot(c)}${short(c)}</sup></a>`).join('')}</nav>${foot}</div>`;
+  const root = $('.L4', app), pics = $$('.pic', root), links = $$('nav a', root);
+  function lay() {
+    const W = app.clientWidth, H = app.clientHeight, left = W * .47;
+    root.style.setProperty('--fs', Math.max(40, Math.min(78, (H - 190) / C.length / 1.08, W * .058)) + 'px');
+    C.forEach((c, i) => {
+      const a = c.w / c.h; let h = H * .62, w = h * a; const cap = (W - left) * 1.26; if (w > cap) { w = cap; h = w / a; }
+      Object.assign(pics[i].style, px({ left, top: (H - h) / 2 - 12, width: w, height: h }));
+    });
+  }
+  const show = () => { pics.forEach(p => p.classList.toggle('on', p.dataset.id === sel)); links.forEach(l => l.classList.toggle('on', l.dataset.id === sel)); $$('.amb img', root).forEach(m => m.classList.toggle('on', m.dataset.id === sel)); mem.type = sel; };
+  lay(); show();
+  const go = () => connect(by(sel), $('.pic.on .scr', root));
+  $('nav', root).onmouseover = e => { const l = e.target.closest('a'); if (l && l.dataset.id !== sel) { sel = l.dataset.id; show(); } };
+  $('nav', root).onclick = e => { const l = e.target.closest('a'); if (l) { sel = l.dataset.id; show(); go(); } };
+  $('.pics', root).onclick = go;
+  return { resize: lay, keys: e => { const i = C.findIndex(c => c.id === sel); if (e.key === 'ArrowDown') { sel = C[(i + 1) % C.length].id; show(); } else if (e.key === 'ArrowUp') { sel = C[(i + C.length - 1) % C.length].id; show(); } else if (e.key === 'Enter') go(); } };
+};
+
+/* ================= 5 · GALLERY ================= */
+VIEWS.gallery = (app, ph) => {
+  const rank = { ready: 0, busy: 1, off: 2, key: 3 };
+  const list = [...C].sort((a, b) => rank[a.state] - rank[b.state] || (a.ms ?? 0) - (b.ms ?? 0));
+  app.innerHTML = `<div class="L5${ph ? ' ph' : ''}"><header><b>Computers</b><span>${nReady} of ${C.length} ready</span><em></em>${ICON.plus}${ICON.gear}</header>
+    <div class="grid">${list.map(c => `<div class="tile ${c.state}" data-id="${c.id}">${scr(c)}<div class="lab"><b>${c.name}</b><span>${dot(c)}${st(c)}</span></div></div>`).join('')}<i style="position:absolute;width:1px;height:1px"></i></div></div>`;
+  const root = $('.L5', app), tiles = $$('.tile', root), end = $('.grid > i', root), a = list.map(c => c.w / c.h);
+  function lay() {
+    const W = app.clientWidth, H = app.clientHeight, G = ph ? 14 : 22, LAB = ph ? 44 : 50, padX = ph ? 16 : 44, top = ph ? (document.body.classList.contains('real') ? 58 : 104) : 68, bottom = ph ? 40 : 30;
+    let rows;
+    if (ph) { rows = []; let pair = null; list.forEach((c, i) => { if (c.state === 'ready') rows.push([i]); else if (pair) { pair.push(i); pair = null; } else { pair = [i]; rows.push(pair); } }); }
+    else {
+      const n = list.length, availH = H - top - bottom, cw = W - padX * 2; let best = null;
+      for (let m = 0; m < 1 << (n - 1); m++) {
+        const r = [[0]]; for (let i = 1; i < n; i++) (m >> (i - 1)) & 1 ? r.push([i]) : r.at(-1).push(i);
+        if (r.some((x, j) => j && x.length < r[j - 1].length)) continue;
+        const T = r.reduce((q, x) => q + (cw - G * (x.length - 1)) / x.reduce((k, i) => k + a[i], 0) + LAB, 0) + G * (r.length - 1);
+        const onEdge = r.slice(1).some(x => list[x[0]].state !== 'ready' && list[x[0] - 1].state === 'ready');
+        const score = Math.abs(Math.log(availH / T)) - (onEdge ? .25 : 0);
+        if (!best || score < best.score) best = { r, T, score };
+      }
+      rows = best.r;
+    }
+    const availH = H - top - bottom; let cw = W - padX * 2;
+    const total = w => rows.reduce((q, x) => q + (w - G * (x.length - 1)) / x.reduce((k, i) => k + a[i], 0) + LAB, 0) + G * (rows.length - 1);
+    if (!ph && total(cw) > availH) { let lo = 200, hi = cw; for (let k = 0; k < 24; k++) { const mid = (lo + hi) / 2; total(mid) > availH ? hi = mid : lo = mid; } cw = lo; }
+    let y = ph ? top : top + Math.max(0, (availH - total(cw)) / 2); const x0 = (W - cw) / 2;
+    rows.forEach((r, j) => {
+      const h = (cw - G * (r.length - 1)) / r.reduce((k, i) => k + a[i], 0); let x = x0;
+      r.forEach(i => { const w = a[i] * h; Object.assign(tiles[i].style, { left: x + 'px', top: y + 'px', width: w + 'px' }); tiles[i].classList.toggle('big', w > 420); x += w + G; });
+      y += h + LAB + G;
+    });
+    end.style.top = y + bottom - G + 'px';
+  }
+  lay();
+  root.onclick = e => { const t = e.target.closest('.tile'); if (t) connect(by(t.dataset.id), $('.scr', t)); };
+  return { resize: lay };
+};
+
+/* ---------- the switcher ---------- */
+const LOOKS = [['devices', 'Devices'], ['wall', 'Wall'], ['space', 'Space'], ['type', 'Type'], ['gallery', 'Gallery']];
+const q = new URLSearchParams(location.search);
+const S = { look: LOOKS.some(l => l[0] === q.get('look')) ? q.get('look') : 'devices', form: q.get('form') === 'phone' ? 'phone' : 'desktop' };
+const narrow = () => innerWidth <= 700, isPhone = () => narrow() || S.form === 'phone';
+$('#looks').innerHTML = LOOKS.map((l, i) => `<button data-l="${l[0]}"><kbd>${i + 1}</kbd>${l[1]}</button>`).join('');
+let view = null;
+function render() {
+  endNow(); view?.cleanup?.();
+  document.body.className = (isPhone() ? 'phone' : 'desktop') + ' lk-' + S.look + (narrow() ? ' real' : '') + (document.body.classList.contains('alt') ? ' alt' : '');
+  history.replaceState(null, '', `?look=${S.look}&form=${S.form}`);
+  $$('#looks button').forEach(b => b.classList.toggle('on', b.dataset.l === S.look));
+  $$('#forms button').forEach(b => b.classList.toggle('on', b.dataset.f === S.form));
+  app.innerHTML = ''; view = VIEWS[S.look](app, isPhone()) || {};
+}
+$('#looks').onclick = e => { const b = e.target.closest('button'); if (b) { S.look = b.dataset.l; render(); } };
+$('#forms').onclick = e => { const b = e.target.closest('button'); if (b) { S.form = b.dataset.f; render(); } };
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'Escape') return leave();
+  if (sess) return;
+  if (e.key >= '1' && e.key <= '5') { S.look = LOOKS[e.key - 1][0]; return render(); }
+  if (e.key === 'd' || e.key === 'p') { S.form = e.key === 'd' ? 'desktop' : 'phone'; return render(); }
+  view.keys?.(e);
+});
+let wasNarrow = narrow(), rz;
+addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); render(); } else if (!sess) view.resize ? view.resize() : render(); }, 80); });
+render();
+</script>
+</body>
+</html>

@@ -1,7 +1,10 @@
 // Sunna launcher. The Rust side (src/main.rs) does the real work: saved
 // machines, probing, sessions. This draws them and forwards what you do.
 
-import { animate, flip, snapshot, springs, tilt, wait } from "./motion.js";
+import { wireSharing } from "./sharing.js";
+import { updateUI } from "./updates.js";
+import { computerViews, VIEWS, copyScreen } from "./computers.js";
+import { animate, flip, snapshot, springs, wait, reducedMotion } from "./motion.js";
 
 // Outside the app (a plain browser), stand in for the Rust side.
 if (!window.__TAURI__) await import("../dev/mock.js");
@@ -11,7 +14,7 @@ const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 4000;
 /** States in which a machine's screen is lit: something answered. */
-const LIT = new Set(["ready", "busy", "wrong-key", "update-needed"]);
+const LIT = new Set(["ready", "busy", "wrong-key", "update-needed", "not-sharing"]);
 
 const state = {
   info: { computer: "" },
@@ -24,10 +27,13 @@ const state = {
   session: null,
   /** New computers start with this computer's key. */
   defaultKey: "",
+  view: "gallery",
+  pictures: new Map(),
+  pictureVersion: 0,
+  errors: new Map(),
 };
 
 const tiles = new Map();
-let addTile = null;
 
 // ───────────── Machines on screen ─────────────
 
@@ -52,7 +58,7 @@ function markOf(kind) {
   return "os-tux";
 }
 
-const DEVICES = { laptop: "Laptop", desktop: "Desktop", vm: "VM", server: "Server" };
+const DEVICES = { laptop: "Laptop", desktop: "Desktop", vm: "VM", server: "Server", mini: "Mini PC" };
 
 /** "Arch Linux · Desktop", "macOS 26.0 · MacBook Air"; the address when
  *  we don't know what it is yet. */
@@ -60,7 +66,7 @@ function systemText(machine, check) {
   const os = check?.os || machine.os;
   if (!os) return machine.address ?? "";
   const model = check?.model || machine.model;
-  return [os, model || DEVICES[check?.device || machine.device]].filter(Boolean).join(" · ");
+  return [os, model || DEVICES[machine.kind || check?.device || machine.device]].filter(Boolean).join(" · ");
 }
 
 /** What a Linux boot screen says under the penguin: the distro, no version. */
@@ -94,6 +100,7 @@ function ago(seconds) {
 }
 
 function describe(machine, check) {
+  if (check?.unverified) return "Not fully verified";
   switch (check?.state ?? "checking") {
     case "idle":
       return "Enter its address";
@@ -103,10 +110,14 @@ function describe(machine, check) {
       return check.rtt_ms != null ? `Ready · ${ms(check.rtt_ms)}` : "Ready";
     case "busy":
       return check.viewer ? `In use · ${check.viewer}` : "In use";
+    case "identity-changed":
+      return "Identity changed";
     case "wrong-key":
       return "Key doesn't match";
     case "update-needed":
       return "Needs an update";
+    case "not-sharing":
+      return "Not sharing";
     case "not-found":
       return "Address not found";
     case "invalid":
@@ -149,9 +160,10 @@ function paintTile(tile, machine, check, wakeDelay = 0) {
   const lit = LIT.has(now);
   const wasLit = tile.hasAttribute("data-lit");
   const kind = osKind(check?.os || machine.os);
-  tile.dataset.state = now;
+  tile.dataset.state = now === "identity-changed" ? "wrong-key" : now;
+  tile.toggleAttribute("data-unverified", Boolean(check?.unverified));
   tile.dataset.os = kind;
-  tile.dataset.device = check?.device || machine.device || "";
+  tile.dataset.device = machine.kind || check?.device || machine.device || "";
   tile.toggleAttribute("data-lit", lit);
   if (lit && !wasLit) wake(tile, wakeDelay, now === "ready" || now === "busy");
   if (!lit && wasLit) sleep(tile);
@@ -169,24 +181,6 @@ function paintTile(tile, machine, check, wakeDelay = 0) {
   hit.title = [check?.os || machine.os, machine.model, machine.address].filter(Boolean).join(" · ");
 }
 
-function createTile(id) {
-  const tile = $("tile-template").content.firstElementChild.cloneNode(true);
-  tile.dataset.id = id;
-  const hit = tile.querySelector(".tile-hit");
-  tilt(tile, hit);
-  hit.addEventListener("click", () => activate(id));
-  hit.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    openMenu(id, { x: event.clientX, y: event.clientY });
-  });
-  const more = tile.querySelector(".tile-more");
-  more.addEventListener("click", (event) => {
-    event.stopPropagation();
-    openMenu(id, { anchor: more });
-  });
-  return tile;
-}
-
 function createPreviewTile() {
   const tile = $("tile-template").content.firstElementChild.cloneNode(true);
   tile.querySelector(".tile-more").remove();
@@ -195,42 +189,79 @@ function createPreviewTile() {
   return tile;
 }
 
-function createAddTile() {
-  const tile = $("add-tile-template").content.firstElementChild.cloneNode(true);
-  const hit = tile.querySelector(".tile-hit");
-  hit.addEventListener("click", () => openMachineSheet({ opener: hit }));
-  return tile;
+const welcome = $("welcome");
+const views = computerViews($("computer-host"), {
+  activate, menu: openMenu, summary,
+  update: (id, opener) => updates.showHost(byId(id), opener),
+  busy: () => Boolean(state.session),
+  tiles: (next) => { tiles.clear(); next.forEach((tile,id)=>tiles.set(id,tile)); },
+  empty: (root) => { root.append(welcome); welcome.hidden = false; },
+  standin: (machine, check) => {
+    const tile = createPreviewTile(); paintTile(tile, machine, check);
+    const frame = tile.querySelector('.screen');
+    frame.className = 'standin';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'standin-host';wrapper.dataset.os = tile.dataset.os;wrapper.dataset.state = tile.dataset.state;
+    wrapper.append(frame); return wrapper;
+  },
+});
+
+const updates = updateUI({invoke, state, render:renderGrid, openSheet, closeSheet, toast, menu:openItemsMenu});
+
+function renderGrid() {
+  welcome.hidden = state.machines.length !== 0;
+  document.body.dataset.view = state.view;
+  views.render(state.view, state.machines.map(machine => {
+    const check = state.checks.get(machine.id);
+    const raw = check?.state ?? 'checking';
+    const kind = machine.kind || check?.device || machine.device || 'unknown';
+    const w = check?.width || machine.width, h = check?.height || machine.height;
+    return { id: machine.id, name: machine.name, machine, check, kind,
+      ratio: w > 0 && h > 0 ? w/h : 1.6,
+      state: ['identity-changed','wrong-key'].includes(raw) ? 'key' : ['ready','busy','checking','update-needed','not-sharing'].includes(raw) ? raw : 'off',
+      status: describe(machine,check), brief: check?.unverified ? 'Not fully verified' : raw === 'ready' && check?.rtt_ms != null ? ms(check.rtt_ms) : describe(machine,check).split(' · ')[0], detail: ['identity-changed','not-sharing'].includes(raw) ? check.detail : systemText(machine,check) + (w && h ? ` · ${w} × ${h}` : ''),
+      osKind: osKind(check?.os || machine.os), pictureVersion:state.pictureVersion, picture: raw === "identity-changed" ? null : state.pictures.get(machine.id), error: state.errors.get(machine.id), // A waiting update is listed once, under Updates in the toolbar; a computer only says so while one is under way.
+      update: (info => !info || info.quiet || info.label === 'Update available' ? null : info)(updates.hostInfo(machine, check)),
+    };
+  }));
+  renderHeader();
+  updates.paint();
 }
 
-function renderGrid({ stagger = false } = {}) {
-  const grid = $("grid");
-  const ids = new Set(state.machines.map((machine) => machine.id));
-  for (const [id, tile] of tiles) {
-    if (!ids.has(id)) {
-      tile.remove();
-      tiles.delete(id);
-    }
-  }
-  state.machines.forEach((machine, index) => {
-    let tile = tiles.get(machine.id);
-    if (!tile) {
-      tile = createTile(machine.id);
-      tile.style.setProperty("--i", index);
-      tiles.set(machine.id, tile);
-    }
-    paintTile(tile, machine, state.checks.get(machine.id), stagger ? 120 + index * 110 : 0);
-    const at = grid.children[index];
-    if (at !== tile) grid.insertBefore(tile, at ?? null);
+async function loadPictures() {
+  await Promise.all(state.machines.map(async machine => {
+    try {
+      const bytes = await invoke('machine_picture', {id: machine.id});
+      if (!bytes) return;
+      const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], {type:'image/jpeg'}));
+      state.pictures.get(machine.id)?.close();state.pictures.set(machine.id,bitmap);
+    } catch { /* Missing or damaged pictures use the OS drawing. */ }
+  }));
+  state.pictureVersion++;
+  renderGrid();
+  document.body.dataset.pictures = "loaded";
+}
+
+async function setView(view) {
+  if (!VIEWS.includes(view) || state.session) return;
+  state.view = view;renderGrid();
+  document.querySelectorAll('[data-view-choice]').forEach(b=>b.setAttribute('aria-checked',String(b.dataset.viewChoice===view)));
+  try {
+    const { key: _key, ...settings } = await invoke('get_settings');settings.view = view;
+    await invoke('set_settings',{settings});
+  } catch(error) { toast(String(error)); }
+}
+
+function viewChoices(container, menu = false) {
+  VIEWS.forEach((view,index)=>{
+    const b=document.createElement('button');b.type='button';b.className=menu?'menu-item view-choice':'view-choice';
+    b.dataset.viewChoice=view;b.setAttribute('role',menu?'menuitemradio':'radio');b.setAttribute('aria-checked',String(view===state.view));
+    const preview=document.createElement('span');preview.className=`view-preview preview-${view}`;preview.setAttribute('aria-hidden','true');
+    for(let i=0;i<3;i++)preview.append(document.createElement('i'));
+    b.append(preview,document.createTextNode(view[0].toUpperCase()+view.slice(1)));
+    if(menu){const k=document.createElement('kbd');k.textContent=String(index+1);b.append(k);}
+    b.onclick=()=>{setView(view);if(menu)hideMenu();};container.append(b);
   });
-  addTile ??= createAddTile();
-  addTile.style.setProperty("--i", state.machines.length);
-  if (grid.lastElementChild !== addTile) grid.appendChild(addTile);
-  const count = state.machines.length + 1;
-  grid.dataset.count = count <= 3 ? "few" : count <= 6 ? "some" : "many";
-  const empty = state.loaded && state.machines.length === 0;
-  grid.hidden = empty;
-  $("welcome").hidden = !empty;
-  renderHeader();
 }
 
 function summary() {
@@ -241,6 +272,8 @@ function summary() {
   const ready = machines.filter((machine) => state.checks.get(machine.id)?.state === "ready");
   if (machines.length === 1) {
     const [machine] = machines;
+    if (state.checks.get(machine.id)?.unverified) return `${machine.name} · Not fully verified`;
+    if (state.checks.get(machine.id)?.state === "not-sharing") return `${machine.name} is not sharing`;
     return ready.length ? `${machine.name} is ready` : `${machine.name} isn't available`;
   }
   if (ready.length === machines.length) return `All ${machines.length} ready`;
@@ -256,12 +289,19 @@ const byId = (id) => state.machines.find((machine) => machine.id === id);
 
 let polling = false;
 async function poll() {
-  if (polling || state.session || document.hidden || !state.machines.length) return;
+  if (polling || state.session || (document.hidden && !window.__sunnaMock) || !state.machines.length) return;
   polling = true;
   try {
     const checks = await invoke("machine_statuses");
     const first = !state.polled;
-    for (const [id, check] of Object.entries(checks)) state.checks.set(id, check);
+    for (const [id, check] of Object.entries(checks)) {
+      state.checks.set(id, check);
+      const machine = byId(id);
+      if (machine && check.identity && !machine.identity) {
+        machine.identity = check.identity;
+        machine.allow_older = false;
+      }
+    }
     state.polled = true;
     renderGrid({ stagger: first });
   } catch (error) {
@@ -283,8 +323,13 @@ function activate(id) {
       return openMachineSheet({ machine, opener: tiles.get(id), focus: "key" });
     case "busy":
       return toast(`${check.viewer || "Someone"} is connected to ${machine.name} right now.`, "info");
+    case "not-sharing":
+      return toast(check.detail || "Not sharing", "info");
     case "update-needed":
-      return toast(check.detail || `${machine.name} runs a different version of Sunna.`, "info");
+      if (check.detail?.includes('Update this one')) return toast(check.detail, "info", {
+        label: "Updates", run: async () => {await openSettings($("settings-button"));document.getElementById('updates-settings')?.scrollIntoView({block:'center'});},
+      });
+      return updates.showHost(machine, tiles.get(id));
     case undefined:
     case "checking":
       return toast(`Still looking for ${machine.name}…`, "info");
@@ -348,20 +393,26 @@ const launch = {
     const tile = tiles.get(machine.id);
     const overlay = $("launch");
     const box = $("launch-screen");
-    const from = tile.querySelector(".screen").getBoundingClientRect();
+    const from = tile.querySelector(".tile-hit .screen").getBoundingClientRect();
     overlay.dataset.os = tile.dataset.os;
     overlay.querySelector(".launch-mark use").setAttribute("href", `#${markOf(tile.dataset.os)}`);
     // Start where the tile's wallpaper is in its drift, so the hand-off is seamless.
-    box.querySelector(".wall").style.transform = getComputedStyle(tile.querySelector(".wall")).transform;
+    box.replaceChildren(copyScreen(tile.querySelector(".tile-hit .screen")));
     $("launch-name").textContent = machine.name;
     setPhase("reaching", machine.name);
     overlay.classList.remove("expanded");
     overlay.hidden = false;
     tile.classList.add("launch-source");
     $("app").classList.add("launching");
-    const full = { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    const check=state.checks.get(machine.id);
+    const sw=check?.width||machine.width, sh=check?.height||machine.height;
+    const ratio = sw>0&&sh>0?sw/sh:from.width/from.height;
+    let width = innerWidth, height = width / ratio;
+    if(height > innerHeight){height=innerHeight;width=height*ratio;}
+    const full = { left: (innerWidth-width)/2, top: (innerHeight-height)/2, width, height };
     Object.assign(box.style, px(full, 0));
-    this.timer = setTimeout(() => overlay.classList.add("expanded"), 160);
+    animate($("launch-background"),[{opacity:0},{opacity:1}],{duration:300,easing:"ease-out"},{fill:"forwards"});
+    this.timer = setTimeout(() => overlay.classList.add("expanded"), reducedMotion()?0:420);
     await animate(box, [px(from, 12), px(full, 0)], springs.zoom);
   },
 
@@ -371,24 +422,18 @@ const launch = {
     const tile = tiles.get(id);
     clearTimeout(this.timer);
     overlay.classList.remove("expanded");
+    animate($("launch-background"),[{opacity:getComputedStyle($("launch-background")).opacity},{opacity:0}],{duration:280,easing:"ease-in"},{fill:"forwards"});
     if (tile?.isConnected) {
-      const to = restingRect(tile.querySelector(".screen"));
+      const to = restingRect(tile.querySelector(".tile-hit .screen"));
       $("app").classList.remove("launching");
-      tile.classList.remove("launch-source");
       const full = box.getBoundingClientRect();
-      const move = animate(box, [px(full, 0), px(to, 12)], springs.zoom, { fill: "forwards" });
-      // Hand back to the tile's own screen as it lands.
-      const fade = box.animate([{ opacity: 1 }, { opacity: 0 }], {
-        duration: springs.zoom.duration * 0.35,
-        delay: springs.zoom.duration * 0.5,
-        fill: "forwards",
-      }).finished.catch(() => {});
-      await Promise.all([move, fade]);
+      const move = animate(box, [px(full, 0), px(to, 12)], springs.gentle, { fill: "forwards" });
+      await move;
     } else {
       $("app").classList.remove("launching");
     }
     overlay.hidden = true;
-    for (const animation of box.getAnimations()) animation.cancel();
+    for (const animation of [...box.getAnimations(), ...$("launch-background").getAnimations()]) animation.cancel();
     tile?.classList.remove("launch-source");
   },
 };
@@ -397,7 +442,9 @@ async function connect(machine) {
   if (state.session) return;
   hideMenu();
   hideToast();
+  state.errors.delete(machine.id);
   state.session = { id: machine.id, phase: "reaching" };
+  updates.paint();
   const opening = launch.open(machine);
   try {
     await invoke("connect", { id: machine.id });
@@ -406,6 +453,8 @@ async function connect(machine) {
     await wait(250);
     await launch.close(machine.id);
     state.session = null;
+    state.errors.set(machine.id, String(error));
+    renderGrid();
     toast(String(error));
   }
 }
@@ -426,7 +475,8 @@ listen("session-ended", async ({ payload }) => {
   }
   await launch.close(payload.id);
   state.session = null;
-  if (payload.reason) toast(payload.reason);
+  if (payload.reason) { state.errors.set(payload.id,payload.reason);toast(payload.reason); }
+  await loadPictures();
   // The host frees its viewer slot as the session ends: look again now.
   setTimeout(poll, 300);
 });
@@ -476,7 +526,7 @@ async function closeSheet(sheet) {
   sheet.style.pointerEvents = "none";
   await sheet
     .animate([{ transform: "none", opacity: 1 }, { transform: "scale(0.94)", opacity: 0 }], {
-      duration: 170,
+      duration: reducedMotion() ? 1 : 170,
       easing: "cubic-bezier(0.4, 0, 1, 1)",
       fill: "forwards",
     })
@@ -489,11 +539,11 @@ const topSheet = () => sheets.at(-1)?.sheet;
 
 $("scrim").addEventListener("click", () => {
   const sheet = topSheet();
-  if (sheet) closeSheet(sheet);
+  if (sheet) {sheet.dispatchEvent(new Event("cancel-sheet"));closeSheet(sheet);}
 });
 
 function focusables(root) {
-  return [...root.querySelectorAll("button, input, [tabindex]")].filter(
+  return [...root.querySelectorAll("button, input, select, [tabindex]")].filter(
     (element) => !element.disabled && element.tabIndex >= 0 && element.offsetParent !== null,
   );
 }
@@ -515,7 +565,7 @@ function parseLink(text) {
   const match = /^sunna:\/\/([^/?#]+)[^?#]*(?:\?([^#]*))?/i.exec(text.trim());
   if (!match) return null;
   const params = new URLSearchParams(match[2] ?? "");
-  return { address: decodeURIComponent(match[1]), key: params.get("key") ?? "" };
+  return { address: decodeURIComponent(match[1]), key: params.get("key") ?? "", identity: params.getAll("id").length > 1 ? "" : params.get("id") };
 }
 
 function iconSvg(name) {
@@ -548,6 +598,7 @@ function setCheckLine(line, kind, text) {
 }
 
 function checkMessage(check, address) {
+  if (check.unverified) return "Not fully verified. Update this computer to fix.";
   switch (check.state) {
     case "checking":
       return `Looking for Sunna at ${hostOf(address)}…`;
@@ -568,7 +619,7 @@ function checkMessage(check, address) {
 function openMachineSheet({ machine = null, opener = null, focus = "address", find = false } = {}) {
   const sheet = openSheet("machine-sheet-template", opener);
   const form = sheet.querySelector("form");
-  const fields = { address: form.elements.address, key: form.elements.key, name: form.elements.name };
+  const fields = { address: form.elements.address, key: form.elements.key, name: form.elements.name, kind: form.elements.kind };
   const line = sheet.querySelector(".check-line");
   const submit = sheet.querySelector(".submit");
   const editing = Boolean(machine);
@@ -578,8 +629,25 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
   sheet.querySelector(".find").hidden = editing;
   fields.address.value = machine?.address ?? "";
   fields.key.value = machine?.key ?? state.defaultKey;
+  const savedIdentity = machine?.identity ?? state.checks.get(machine?.id)?.identity ?? null;
+  let imported = null;
+  let learned = null;
+  const identity = () => imported?.pin ?? savedIdentity ?? learned;
+  const older = form.elements.allow_older;
+  older.checked = Boolean(machine?.allow_older);
+  function showIdentity() {
+    const pin = identity();
+    sheet.querySelector(".identity-line").hidden = !editing || !pin;
+    sheet.querySelector(".identity-line").textContent = pin ? "Identity · " + pin.slice(0, 12) : "";
+    sheet.querySelector(".older-row").hidden = !editing || machine?.upgraded || pin !== null;
+    if (machine?.upgraded || pin !== null) older.checked = false;
+  }
+  showIdentity();
   fields.name.value = machine?.name ?? "";
+  fields.kind.value = machine?.kind ?? "";
+  sheet.querySelector(".kind-field").hidden = !editing;
 
+  updates.wireHostPolicy(sheet, machine, fields);
   const preview = createPreviewTile();
   sheet.querySelector(".preview-slot").appendChild(preview);
   let latest = editing ? (state.checks.get(machine.id) ?? null) : null;
@@ -595,7 +663,7 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
       width: latest?.width || (editing ? machine.width : 0),
       height: latest?.height || (editing ? machine.height : 0),
       last_seen: editing ? machine.last_seen : 0,
-      address,
+      address, kind: fields.kind.value,
     };
     paintTile(preview, draft, address ? (latest ?? { state: "checking" }) : { state: "idle" });
     fields.name.placeholder = latest?.name || "Optional";
@@ -616,18 +684,29 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
     paintPreview();
     let check;
     try {
-      check = await invoke("check_machine", { address, key: fields.key.value.trim() });
+      check = await invoke("check_machine", { address, key: fields.key.value.trim(), identity: identity(), record: machine?.id ?? null });
     } catch (error) {
       check = { state: "invalid", detail: String(error) };
     }
     if (mine !== sequence) return;
     latest = check;
-    setCheckLine(line, check.state, checkMessage(check, address));
+    if (check.identity) { learned = check.identity; showIdentity(); }
+    // "Not fully verified" is a caution: the alert mark, not the tick.
+    setCheckLine(line, check.unverified ? "update-needed" : check.state, checkMessage(check, address));
     paintPreview();
     fields.key.closest(".input").classList.toggle("error", check.state === "wrong-key");
   };
-  const schedule = () => {
+  const invalidate = () => {
+    ++sequence;
     clearTimeout(timer);
+    latest = null;
+    learned = null;
+    if (imported?.address !== fields.address.value.trim()) imported = null;
+    showIdentity();
+    paintPreview();
+  };
+  const schedule = () => {
+    invalidate();
     timer = setTimeout(runCheck, 420);
   };
 
@@ -635,6 +714,8 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
     const link = parseLink(fields.address.value);
     if (link) {
       fields.address.value = link.address;
+      imported = link.identity === null ? null : { address: link.address, pin: link.identity };
+      invalidate();
       if (link.key) fields.key.value = link.key;
       clearTimeout(timer);
       runCheck();
@@ -644,6 +725,7 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
   });
   fields.key.addEventListener("input", schedule);
   fields.name.addEventListener("input", paintPreview);
+  fields.kind.addEventListener("change",paintPreview);
   sheet.querySelector(".reveal").addEventListener("click", (event) => {
     const hidden = fields.key.type === "password";
     fields.key.type = hidden ? "text" : "password";
@@ -668,7 +750,7 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
     }
     submit.classList.add("busy");
     const about = latest && latest.state !== "checking" ? latest : null;
-    const draft = { name: fields.name.value.trim(), address, key: fields.key.value.trim(), about };
+    const draft = { identity: identity(), from_link: imported !== null, allow_older: older.checked, name: fields.name.value.trim(), address, key: fields.key.value.trim(), about, kind: fields.kind.value };
     try {
       const saved = editing
         ? await invoke("update_machine", { id: machine.id, draft })
@@ -679,6 +761,7 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
         renderGrid();
         closeSheet(sheet);
       } else {
+        state.machines = state.machines.filter(entry => entry.id !== saved.id);
         state.machines.push(saved);
         await flyIn(saved, preview, sheet);
       }
@@ -703,6 +786,7 @@ function openMachineSheet({ machine = null, opener = null, focus = "address", fi
       const result = await invoke("scan_tailscale", { key: fields.key.value.trim() || state.defaultKey });
       renderFound(list, result.machines, (found) => {
         fields.address.value = found.ip;
+        invalidate();
         if (!fields.name.value.trim()) fields.name.value = found.name;
         switchPage(sheet, findPage, formPage, false);
         runCheck();
@@ -772,7 +856,7 @@ function renderFound(list, machines, pick) {
     button.innerHTML = `<span class="os-badge"><svg class="icon"><use href="#os-screen"/></svg></span><span class="find-text"><span class="find-name"></span><span class="find-meta"></span></span><span class="pill"></span>`;
     paintMark(button.querySelector(".os-badge"), osKind(found.os));
     button.querySelector(".find-name").textContent = found.name;
-    button.querySelector(".find-meta").textContent = [found.os, found.ip].filter(Boolean).join(" · ");
+    button.querySelector(".find-meta").textContent = [found.os, found.ip, found.detail].filter(Boolean).join(" · ");
     const pill = button.querySelector(".pill");
     if (already) {
       pill.textContent = "Added";
@@ -803,26 +887,15 @@ function renderFound(list, machines, pick) {
 /** A new machine's preview flies from the sheet into its place. */
 async function flyIn(machine, preview, sheet) {
   renderGrid();
-  const tile = tiles.get(machine.id);
-  const stage = preview.querySelector(".stage");
-  const from = stage.getBoundingClientRect();
-  // A copy of the preview's device, outside the sheet, flies over.
-  const ghost = document.createElement("div");
-  ghost.className = "tile ghost";
-  for (const key of ["state", "os", "device"]) ghost.dataset[key] = preview.dataset[key] ?? "";
-  ghost.toggleAttribute("data-lit", preview.hasAttribute("data-lit"));
-  ghost.style.cssText = preview.style.cssText;
-  ghost.appendChild(stage.cloneNode(true));
-  const frame = (rect) => ({ left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px` });
-  Object.assign(ghost.style, frame(from));
-  document.body.appendChild(ghost);
-  tile.classList.add("arriving");
-  tile.scrollIntoView({ block: "nearest" });
-  closeSheet(sheet);
-  const to = restingRect(tile.querySelector(".stage"));
-  await animate(ghost, [frame(from), frame(to)], springs.gentle, { fill: "forwards" });
-  tile.classList.remove("arriving");
-  ghost.remove();
+  views.select(machine.id);
+  const tile=tiles.get(machine.id),source=preview.querySelector('.screen');
+  const from=source.getBoundingClientRect(),to=restingRect(tile.querySelector('.tile-hit .screen'));
+  const ghost=document.createElement('div');ghost.className='arrival-flight';
+  ghost.dataset.os=preview.dataset.os;ghost.append(copyScreen(source));
+  Object.assign(ghost.style,px(from,12));document.body.append(ghost);
+  tile.classList.add('arriving');closeSheet(sheet);
+  await animate(ghost,[px(from,12),px(to,12)],springs.gentle,{fill:'forwards'});
+  tile.classList.remove('arriving');ghost.remove();
 }
 
 /** Ask, then remove: the tile fades away and the rest close the gap. */
@@ -862,6 +935,7 @@ async function removeMachine(machine) {
   const before = snapshot([...grid.children].filter((element) => element !== tile));
   state.machines = state.machines.filter((entry) => entry.id !== machine.id);
   state.checks.delete(machine.id);
+  state.pictures.get(machine.id)?.close();state.pictures.delete(machine.id);
   renderGrid();
   flip(before);
   toast(`Removed ${machine.name}.`, "good");
@@ -915,23 +989,42 @@ async function openSettings(opener) {
     toast(String(error));
     return;
   }
+  updates.wireSettings(sheet);
+  viewChoices(sheet.querySelector('.view-choices'));
+  sheet.querySelector('.licenses-button').onclick = async event => {
+    const license = openSheet('licenses-template',event.currentTarget);
+    license.querySelector('.close').onclick=()=>closeSheet(license);
+    license.querySelector('.license-text').textContent=await fetch('./fonts/OFL.txt').then(r=>r.text()).catch(()=>"Couldn't load the licence.");
+    license.querySelector('.close').focus();
+  };
   const key = sheet.querySelector('input[name="key"]');
   key.value = settings.key;
+  delete settings.key;
   let saveTimer = 0;
   const save = (delay = 0) => {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
       try {
+        settings.view = state.view;
         await invoke("set_settings", { settings });
-        state.defaultKey = settings.key;
+
       } catch (error) {
         toast(String(error));
       }
     }, delay);
   };
+  let keyTimer;
   key.addEventListener("input", () => {
-    settings.key = key.value.trim();
-    save(500);
+    clearTimeout(keyTimer);
+    keyTimer = setTimeout(async () => {
+      const value = key.value.trim();
+      try {
+        await invoke("set_key", { key: value });
+        state.defaultKey = value;
+      } catch (error) {
+        toast(String(error));
+      }
+    }, 500);
   });
   sheet.querySelector(".reveal").addEventListener("click", () => {
     key.type = key.type === "password" ? "text" : "password";
@@ -956,7 +1049,24 @@ async function openSettings(opener) {
     settings.audio = audio.checked;
     save();
   });
-  const segments = sheet.querySelectorAll(".segmented button");
+  const pictureModes = sheet.querySelectorAll(".pictures-mode button");
+  const paintPictureModes = () => {
+    for (const button of pictureModes) button.setAttribute("aria-checked", String(button.dataset.value === (settings.pictures ?? "sharp")));
+  };
+  paintPictureModes();
+  for (const button of pictureModes) {
+    button.addEventListener("click", async () => {
+      if (button.dataset.value === (settings.pictures ?? "sharp")) return;
+      settings.pictures = button.dataset.value;
+      paintPictureModes();
+      await invoke("set_settings", { settings }).catch(() => {});
+      // Off and Blurred remove what was kept before.
+      for (const bitmap of state.pictures.values()) bitmap.close();
+      state.pictures.clear();
+      await loadPictures();
+    });
+  }
+  const segments = sheet.querySelectorAll(".segmented:not(.pictures-mode) button");
   const paintSegments = () => {
     for (const button of segments) {
       button.setAttribute("aria-checked", String((button.dataset.value === "window") === settings.windowed));
@@ -974,29 +1084,9 @@ async function openSettings(opener) {
   wireShortcutsRows(sheet);
   const info = await invoke("app_info").catch(() => ({}));
   sheet.querySelector(".about").textContent = `Sunna ${info.version ?? ""} · protocol ${info.protocol ?? ""}`;
-  sheet.querySelector(".this-name").textContent = info.computer || "This computer";
-  const me = await invoke("this_computer").catch(() => null);
-  if (!me || !sheet.isConnected) return;
-  const sharing = sheet.querySelector(".this-sharing");
-  sharing.dataset.state = me.sharing;
-  sheet.querySelector(".this-sharing-text").textContent =
-    {
-      ready: `Sharing at ${me.address}`,
-      busy: `Sharing at ${me.address} · in a session`,
-      "wrong-key": "Sharing, but with a different key than the one below",
-      unknown: "Not on a Tailscale network",
-    }[me.sharing] ??
-    (info.platform === "linux"
-      ? "Not sharing. Run sunna-host setup to share it."
-      : "Not sharing. To share this Mac, run scripts/run.sh host.");
-  if (me.address && me.key) {
-    const link = `sunna://${me.address}?key=${me.key}`;
-    const row = sheet.querySelector(".link-row");
-    row.hidden = false;
-    row.querySelector(".link-text").textContent = `sunna://${me.address}?key=••••`;
-    row.querySelector(".copy-link").addEventListener("click", (event) => copy(link, event.currentTarget));
-    row.querySelector(".show-qr").addEventListener("click", (event) => openQrSheet(me, event.currentTarget));
-  }
+  if (sheet.isConnected) wireSharing(sheet, { invoke, listen, copy, toast,
+    qr: (link, opener) => openQrSheet({name: info.computer, link}, opener),
+  });
 }
 
 async function openQrSheet(machine, opener) {
@@ -1007,7 +1097,7 @@ async function openQrSheet(machine, opener) {
   done.addEventListener("click", () => closeSheet(sheet));
   done.focus();
   try {
-    const svg = await invoke("qr_code", { text: `sunna://${machine.address}?key=${machine.key}` });
+    const svg = await invoke("qr_code", machine.link ? { text: machine.link } : { id: machine.id });
     if (!sheet.isConnected || topSheet() !== sheet) return;
     const card = sheet.querySelector(".qr-card");
     card.innerHTML = svg;
@@ -1022,11 +1112,13 @@ async function openQrSheet(machine, opener) {
 // ───────────── Menu ─────────────
 
 let menuAnchor = null;
+let menuReturn = null;
 
 function openMenu(id, { x, y, anchor }) {
   const machine = byId(id);
   if (!machine || state.session) return;
   hideMenu();
+  menuReturn = document.activeElement;
   const ready = state.checks.get(id)?.state === "ready";
   const menu = $("menu");
   const item = (label, icon, shortcut, run, { disabled = false, danger = false } = {}) => {
@@ -1049,6 +1141,7 @@ function openMenu(id, { x, y, anchor }) {
   menu.replaceChildren(
     item("Connect", "i-arrow", "↵", () => connect(machine), { disabled: !ready }),
     item("Edit…", "i-edit", "⌘E", () => openMachineSheet({ machine, opener: tile })),
+    item("Update this computer…", "i-up", "", () => updates.showHost(machine, tile)),
     item("Copy Address", "i-copy", "", () => copy(machine.address)),
     item("Show QR Code", "i-qr", "", () => openQrSheet(machine, tile)),
     separator,
@@ -1075,10 +1168,39 @@ function openMenu(id, { x, y, anchor }) {
   menu.querySelector(".menu-item:not(:disabled)")?.focus({ preventScroll: true });
 }
 
+/** A plain menu of actions under a toolbar button. */
+function openItemsMenu(items, anchor) {
+  const menu = $("menu");
+  hideMenu();
+  menuReturn = anchor;
+  menu.replaceChildren();
+  for (const entry of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "menu-item";
+    button.setAttribute("role", "menuitem");
+    const label = document.createElement("span");
+    label.textContent = entry.label;
+    button.append(label);
+    button.addEventListener("click", () => { hideMenu(); entry.run(); });
+    menu.append(button);
+  }
+  menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${rect.bottom + 8}px`;
+  menu.classList.add("updates-menu");
+  menu.querySelector("button")?.focus({ preventScroll: true });
+}
+
 function hideMenu() {
   const menu = $("menu");
   if (menu.hidden) return;
+  const restore = menu.contains(document.activeElement);
   menu.hidden = true;
+  menu.classList.remove("updates-menu");
+  if (restore && menuReturn?.isConnected) menuReturn.focus({ preventScroll: true });
+  menuReturn = null;
   menuAnchor?.setAttribute("aria-expanded", "false");
   menuAnchor = null;
 }
@@ -1137,7 +1259,7 @@ async function copy(text, button = null) {
     toast("Couldn't copy. Select the text and press ⌘C.", "info");
     return;
   }
-  if (!button) {
+  if (!button?.querySelector("use")) {
     toast("Copied.", "good");
     return;
   }
@@ -1155,7 +1277,7 @@ async function copy(text, button = null) {
 // ───────────── Keyboard ─────────────
 
 function focusedMachine() {
-  const tile = document.activeElement?.closest?.(".tile[data-id]");
+  const tile = document.activeElement?.closest?.("[data-id]");
   return tile ? byId(tile.dataset.id) : null;
 }
 
@@ -1207,7 +1329,9 @@ document.addEventListener("keydown", (event) => {
   } else if (command && event.key.toLowerCase() === "r") {
     event.preventDefault();
     poll();
-  } else if (command && /^[1-9]$/.test(event.key)) {
+  } else if (command && !event.altKey && /^[1-5]$/.test(event.key)) {
+    event.preventDefault();setView(VIEWS[Number(event.key)-1]);
+  } else if (command && event.altKey && /^[1-9]$/.test(event.key)) {
     const machine = state.machines[Number(event.key) - 1];
     if (machine) {
       event.preventDefault();
@@ -1221,26 +1345,22 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     const machine = focusedMachine();
     confirmRemove(machine, tiles.get(machine.id));
-  } else if (event.key.startsWith("Arrow") && document.activeElement?.closest?.("#grid")) {
-    const hits = [...$("grid").querySelectorAll(".tile-hit")];
-    const index = hits.indexOf(document.activeElement);
-    if (index < 0) return;
-    const columns = getComputedStyle($("grid")).gridTemplateColumns.split(" ").length;
-    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns }[event.key];
-    const next = hits[index + step];
-    if (next) {
-      event.preventDefault();
-      next.focus();
-    }
+  } else if (views.keys(event)) {
+    event.preventDefault();
   } else if ((event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) && focusedMachine()) {
     event.preventDefault();
     const machine = focusedMachine();
-    openMenu(machine.id, { anchor: tiles.get(machine.id).querySelector(".tile-more") });
+    openMenu(machine.id, { anchor: tiles.get(machine.id).querySelector(".computer-more") });
   }
 });
 
 // ───────────── Start ─────────────
 
+$("view-button").addEventListener("click", () => {
+  const menu=$("menu");hideMenu();menuReturn=$("view-button");menu.replaceChildren();viewChoices(menu,true);menu.hidden=false;
+  const rect=$("view-button").getBoundingClientRect();menu.style.left=`${Math.min(rect.left,innerWidth-240)}px`;menu.style.top=`${rect.bottom+8}px`;
+  menu.querySelector('[aria-checked="true"]')?.focus();
+});
 $("add-button").addEventListener("click", (event) => openMachineSheet({ opener: event.currentTarget }));
 $("settings-button").addEventListener("click", (event) => openSettings(event.currentTarget));
 $("welcome-add").addEventListener("click", (event) => openMachineSheet({ opener: event.currentTarget }));
@@ -1266,10 +1386,12 @@ async function start() {
   // Linux draws its own title bar: no room to leave for traffic lights.
   document.documentElement.dataset.platform = info.platform ?? "";
   state.defaultKey = settings.key ?? "";
+  state.view = VIEWS.includes(settings.view) ? settings.view : "gallery";
   state.machines = machines;
   state.loaded = true;
+  updates.start();
   renderGrid();
-  setTimeout(() => $("grid").classList.add("settled"), 1600);
+  loadPictures();
   // Without Accessibility, ⌘Tab and friends stay on this Mac: say so once.
   if (info.platform === "macos" && !(await invoke("keyboard_access").catch(() => true))) {
     toast("⌘Tab, ⌘Space and other shortcuts will stay on this Mac.", "info", {

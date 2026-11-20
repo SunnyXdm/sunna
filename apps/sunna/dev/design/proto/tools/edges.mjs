@@ -1,0 +1,5 @@
+import {launch} from './cdp.mjs';
+import {writeFileSync} from 'node:fs';
+const root=new URL('../',import.meta.url).pathname;
+const {page,close}=await launch({width:820,height:560,port:9336});const results=[];
+try {for(const size of [[820,560],[900,600],[1280,800]])for(const submenu of ['keyboard','clipboard','video']){await page.send('Emulation.setDeviceMetricsOverride',{width:size[0],height:size[1],deviceScaleFactor:1,mobile:false});await page.goto('http://100.108.56.3:8790/desktop.html?view=menu&submenu='+submenu+'&still=1&test=0');const bounds=await page.eval(`(()=>{const r=document.querySelector('.submenu').getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right}})()`);results.push({size,submenu,bounds,ok:bounds.top>=12&&bounds.bottom<=size[1]&&bounds.left>=0&&bounds.right<=size[0]});}console.log(JSON.stringify(results));}finally{writeFileSync(root+'shots/edges.json',JSON.stringify({results,console:page.logs.filter(x=>/EXCEPTION|error:/.test(x))},null,2));close();}

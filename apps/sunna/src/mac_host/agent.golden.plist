@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>dev.sunna.host</string>
+<key>AssociatedBundleIdentifiers</key><array><string>dev.sunna.app</string></array>
+<key>ProgramArguments</key><array><string>/A &amp; B/Sunna</string><string>host</string><string>--agent</string></array>
+<key>LimitLoadToSessionType</key><string>Aqua</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<key>StandardErrorPath</key><string>/Logs/&lt;host&gt;</string>
+</dict></plist>

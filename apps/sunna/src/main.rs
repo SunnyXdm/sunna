@@ -7,7 +7,14 @@
 
 mod discovery;
 mod machines;
+#[cfg(target_os = "macos")]
+mod mac_host;
+#[cfg(any(test, target_os = "macos"))]
+#[path = "mac_host/model.rs"]
+mod mac_host_model;
 mod settings;
+mod sharing;
+mod update;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -27,15 +34,44 @@ struct Session {
 }
 
 fn main() {
+    update::publication_probe();
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("sunna {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("--reconcile-host") {
+        if let Err(e) = mac_host::agent::validate_update() {
+            eprintln!("Sunna host update: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("host") {
+        if let Err(error) = mac_host::run() {
+            if std::env::args().any(|a| a == "--agent") { mac_host::record_start_error(&error); }
+            eprintln!("Sunna host: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some("viewer") {
         std::process::exit(run_viewer(args.collect()));
     }
     tauri::Builder::default()
         .manage(Session::default())
+        .setup(|_| { update::startup(); Ok(()) })
         .invoke_handler(tauri::generate_handler![
+            update::update_status,
+            update::update_check,
+            update::update_policy,
+            update::update_restart,
+            update::host_update,
             app_info,
             list_machines,
+            machine_picture,
             machine_statuses,
             check_machine,
             add_machine,
@@ -44,11 +80,16 @@ fn main() {
             reorder_machines,
             scan_tailscale,
             this_computer,
+            sharing::sharing_status,
+            sharing::sharing_set,
+            sharing::sharing_open_permission,
+            open_network_security,
             qr_code,
             connect,
             cancel_connect,
             get_settings,
             set_settings,
+            set_key,
             keyboard_access,
             allow_keyboard_access,
             reset_keyboard_access
@@ -72,6 +113,7 @@ fn run_viewer(args: Vec<String>) -> i32 {
     };
     let result = sunna_viewer::run(sunna_viewer::ViewerArgs {
         addr,
+        trust: sunna_client::auth::Trust { upgraded: args.iter().any(|s| s == "--upgraded"), identity: value("--identity"), record: value("--record"), allow_older: args.iter().any(|a| a == "--allow-older") },
         server_name: "sunna".into(),
         token: std::env::var("SUNNA_TOKEN").unwrap_or_default(),
         host_name: value("--name").unwrap_or_else(|| addr.ip().to_string()),
@@ -87,6 +129,11 @@ fn run_viewer(args: Vec<String>) -> i32 {
             1
         }
     }
+}
+
+#[tauri::command]
+fn machine_picture(id: String) -> Option<Vec<u8>> {
+    machines::picture(&id)
 }
 
 #[tauri::command]
@@ -110,8 +157,13 @@ async fn machine_statuses() -> HashMap<String, machines::Check> {
 }
 
 #[tauri::command]
-async fn check_machine(address: String, key: String) -> machines::Check {
-    machines::check(&address, &key).await
+async fn check_machine(address: String, key: String, identity: Option<String>, record: Option<String>) -> machines::Check {
+    let mut trust = record.as_deref().and_then(machines::get)
+        .filter(|m| m.address == address && m.key == key).map(|m| m.trust()).unwrap_or_default();
+    if identity.is_some() && identity != trust.identity {
+        trust = sunna_client::auth::Trust { identity, ..Default::default() };
+    }
+    sunna_client::reach::check_with(&address, &key, &trust).await
 }
 
 #[tauri::command]
@@ -167,7 +219,27 @@ async fn this_computer() -> ThisComputer {
 }
 
 #[tauri::command]
-fn qr_code(text: String) -> Result<String, String> {
+fn open_network_security() -> Result<(), String> {
+    let url = "https://github.com/SunnyXdm/sunna/blob/main/docs/security.md";
+    #[cfg(target_os = "linux")]
+    let result = Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    result.map(|_| ()).map_err(|_| "Couldn’t open the security guide.".into())
+}
+
+#[tauri::command]
+fn qr_code(text: Option<String>, id: Option<String>) -> Result<String, String> {
+    let text = if let Some(id) = id {
+        let machine = machines::get(&id).ok_or("That computer is no longer in your list.")?;
+        let pin = machine.trust().pin().map_err(|e| e.to_string())?;
+        if machine.upgraded && pin.is_none() { return Err("Verify this computer before sharing its link.".into()); }
+        sunna_client::reach::sharing_link(&machine.address, &machine.key, pin.as_deref())
+    } else {
+        text.ok_or("Missing sharing link.")?
+    };
     let code = qrcode::QrCode::new(text.as_bytes()).map_err(|error| error.to_string())?;
     Ok(code
         .render::<qrcode::render::svg::Color>()
@@ -184,8 +256,19 @@ fn get_settings() -> settings::Settings {
 }
 
 #[tauri::command]
+fn set_key(key: String) -> Result<(), String> {
+    settings::write_token(key.trim())
+}
+
+#[tauri::command]
 fn set_settings(settings: settings::Settings) -> Result<(), String> {
-    settings::save(&settings)
+    let before = settings::load().pictures;
+    settings::save(&settings)?;
+    // Turning pictures off, or down to a blur, removes what was kept before.
+    if settings.pictures != before && settings.pictures != settings::Pictures::Sharp {
+        machines::clear_pictures();
+    }
+    Ok(())
 }
 
 /// Whether ⌘Tab, ⌘Space and other system shortcuts can go to the other
@@ -273,13 +356,30 @@ async fn connect(app: AppHandle, session: State<'_, Session>, id: String) -> Res
         "--name".into(),
         machine.name.clone(),
     ];
+    args.extend(["--record".to_string(), machine.id.clone()]);
+    if machine.upgraded { args.push("--upgraded".into()); }
+    if let Some(identity) = &machine.identity {
+        args.extend(["--identity".to_string(), identity.clone()]);
+    } else if machine.allow_older {
+        args.push("--allow-older".into());
+    }
     // Lets the session menu offer the host's own shortcuts.
     if !machine.os.is_empty() {
         args.extend(["--os".to_string(), machine.os.clone()]);
     }
-    let spawned = Command::new(exe)
+    let pictures = settings::load().pictures;
+    let mut command = Command::new(exe);
+    command.envs(settings::viewer_env()).env_remove("SUNNA_PICTURE_PATH");
+    if pictures != settings::Pictures::Off {
+        command
+            .env("SUNNA_PICTURE_PATH", machines::picture_path(&id))
+            .env(
+                "SUNNA_PICTURE_MODE",
+                if pictures == settings::Pictures::Sharp { "sharp" } else { "blurred" },
+            );
+    }
+    let spawned = command
         .args(&args)
-        .envs(settings::viewer_env())
         // This machine's key, over sunna.env's.
         .env("SUNNA_TOKEN", &machine.key)
         // How the host lists this Mac while it's connected.
