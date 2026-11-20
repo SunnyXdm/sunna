@@ -5106,7 +5106,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sunna"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5140,7 +5140,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-android"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "jni 0.21.1",
@@ -5158,7 +5158,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-audio"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5171,7 +5171,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-capture"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5191,7 +5191,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5211,7 +5211,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-client"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5232,7 +5232,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-clipboard"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "objc2 0.6.4",
@@ -5248,7 +5248,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-codec"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5267,7 +5267,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-host"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5288,7 +5288,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-input"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "core-foundation 0.10.1",
@@ -5301,7 +5301,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-portal"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5316,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-proto"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "postcard",
@@ -5326,7 +5326,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-telemetry"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "tracing",
@@ -5336,7 +5336,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-transport"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5356,7 +5356,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-update"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -5375,7 +5375,7 @@ dependencies = [
 
 [[package]]
 name = "sunna-viewer"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5407,7 +5407,7 @@ dependencies = [
 
 [[package]]
 name = "sunnad"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
