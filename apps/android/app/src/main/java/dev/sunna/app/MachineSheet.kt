@@ -18,6 +18,30 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import org.json.JSONObject
 
+/** Token captured when an address/key check is scheduled, before its debounce. */
+internal class DraftChecks {
+    private var sequence = 0L
+
+    private var fields: Pair<String, String>? = null
+    var result: Check? = null
+        private set
+
+    fun schedule(address: String, key: String): Long {
+        val next = address to key
+        if (fields != next) result = null
+        fields = next
+        return ++sequence
+    }
+
+    fun accept(ticket: Long, check: Check?): Boolean {
+        if (ticket != sequence) return false
+        result = check
+        return true
+    }
+
+    fun cancel() { sequence++ }
+}
+
 /**
  * Add a computer, or edit one: its address (or the link it printed), its key
  * and a name. The preview lights up as soon as the computer answers, and says
@@ -42,12 +66,24 @@ class MachineSheet(
     private val name = Field(context, "Name (optional)")
     private val message = context.text(14f, Palette.TEXT_2)
     private val handler = Handler(Looper.getMainLooper())
-    private var check: Check? = null
-    /** The address and key the last check was for. */
-    private var checked: Pair<String, String>? = null
-    private var sequence = 0
+    private val probes = DraftChecks()
+    private val check get() = probes.result
     private var revealed = false
     private var filling = false
+    private var imported: Pair<String, String>? = null
+    private val savedIdentity = machine?.identity ?: machine?.let { Native.savedPin(it.id).ifEmpty { app.checks[it.id]?.identity } }
+    private val identity get() = imported?.second ?: savedIdentity ?: check?.identity
+    private val older = android.widget.Switch(context)
+    private val olderHint = context.text(13.5f, Palette.TEXT_2)
+    private val identityLine = context.text(13.5f, Palette.TEXT_2)
+
+    private fun showTrust() {
+        older.visibility = if (machine?.canAllowOlder(identity) == true) View.VISIBLE else View.GONE
+        olderHint.visibility = older.visibility
+        identityLine.visibility = if (machine != null && identity != null) View.VISIBLE else View.GONE
+        identityLine.text = "Identity · " + identity.orEmpty().take(12)
+        if (identity != null) older.isChecked = false
+    }
 
     init {
         val body = LinearLayout(context).apply {
@@ -120,6 +156,13 @@ class MachineSheet(
         }
         key.addView(eye, LinearLayout.LayoutParams(dpi(40f), dpi(40f)))
         fields.addView(key)
+        older.text = "Allow this older computer"
+        older.isChecked = machine?.allowOlder == true
+        olderHint.text = "Even background checks send your full key to whoever answers as an older computer."
+        fields.addView(older)
+        fields.addView(olderHint)
+        fields.addView(identityLine)
+        showTrust()
         fields.addView(label("Name"))
         fields.addView(name)
         name.input.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
@@ -163,8 +206,7 @@ class MachineSheet(
             address.input.setText(machine.address)
             key.input.setText(machine.key)
             name.input.setText(machine.name)
-            check = app.checks[machine.id]
-            checked = machine.address to machine.key
+            probes.accept(probes.schedule(machine.address, machine.key), app.checks[machine.id])
         }
         link?.let { fill(it) }
         val watcher = object : TextWatcher {
@@ -205,7 +247,8 @@ class MachineSheet(
 
     /** A pasted or opened `sunna://` link: its address and key go where they belong. */
     private fun fill(text: String) {
-        val (host, secret) = splitLink(text) ?: return
+        val (host, secret, pin) = splitLink(text) ?: return
+        imported = pin?.let { host to it }
         filling = true
         address.input.setText(host)
         address.input.setSelection(host.length)
@@ -240,26 +283,29 @@ class MachineSheet(
         handler.removeCallbacksAndMessages(CHECK)
         val where = address.input.text.toString().trim()
         val secret = key.input.text.toString().trim()
+        val mine = probes.schedule(where, secret)
+        if (imported?.first != where) imported = null
+        paintPreview()
+        showTrust()
         val run = Runnable {
-            val mine = ++sequence
             if (where.isEmpty()) {
-                check = Check("idle")
-                checked = null
+                probes.accept(mine, Check("idle"))
                 paintPreview()
                 return@Runnable
             }
             // A computer we know the state of keeps it until the answer comes.
-            val known = immediately && check != null && checked == where to secret
+            val known = immediately && check != null
             if (!known) {
-                check = Check.CHECKING
+                probes.accept(mine, Check.CHECKING)
                 paintPreview()
             }
+            val record = machine?.takeIf { it.address == where && it.key == secret }
+            val policy = policyJson(record?.takeIf { identity == it.identity }?.id, identity, record?.allowOlder == true, machine?.upgraded == true)
             app.background {
-                val result = Check.parse(Native.check(where, secret))
+                val result = Check.parse(Native.check(where, secret, policy))
                 handler.post {
-                    if (mine != sequence || !isOpen) return@post
-                    check = result
-                    checked = where to secret
+                    if (!isOpen || !probes.accept(mine, result)) return@post
+                    showTrust()
                     paintPreview()
                 }
             }
@@ -310,8 +356,12 @@ class MachineSheet(
             say("The key can't contain line breaks.", true)
             return
         }
-        val about = check?.takeIf { checked == where to secret && it.state != "checking" }
-        val draft = Draft(name.input.text.toString(), where, secret, about)
+        val about = check?.takeIf { it.state != "checking" && it.state != "idle" }
+        if (identity != null && !Regex("[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]").matches(identity!!)) {
+            say("Invalid computer identity.", true)
+            return
+        }
+        val draft = Draft(name.input.text.toString(), where, secret, about, identity, older.isChecked, imported != null)
         val saved = if (machine == null) app.store.add(draft) else app.store.update(machine.id, draft)
         if (saved == null) {
             say(if (machine != null && app.store.list().none { it.id == machine.id }) "That computer is no longer in your list." else "Couldn't save it: the phone's storage may be full.", true)
@@ -342,7 +392,7 @@ class MachineSheet(
 
     override fun close() {
         handler.removeCallbacksAndMessages(null)
-        sequence++
+        probes.cancel()
         super.close()
     }
 

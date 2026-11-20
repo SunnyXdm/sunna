@@ -11,25 +11,32 @@ object Native {
     /** Once, before anything else: where this phone's Sunna state lives. */
     @JvmStatic external fun init(filesDir: String)
 
+    @JvmStatic external fun checkUpdate(): String
+    @JvmStatic external fun downloadUpdate(directory: String, version: String, digest: String): String
+
     /** The wire protocol's version, for About. */
     @JvmStatic external fun protocol(): Int
 
+    @JvmStatic external fun savedPin(id: String): String
+    @JvmStatic external fun saveRecords(policy: String, records: String, fromLink: Boolean): Boolean
+
     /** Is a host there and does the key fit? JSON (`reach::Check`); blocks. */
-    @JvmStatic external fun check(address: String, key: String): String
+    @JvmStatic external fun check(address: String, key: String, policy: String): String
 
     /** Several at once: a JSON array, in order; blocks. */
-    @JvmStatic external fun checkAll(addresses: Array<String>, keys: Array<String>): String
+    @JvmStatic external fun checkAll(addresses: Array<String>, keys: Array<String>, policies: Array<String>): String
 
     /** JSON {"host", "port"}, or {"error"} in words. */
     @JvmStatic external fun parseAddress(address: String): String
 
     /** Start a session; it connects in the background. Returns its handle. */
-    @JvmStatic external fun connect(address: String, key: String, name: String, hostOs: String, codec: String, maxWidth: Int, maxHeight: Int, bitrateMbps: Int, fps: Int, audio: Boolean, clipboard: Boolean): Long
+    @JvmStatic external fun connect(address: String, key: String, name: String, hostOs: String, codec: String, maxWidth: Int, maxHeight: Int, bitrateMbps: Int, fps: Int, audio: Boolean, clipboard: Boolean, policy: String): Long
 
     /** The surface the decoder draws sessions on; null when it goes away. */
     @JvmStatic external fun setSurface(surface: Surface?)
 
     /** Moves on whenever the status changes. */
+    @JvmStatic external fun generation(handle: Long): Long
     @JvmStatic external fun changes(handle: Long): Long
 
     /** JSON: phase, why it ended, the stream and its numbers. */

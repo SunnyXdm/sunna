@@ -29,6 +29,7 @@ class MainActivity : Activity(), App {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Native.init(filesDir.absolutePath)
+        Updates.check(this)
         Palette.load(this)
         store = MachineStore.get(this)
         prefs = Prefs(this)
@@ -66,6 +67,7 @@ class MainActivity : Activity(), App {
 
     override fun onResume() {
         super.onResume()
+        Updates.resume(this)
         if (session == null) home.resume() else session?.resume()
     }
 

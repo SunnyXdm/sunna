@@ -11,6 +11,7 @@ name = "sunna_android"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+sunna-update.workspace = true
 anyhow.workspace = true
 jni = "0.21"
 serde_json.workspace = true

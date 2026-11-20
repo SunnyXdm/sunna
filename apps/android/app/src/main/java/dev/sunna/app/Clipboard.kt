@@ -22,7 +22,7 @@ import kotlin.math.max
  * front read the clipboard, so a copy made in another app is picked up when
  * you come back to Sunna; only copies made after the session starts are sent.
  */
-class PhoneClipboard(private val context: Context, private val app: App) {
+class PhoneClipboard(private val context: Context, private val app: App, private val current: () -> Boolean) {
     private val manager = context.getSystemService(ClipboardManager::class.java)
     /** When the clip we last saw (or put there ourselves) was made. */
     private var seen = 0L
@@ -53,7 +53,7 @@ class PhoneClipboard(private val context: Context, private val app: App) {
     /** Something new on the phone's clipboard: send it (only new clips are read,
      *  so Android's "pasted from your clipboard" note shows only for those). */
     fun pickUp() {
-        if (!sharing) return
+        if (!current() || !sharing) return
         val description = manager?.primaryClipDescription ?: return
         if (description.timestamp == seen) return
         seen = description.timestamp
@@ -63,7 +63,7 @@ class PhoneClipboard(private val context: Context, private val app: App) {
         if (uri != null && description.hasMimeType("image/*")) {
             app.background {
                 val png = png(uri) ?: return@background
-                main.post { if (sharing && generation == copy) Native.clipboardCopied(1, png) }
+                main.post { if (sharing && current() && generation == copy) Native.clipboardCopied(1, png) }
             }
             return
         }
@@ -73,7 +73,7 @@ class PhoneClipboard(private val context: Context, private val app: App) {
 
     /** Once a frame: what the host copied, onto the phone's clipboard. */
     fun deliver() {
-        if (!sharing) return
+        if (!current() || !sharing) return
         val count = Native.clipboardRemoteCount()
         if (count == delivered) return
         delivered = count
@@ -88,7 +88,7 @@ class PhoneClipboard(private val context: Context, private val app: App) {
                 app.background {
                     val uri = runCatching { ClipboardFiles.store(context, bytes, 1) }.getOrNull() ?: return@background
                     main.post {
-                        if (sharing && generation == copy && delivered == count) {
+                        if (sharing && current() && generation == copy && delivered == count) {
                             runCatching { ClipData.newUri(context.contentResolver, "Image", uri) }.getOrNull()?.let(::put)
                         }
                     }

@@ -478,6 +478,7 @@ class HomeView(context: Context, private val app: App) : FrameLayout(context) {
         if (machines.isEmpty()) return "None added yet"
         if (!polled) return "Looking for your computers…"
         val ready = machines.count { app.checks[it.id]?.state == "ready" }
+        if (machines.size == 1 && app.checks[machines[0].id]?.unverified == true) return "${machines[0].name} · Not fully verified"
         if (machines.size == 1) return if (ready == 1) "${machines[0].name} is ready" else "${machines[0].name} isn't available"
         if (ready == machines.size) return "All ${machines.size} ready"
         if (ready == 0) return "None of ${machines.size} available"
@@ -528,6 +529,7 @@ class HomeView(context: Context, private val app: App) : FrameLayout(context) {
         val tile = tiles[id] ?: return
         when (check?.state) {
             "ready" -> app.connect(machine, tile.screen)
+            "identity-changed" -> app.notice.show(check.detail)
             "wrong-key" -> app.editMachine(machine, focusKey = true)
             "busy" -> app.notice.show("${check.viewer.ifEmpty { "Someone" }} is connected to ${machine.name} right now.")
             "update-needed" -> app.notice.show(check.detail.ifEmpty { "${machine.name} runs a different version of Sunna." })
@@ -550,7 +552,7 @@ class HomeView(context: Context, private val app: App) : FrameLayout(context) {
         polling = true
         app.background {
             val result = runCatching {
-                JSONArray(Native.checkAll(machines.map { it.address }.toTypedArray(), machines.map { it.key }.toTypedArray()))
+                JSONArray(Native.checkAll(machines.map { it.address }.toTypedArray(), machines.map { it.key }.toTypedArray(), machines.map { it.policy() }.toTypedArray()))
             }.getOrNull()
             handler.post {
                 polling = false
@@ -563,11 +565,11 @@ class HomeView(context: Context, private val app: App) : FrameLayout(context) {
                 for (i in 0 until min(result.length(), machines.size)) {
                     val asked = machines[i]
                     val current = now[asked.id] ?: continue
-                    if (current.address != asked.address || current.key != asked.key) continue
+                    if (current.address != asked.address || current.key != asked.key || current.identity != asked.identity || current.allowOlder != asked.allowOlder) continue
                     learned[asked.id] = Check.from(result.getJSONObject(i))
                 }
                 app.checks.putAll(learned)
-                app.background { app.store.learn(learned) }
+                app.background { app.store.learn(machines, learned) }
                 polled = true
                 render(stagger = first)
             }

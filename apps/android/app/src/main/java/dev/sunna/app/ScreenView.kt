@@ -345,15 +345,15 @@ class ScreenView(context: Context) : View(context) {
         val cw = inner.width() / 100
         val ch = inner.height() / 100
         if (state == "checking") drawSweep(canvas, now)
-        if (locked && wall > 0f) {
+        if (state == "identity-changed" || locked && wall > 0f) {
             // A locked screen (wrong key), or one waiting for an update.
-            val glyph = if (state == "wrong-key") lock else up
+            val glyph = if (state == "update-needed") up else lock
             val size = 13 * cw
             val pill = state == "wrong-key"
             val total = size + if (pill) 5 * ch + 8 * ch else 0f
             val top = inner.centerY() - total / 2
             glyph?.setBounds((inner.centerX() - size / 2).toInt(), top.toInt(), (inner.centerX() + size / 2).toInt(), (top + size).toInt())
-            glyph?.alpha = (wall * 255).toInt()
+            glyph?.alpha = if (state == "identity-changed") 255 else (wall * 255).toInt()
             glyph?.draw(canvas)
             if (pill) {
                 box.set(inner.centerX() - 17 * cw, top + size + 5 * ch, inner.centerX() + 17 * cw, top + size + 13 * ch)

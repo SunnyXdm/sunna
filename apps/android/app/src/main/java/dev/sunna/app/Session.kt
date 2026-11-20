@@ -59,6 +59,12 @@ object Decoders {
     }
 }
 
+internal fun sessionLabel(showStats: Boolean, stats: String, unverified: Boolean): String? = when {
+    showStats -> stats
+    unverified -> "Not fully verified"
+    else -> null
+}
+
 /**
  * A session: the host's screen, full screen, with the pointer drawn where it
  * is, fingers and keys going to the host, and small buttons at the top: the
@@ -75,6 +81,7 @@ class SessionView(
     private val onFinished: (SessionView, String?) -> Unit,
 ) : FrameLayout(activity), SurfaceHolder.Callback, Choreographer.FrameCallback, Touch.Remote, KeySink {
     private val surface = SurfaceView(activity)
+    private val handoffCover = View(activity)
     private val viewport = Viewport()
     private val pointer = PointerView(activity, viewport)
     private val keyInput = KeyInput(activity, this)
@@ -105,7 +112,9 @@ class SessionView(
     private var status = JSONObject()
     private var skippedNoted = false
     private var menu: SessionMenu? = null
-    private val clipboard = PhoneClipboard(activity, app)
+    private val clipboard = PhoneClipboard(activity, app) {
+        session != 0L && Native.generation(session) == status.optLong("generation")
+    }
     /** Delivers results even after this view is gone (a View's own post
      *  waits for it to come back, which it won't). */
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
@@ -124,6 +133,9 @@ class SessionView(
         // first keyframe; it takes its place when the screen has grown.
         addView(surface, LayoutParams(1, 1))
         surface.holder.addCallback(this)
+        handoffCover.setBackgroundColor(Color.BLACK)
+        handoffCover.visibility = View.GONE
+        addView(handoffCover, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(pointer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(keyInput, LayoutParams(1, 1))
         stats.apply {
@@ -219,7 +231,7 @@ class SessionView(
             val (w, h) = requestedSize()
             // The clipboard channel always opens; not sharing pauses it, so it
             // can be turned on during the session.
-            val handle = Native.connect(machine.address, machine.key, name, check.os, codec, w, h, app.prefs.bitrateMbps, app.prefs.fps, sound, true)
+            val handle = Native.connect(machine.address, machine.key, name, check.os, codec, w, h, app.prefs.bitrateMbps, app.prefs.fps, sound, true, machine.policy())
             main.post {
                 if (ended) {
                     Native.close(handle)
@@ -301,7 +313,7 @@ class SessionView(
             chrome.visibility = View.VISIBLE
             chrome.animate().alpha(1f).setDuration(300).start()
             dimChromeLater()
-            stats.visibility = if (app.prefs.stats) View.VISIBLE else View.GONE
+            paintStats()
             requestFocus()
             app.askForNotifications()
             if (!activity.getSharedPreferences("sunna", 0).getBoolean("hinted", false)) {
@@ -337,6 +349,15 @@ class SessionView(
     }
 
     private fun refresh(next: JSONObject) {
+        if (next.optLong("generation") != status.optLong("generation")) {
+            clipboard.stop()
+            releaseAll()
+            pointer.setShape(null)
+            if (app.prefs.clipboard) clipboard.start()
+        }
+        if (next.optLong("generation") > 0) {
+            handoffCover.visibility = if (next.optString("phase") == "streaming") View.GONE else View.VISIBLE
+        }
         status = next
         val w = next.optInt("width")
         val h = next.optInt("height")
@@ -371,11 +392,17 @@ class SessionView(
             }
             "ended" -> if (!ended && !leaving) finish(next.optString("reason"))
         }
-        if (stats.visibility == View.VISIBLE) stats.text = statsLine()
+        if (revealed && !ended) paintStats()
         menu?.update(next)
     }
 
     /** The session's numbers, worded as the desktop viewers word them. */
+    private fun paintStats() {
+        val label = sessionLabel(app.prefs.stats, statsLine(), status.optBoolean("unverified"))
+        stats.visibility = if (label == null) View.GONE else View.VISIBLE
+        stats.text = label
+    }
+
     private fun statsLine(): String = status.optString("stats").ifEmpty { "connecting…" }
 
     // ---- Where things go -----------------------------------------------------------------
@@ -770,8 +797,7 @@ class SessionView(
 
     fun showStats(show: Boolean) {
         app.prefs.stats = show
-        stats.visibility = if (show) View.VISIBLE else View.GONE
-        stats.text = statsLine()
+        paintStats()
     }
 
     fun setTouchMode(mode: String) {

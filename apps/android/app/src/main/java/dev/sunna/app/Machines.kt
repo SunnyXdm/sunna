@@ -23,9 +23,17 @@ data class Machine(
     val added: Long = 0,
     val lastSeen: Long = 0,
     val lastConnected: Long = 0,
+    val identity: String? = null,
+    val allowOlder: Boolean = false,
+    val upgraded: Boolean = false,
 ) {
+    fun canAllowOlder(pin: String? = identity) = !upgraded && identity == null && pin == null
+
+    fun policy() = policyJson(id, identity, allowOlder, upgraded)
+
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("address", address).put("key", key)
+        .put("identity", identity).put("upgraded", upgraded || identity != null).put("allow_older", allowOlder && canAllowOlder())
         .put("os", os).put("device", device).put("model", model)
         .put("width", width).put("height", height)
         .put("added", added).put("last_seen", lastSeen).put("last_connected", lastConnected)
@@ -44,6 +52,9 @@ data class Machine(
             added = json.optLong("added"),
             lastSeen = json.optLong("last_seen"),
             lastConnected = json.optLong("last_connected"),
+            identity = if (json.isNull("identity")) null else json.optString("identity").ifEmpty { null },
+            allowOlder = json.optBoolean("allow_older"),
+            upgraded = json.optBoolean("upgraded"),
         )
     }
 }
@@ -62,6 +73,8 @@ data class Check(
     val detail: String = "",
     /** When busy: who's connected, if the host says. */
     val viewer: String = "",
+    val identity: String? = null,
+    val unverified: Boolean = false,
 ) {
     val lit: Boolean get() = state in LIT
 
@@ -81,6 +94,8 @@ data class Check(
             rttMs = if (json.isNull("rtt_ms")) null else json.optDouble("rtt_ms"),
             detail = json.optString("detail"),
             viewer = json.optString("viewer"),
+            identity = if (json.isNull("identity")) null else json.getString("identity"),
+            unverified = json.optBoolean("unverified"),
         )
 
         fun parse(text: String): Check = runCatching { from(JSONObject(text)) }.getOrDefault(Check("unreachable"))
@@ -88,7 +103,7 @@ data class Check(
 }
 
 /** What the add and edit sheets save. */
-data class Draft(val name: String, val address: String, val key: String, val about: Check?)
+data class Draft(val name: String, val address: String, val key: String, val about: Check?, val identity: String? = null, val allowOlder: Boolean = false, val fromLink: Boolean = false)
 
 /** The host part of an address as typed: the name a computer gets when the
  *  host hasn't told us its own. */
@@ -98,13 +113,23 @@ fun hostOf(address: String): String {
     return if (text.count { it == ':' } == 1) text.substringBefore(':') else text
 }
 
-/** A `sunna://host?key=...` link, split into its address and key. */
-fun splitLink(text: String): Pair<String, String>? {
+fun policyJson(id: String?, pin: String?, allow: Boolean, upgraded: Boolean = false): String = JSONObject()
+    .put("record", id).put("identity", pin).put("upgraded", upgraded).put("allow_older", !upgraded && pin == null && allow).toString()
+
+/** Read the address, key and optional public identity from a sharing link. */
+fun splitLink(text: String): Triple<String, String, String?>? {
     val trimmed = text.trim()
     if (!trimmed.startsWith("sunna://")) return null
-    val key = Regex("""[?&]key=([^&#\s]*)""").find(trimmed)?.groupValues?.get(1) ?: ""
     val address = trimmed.removePrefix("sunna://").split('?', '#').first().trimEnd('/')
-    return address to android.net.Uri.decode(key)
+    val fields = runCatching {
+        trimmed.substringBefore('#').substringAfter('?', "").split('&').map { param ->
+            java.net.URLDecoder.decode(param.substringBefore('='), "UTF-8") to
+                java.net.URLDecoder.decode(param.substringAfter('=', ""), "UTF-8")
+        }
+    }.getOrElse { return Triple(address, "", "") }
+    val pins = fields.filter { it.first == "id" }
+    val pin = if (pins.size > 1) "" else pins.firstOrNull()?.second
+    return Triple(address, fields.firstOrNull { it.first == "key" }?.second.orEmpty(), pin)
 }
 
 private val DEVICES = mapOf("laptop" to "Laptop", "desktop" to "Desktop", "vm" to "VM", "server" to "Server")
@@ -132,11 +157,12 @@ private fun ago(seconds: Long): String {
 }
 
 /** A computer's status line, in the desktop app's words. */
-fun describe(machine: Machine?, check: Check?): String = when (check?.state ?: "checking") {
+fun describe(machine: Machine?, check: Check?): String = if (check?.unverified == true && (check.state == "ready" || check.state == "busy")) "Not fully verified" else when (check?.state ?: "checking") {
     "idle" -> "Enter its address"
     "checking" -> "Looking…"
     "ready" -> check?.rttMs?.let { "Ready · ${ms(it)}" } ?: "Ready"
     "busy" -> check?.viewer?.ifEmpty { null }?.let { "In use · $it" } ?: "In use"
+    "identity-changed" -> "Identity changed"
     "wrong-key" -> "Key doesn't match"
     "update-needed" -> "Needs an update"
     "not-found" -> "Address not found"
@@ -147,7 +173,7 @@ fun describe(machine: Machine?, check: Check?): String = when (check?.state ?: "
 fun statusColor(state: String): Int = when (state) {
     "ready" -> Palette.READY
     "busy", "update-needed" -> Palette.BUSY
-    "wrong-key" -> Palette.DANGER
+    "identity-changed", "wrong-key" -> Palette.DANGER
     else -> Palette.TEXT_3
 }
 
@@ -180,12 +206,18 @@ class MachineStore private constructor(context: Context) {
     /** Write the list, then swap it in, so a crash can't leave half a file.
      *  False (and nothing changed) if the phone couldn't store it. */
     @Synchronized
-    private fun save(machines: List<Machine>): Boolean {
+    private fun save(machines: List<Machine>, edited: Machine? = null, fromLink: Boolean = false): Boolean {
         val array = JSONArray()
         machines.forEach { array.put(it.toJson()) }
+        val records = JSONObject().put("machines", array).toString(2)
+        if (edited != null) {
+            if (!Native.saveRecords(edited.policy(), records, fromLink)) return false
+            cached = machines
+            return true
+        }
         val temporary = File(file.parentFile, "machines.json.tmp")
         val saved = runCatching {
-            temporary.writeText(JSONObject().put("machines", array).toString(2))
+            temporary.writeText(records)
             temporary.renameTo(file)
         }.getOrDefault(false)
         if (saved) cached = machines
@@ -206,6 +238,9 @@ class MachineStore private constructor(context: Context) {
     private fun learn(machine: Machine, check: Check?): Machine {
         if (check == null) return machine
         return machine.copy(
+            upgraded = machine.upgraded || check.identity != null,
+            identity = machine.identity ?: check.identity,
+            allowOlder = machine.allowOlder && machine.identity == null && check.identity == null,
             os = check.os.ifEmpty { machine.os },
             device = check.device.ifEmpty { machine.device },
             model = check.model.ifEmpty { machine.model },
@@ -217,21 +252,19 @@ class MachineStore private constructor(context: Context) {
 
     @Synchronized
     fun add(draft: Draft): Machine? {
-        val machine = learn(Machine(newId(), nameFor(draft), draft.address.trim(), draft.key.trim(), added = now()), draft.about)
-        return machine.takeIf { save(list() + it) }
+        if (draft.fromLink && draft.identity != null) list().firstOrNull { it.address == draft.address.trim() }?.let { return update(it.id, draft) }
+        val machine = learn(Machine(newId(), nameFor(draft), draft.address.trim(), draft.key.trim(), identity = draft.identity, added = now()), draft.about)
+        return machine.takeIf { save(list() + it, it, draft.fromLink) }
     }
 
     @Synchronized
     fun update(id: String, draft: Draft): Machine? {
-        var updated: Machine? = null
-        val saved = save(list().map { machine ->
-            if (machine.id != id) return@map machine
-            val moved = machine.address != draft.address.trim()
-            // A different address may be a different computer.
-            val base = if (moved) machine.copy(os = "", device = "", model = "", width = 0, height = 0, lastSeen = 0) else machine
-            learn(base.copy(name = nameFor(draft), address = draft.address.trim(), key = draft.key.trim()), draft.about).also { updated = it }
-        })
-        return updated?.takeIf { saved }
+        val prior = list().find { it.id == id } ?: return null
+        val moved = prior.address != draft.address.trim()
+        // A different address may be a different computer.
+        val base = if (moved) prior.copy(os = "", device = "", model = "", width = 0, height = 0, lastSeen = 0) else prior
+        val updated = learn(base.copy(identity = draft.identity ?: base.identity, allowOlder = !moved && draft.identity == null && base.identity == null && draft.allowOlder, name = nameFor(draft), address = draft.address.trim(), key = draft.key.trim()), draft.about)
+        return updated.takeIf { save(list().map { if (it.id == id) updated else it }, updated, draft.fromLink) }
     }
 
     @Synchronized
@@ -246,9 +279,15 @@ class MachineStore private constructor(context: Context) {
 
     /** Keep what the computers said about themselves. */
     @Synchronized
-    fun learn(checks: Map<String, Check>) {
+    fun learn(asked: List<Machine>, checks: Map<String, Check>) {
         val machines = list()
-        val learned = machines.map { learn(it, checks[it.id]) }
+        val snapshots = asked.associateBy { it.id }
+        val learned = machines.map { current ->
+            val old = snapshots[current.id]
+            if (old == null || old.address != current.address || old.key != current.key ||
+                old.identity != current.identity || old.allowOlder != current.allowOlder) current
+            else learn(current, checks[current.id])
+        }
         // Only when something a tile shows changed, not every round.
         if (learned.zip(machines).any { (a, b) -> a.copy(lastSeen = 0) != b.copy(lastSeen = 0) || (a.lastSeen - b.lastSeen) > 600 }) save(learned)
     }

@@ -74,13 +74,14 @@ enum Command {
 struct Session {
     host_is_mac: bool,
     shortcuts: &'static [sunna_client::keys::Shortcut],
-    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    commands: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Command>>>,
     requests: tokio::sync::watch::Sender<Option<StreamSettings>>,
     leave: tokio::sync::watch::Sender<bool>,
     live: Arc<Mutex<LiveStats>>,
     state: Mutex<State>,
     /// Moves on whenever something the app shows changes.
     changes: AtomicU64,
+    generation: AtomicU64,
     /// (frames shown, when) at the last status, for the frame rate shown.
     last_shown: Mutex<(u64, Instant)>,
 }
@@ -100,7 +101,9 @@ impl Session {
     }
 
     fn send(&self, command: Command) {
-        let _ = self.commands.send(command);
+        if let Some(commands) = self.commands.lock().unwrap().as_ref() {
+            let _ = commands.send(command);
+        }
     }
 
     fn key(&self, code: u16, pressed: bool, repeat: bool) {
@@ -155,7 +158,9 @@ impl Session {
         }
         json!({
             "stats": stats,
+            "unverified": live.unverified,
             "phase": state.phase.name(),
+            "generation": self.generation.load(Ordering::Acquire),
             "reason": state.reason,
             "width": if live.width > 0 { live.width } else { state.width },
             "height": if live.height > 0 { live.height } else { state.height },
@@ -246,12 +251,29 @@ async fn forward(
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
     input: tokio::sync::mpsc::UnboundedSender<InputEvent>,
 ) {
+    // A replacement route starts with no held keys or buttons. Discard
+    // releases and auto-repeat events left over from the previous desktop.
+    let mut keys = std::collections::HashSet::new();
+    let mut buttons = Vec::new();
     while let Some(command) = commands.recv().await {
         let (events, paced) = match command {
             Command::Now(events) => (events, false),
             Command::Keys(events) => (events, true),
         };
         for event in events {
+            match event {
+                InputEvent::Key { scancode, pressed: true, repeat: true } if !keys.contains(&scancode) => continue,
+                InputEvent::Key { scancode, pressed: true, .. } => { keys.insert(scancode); }
+                InputEvent::Key { scancode, pressed: false, .. } if !keys.remove(&scancode) => continue,
+                InputEvent::MouseButton { button, pressed: true } => {
+                    if !buttons.contains(&button) { buttons.push(button); }
+                }
+                InputEvent::MouseButton { button, pressed: false } => {
+                    let Some(i) = buttons.iter().position(|held| *held == button) else { continue };
+                    buttons.swap_remove(i);
+                }
+                _ => {}
+            }
             if input.send(event).is_err() {
                 return;
             }
@@ -263,6 +285,7 @@ async fn forward(
 }
 
 struct Connect {
+    trust: sunna_client::auth::Trust,
     address: String,
     key: String,
     name: String,
@@ -276,7 +299,7 @@ async fn left(leave: &mut tokio::sync::watch::Receiver<bool>) {
     let _ = leave.wait_for(|&leave| leave).await;
 }
 
-async fn run(session: Arc<Session>, connect: Connect, input: tokio::sync::mpsc::UnboundedReceiver<InputEvent>, requests: tokio::sync::watch::Receiver<Option<StreamSettings>>, leave: tokio::sync::watch::Receiver<bool>) {
+async fn run(session: Arc<Session>, connect: Connect, requests: tokio::sync::watch::Receiver<Option<StreamSettings>>, leave: tokio::sync::watch::Receiver<bool>) {
     let asked_to_leave = leave.clone();
     let mut watching = leave.clone();
     // Cancel works at every step: finding the host, connecting, starting.
@@ -287,14 +310,14 @@ async fn run(session: Arc<Session>, connect: Connect, input: tokio::sync::mpsc::
         },
         _ = left(&mut watching) => return session.end(String::new()),
     };
-    tracing::warn!("dev TLS: server certificate is NOT verified");
-    let connecting = tokio::time::timeout(Duration::from_secs(10), sunna_transport::connect_insecure(addr, "sunna"));
-    let client = tokio::select! {
+
+    let connecting = tokio::time::timeout(Duration::from_secs(10), connect.trust.connect(addr, "sunna"));
+    let mut client = tokio::select! {
         connected = connecting => match connected {
             Ok(Ok(client)) => client,
             Ok(Err(error)) => {
                 tracing::warn!(%error, "couldn't connect");
-                return session.end(format!("Couldn't reach {addr}. Is Sunna sharing on that computer?"));
+                return session.end(error.to_string());
             }
             Err(_) => return session.end(format!("Nothing answered at {addr} for 10 seconds. Is Sunna sharing on that computer?")),
         },
@@ -304,25 +327,62 @@ async fn run(session: Arc<Session>, connect: Connect, input: tokio::sync::mpsc::
         client.connection.close(0u32.into(), b"bye");
         return session.end(String::new());
     }
-    session.set_phase(Phase::Starting);
-    let connection = client.connection.clone();
-    let watched = client.connection.clone();
-    let shown = Arc::clone(&session);
-    let woken = Arc::clone(&session);
-    let options = ClientOptions {
-        // A new pointer shape: the app puts it on.
-        wake: Some(sunna_client::Wake(Arc::new(move || woken.bump()))),
-        clipboard: connect.clipboard,
-        name: connect.name,
-        token: connect.key,
-        stream: connect.settings,
-        stream_requests: Some(requests),
-        device: sunna_client::device_id(),
-        leave: Some(leave),
-        duration: None,
-        live: Some(Arc::clone(&session.live)),
+    let mut reconnecting = false;
+    let (result, watched) = loop {
+        session.set_phase(Phase::Starting);
+        let watched = client.connection.clone();
+        let frame_connection = watched.clone();
+        let shown = Arc::clone(&session);
+        let woken = Arc::clone(&session);
+        let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (input, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let forwarding = tokio::spawn(forward(command_rx, input));
+        let options = ClientOptions {
+            trust: connect.trust.clone(),
+            wake: Some(sunna_client::Wake(Arc::new(move || woken.bump()))),
+            clipboard: connect.clipboard,
+            name: connect.name.clone(),
+            token: connect.key.clone(),
+            stream: requests.borrow().clone().unwrap_or_else(|| connect.settings.clone()),
+            stream_requests: Some(requests.clone()),
+            device: sunna_client::device_id(),
+            leave: Some(leave.clone()),
+            duration: None,
+            live: Some(Arc::clone(&session.live)),
+        };
+        let result = run_client(watched.clone(), options, move |frame| {
+            if frame_connection.close_reason().is_none() {
+                shown.commands.lock().unwrap().get_or_insert_with(|| commands.clone());
+                shown.frame(frame.width, frame.height);
+            }
+        }, |_| {}, input_rx).await;
+        session.commands.lock().unwrap().take();
+        forwarding.abort();
+        let pending = reconnecting && result.as_ref().is_err_and(sunna_client::handoff_pending);
+        if *leave.borrow() || !(pending || sunna_client::session_changed(&watched)) {
+            break (result, watched);
+        }
+        reconnecting = true;
+        session.generation.fetch_add(1, Ordering::Release);
+        let _ = sunna_clipboard::take_for_phone();
+        {
+            let mut state = session.state.lock().unwrap();
+            state.width = 0;
+            state.height = 0;
+            state.phase = Phase::Reaching;
+            let mut live = session.live.lock().unwrap();
+            let paused = live.clipboard_paused;
+            *live = LiveStats { clipboard_paused: paused, ..Default::default() };
+        }
+        session.bump();
+        tokio::select! {
+            _ = left(&mut watching) => break (result, watched),
+            next = sunna_client::reconnect_for_handoff(addr, "sunna", &connect.trust) => match next {
+                Ok(next) => client = next,
+                Err(error) => break (Err(error), watched),
+            }
+        }
     };
-    let result = run_client(connection, options, move |frame| shown.frame(frame.width, frame.height), |_| {}, input).await;
     let reason = match result {
         _ if *asked_to_leave.borrow() => String::new(),
         Ok(_) => why_it_ended(watched.close_reason()),
@@ -385,10 +445,13 @@ pub extern "system" fn Java_dev_sunna_app_Native_protocol(_: JNIEnv, _: JClass) 
 /// Is a host there, does the key fit, and what is it? JSON (`reach::Check`).
 /// Blocks for up to a few seconds: call it off the main thread.
 #[no_mangle]
-pub extern "system" fn Java_dev_sunna_app_Native_check(mut env: JNIEnv, _: JClass, address: JString, key: JString) -> jstring {
+pub extern "system" fn Java_dev_sunna_app_Native_check(mut env: JNIEnv, _: JClass, address: JString, key: JString, policy: JString) -> jstring {
     let (address, key) = (text(&mut env, &address), text(&mut env, &key));
     let json = guard(String::new(), || {
-        let check = runtime().block_on(reach::check(&address, &key));
+        let check = match serde_json::from_str(&text(&mut env, &policy)) {
+            Ok(trust) => runtime().block_on(reach::check_with(&address, &key, &trust)),
+            Err(_) => reach::Check::failed("invalid", "Invalid computer record.")
+        };
         serde_json::to_string(&check).unwrap_or_default()
     });
     java_string(&mut env, &json)
@@ -396,7 +459,7 @@ pub extern "system" fn Java_dev_sunna_app_Native_check(mut env: JNIEnv, _: JClas
 
 /// Several at once (the Computers screen): a JSON array, in order.
 #[no_mangle]
-pub extern "system" fn Java_dev_sunna_app_Native_checkAll(mut env: JNIEnv, _: JClass, addresses: JObjectArray, keys: JObjectArray) -> jstring {
+pub extern "system" fn Java_dev_sunna_app_Native_checkAll(mut env: JNIEnv, _: JClass, addresses: JObjectArray, keys: JObjectArray, policies: JObjectArray) -> jstring {
     let mut pairs = Vec::new();
     let count = env.get_array_length(&addresses).unwrap_or(0);
     for index in 0..count {
@@ -404,13 +467,18 @@ pub extern "system" fn Java_dev_sunna_app_Native_checkAll(mut env: JNIEnv, _: JC
         let key = env.get_object_array_element(&keys, index).map(JString::from).ok();
         let address = address.map(|value| text(&mut env, &value)).unwrap_or_default();
         let key = key.map(|value| text(&mut env, &value)).unwrap_or_default();
-        pairs.push((address, key));
+        let policy = env.get_object_array_element(&policies, index).ok().map(JString::from)
+            .and_then(|s| serde_json::from_str(&text(&mut env, &s)).ok());
+        pairs.push((address, key, policy));
     }
     let json = guard(String::from("[]"), || {
         let checks = runtime().block_on(async {
             let tasks: Vec<_> = pairs
                 .into_iter()
-                .map(|(address, key)| tokio::spawn(async move { reach::check(&address, &key).await }))
+                .map(|(address, key, policy)| tokio::spawn(async move { match policy {
+                    Some(trust) => reach::check_with(&address, &key, &trust).await,
+                    None => reach::Check::failed("invalid", "Invalid computer record.")
+                } }))
                 .collect();
             let mut checks = Vec::new();
             for task in tasks {
@@ -429,14 +497,25 @@ pub extern "system" fn Java_dev_sunna_app_Native_checkAll(mut env: JNIEnv, _: JC
 pub extern "system" fn Java_dev_sunna_app_Native_parseAddress(mut env: JNIEnv, _: JClass, address: JString) -> jstring {
     let address = text(&mut env, &address);
     let json = match reach::parse(&address) {
-        Ok((host, port)) => json!({ "host": host, "port": port }),
+        Ok((host, port)) => json!({ "host": host, "port": port, "identity": reach::link_identity(&address).ok().flatten() }),
         Err(error) => json!({ "error": error }),
     };
     java_string(&mut env, &json.to_string())
 }
 
-/// Start a session; returns its handle at once. It connects in the
-/// background: watch `changes` and `status`.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_saveRecords(mut env: JNIEnv, _: JClass, policy: JString, records: JString, from_link: jboolean) -> jboolean {
+    guard(JNI_FALSE, || {
+        let Ok(trust) = serde_json::from_str::<sunna_client::auth::Trust>(&text(&mut env, &policy)) else { return JNI_FALSE };
+        trust.save_records(&text(&mut env, &records), from_link == JNI_TRUE).is_ok() as jboolean
+    })
+}
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_savedPin(mut env: JNIEnv, _: JClass, id: JString) -> jstring {
+    let trust = sunna_client::auth::Trust { record: Some(text(&mut env, &id)), ..Default::default() };
+    java_string(&mut env, &trust.pin().ok().flatten().unwrap_or_default())
+}
+
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_dev_sunna_app_Native_connect(
@@ -453,12 +532,14 @@ pub extern "system" fn Java_dev_sunna_app_Native_connect(
     fps: jint,
     audio: jboolean,
     clipboard: jboolean,
+    policy: JString,
 ) -> jlong {
     let address = text(&mut env, &address);
     let key = text(&mut env, &key);
     let name = text(&mut env, &name);
     let host_os = text(&mut env, &host_os);
     let codec = text(&mut env, &codec);
+    let Ok(trust) = serde_json::from_str(&text(&mut env, &policy)) else { return 0 };
     guard(0, || {
         static NEXT: AtomicI64 = AtomicI64::new(1);
         let handle = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -472,25 +553,23 @@ pub extern "system" fn Java_dev_sunna_app_Native_connect(
             // renderers; here the decoder draws the whole picture.
             fast_lane: Some(false),
         };
-        let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (input, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let (requests, request_rx) = tokio::sync::watch::channel(None);
         let (leave, leave_rx) = tokio::sync::watch::channel(false);
         let session = Arc::new(Session {
             host_is_mac: sunna_client::keys::host_is_mac(&host_os),
             shortcuts: sunna_client::keys::shortcuts_for(&host_os),
-            commands,
+            commands: Mutex::new(None),
             requests,
             leave,
             live: Arc::default(),
             state: Mutex::new(State { phase: Phase::Reaching, reason: String::new(), width: 0, height: 0 }),
             changes: AtomicU64::new(1),
+            generation: AtomicU64::new(0),
             last_shown: Mutex::new((sunna_codec_stats().shown, Instant::now())),
         });
         sessions().lock().unwrap().insert(handle, Arc::clone(&session));
-        let connect = Connect { address, key, name, settings, clipboard: clipboard == JNI_TRUE };
-        runtime().spawn(forward(command_rx, input));
-        runtime().spawn(run(session, connect, input_rx, request_rx, leave_rx));
+        let connect = Connect { trust, address, key, name, settings, clipboard: clipboard == JNI_TRUE };
+        runtime().spawn(run(session, connect, request_rx, leave_rx));
         handle
     })
 }
@@ -519,6 +598,11 @@ pub extern "system" fn Java_dev_sunna_app_Native_setSurface(env: JNIEnv, _: JCla
 #[no_mangle]
 pub extern "system" fn Java_dev_sunna_app_Native_changes(_: JNIEnv, _: JClass, handle: jlong) -> jlong {
     session(handle).map_or(-1, |session| session.changes.load(Ordering::Acquire) as jlong)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_generation(_: JNIEnv, _: JClass, handle: jlong) -> jlong {
+    session(handle).map_or(-1, |s| s.generation.load(Ordering::Acquire) as jlong)
 }
 
 /// JSON: phase, why it ended, the stream and its numbers.
@@ -743,6 +827,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn login_handoff_requires_a_new_proof_before_the_replacement_session() {
+        use sunna_proto::messages::{ControlMessage, Proof};
+        use sunna_transport::{auth, ControlChannel, Server};
+        let server = Server::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = server.local_addr().unwrap().to_string();
+        let key = "ad".repeat(16);
+        let (_leave, leave_rx) = tokio::sync::watch::channel(false);
+        let (requests, request_rx) = tokio::sync::watch::channel(None);
+        let session = Arc::new(Session {
+            host_is_mac: false, shortcuts: &[], commands: Mutex::new(None),
+            requests, leave: _leave, live: Arc::default(), changes: AtomicU64::new(1),
+            generation: AtomicU64::new(0), last_shown: Mutex::new((0, Instant::now())),
+            state: Mutex::new(State { phase: Phase::Reaching, reason: String::new(), width: 0, height: 0 }),
+        });
+        let connect = Connect { address, key: key.clone(), name: "phone".into(),
+            trust: Default::default(), settings: Default::default(), clipboard: false };
+        let serving = async {
+            for replacement in [false, true] {
+                let conn = server.accept().await.unwrap().unwrap();
+                let mut control = ControlChannel::accept(&conn).await.unwrap();
+                let ControlMessage::AuthProof { nonce, proof } = control.recv().await.unwrap() else { panic!("expected proof"); };
+                let (host, tag) = auth::answer(&conn, &key, &nonce, &proof.0).unwrap();
+                control.send(&ControlMessage::AuthProofAck { nonce: host.to_vec(), proof: Proof(tag) }).await.unwrap();
+                assert!(matches!(control.recv().await.unwrap(), ControlMessage::Hello { token, .. } if token.is_empty()));
+                control.send(&ControlMessage::HelloAck { version: 8, name: "fixture".into(), width: 32,
+                    height: 32, fps: 1, codec: "raw".into(), fast_lane: false, audio: false }).await.unwrap();
+                control.recv().await.unwrap();
+                conn.close(0u32.into(), if replacement { b"done" } else { b"session changed" });
+            }
+            server.endpoint.wait_idle().await;
+        };
+        tokio::time::timeout(Duration::from_secs(12), async {
+            tokio::join!(serving, run(session.clone(), connect, request_rx, leave_rx));
+        }).await.unwrap();
+        assert_eq!(session.generation.load(Ordering::Acquire), 1);
+        assert_eq!(session.state.lock().unwrap().reason, "done");
+        assert!(session.commands.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn typed_keys_keep_their_order_behind_each_other() {
         let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
         let (input, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -762,4 +886,33 @@ mod tests {
         assert!(matches!(events[2], InputEvent::Key { scancode: 0x0B, pressed: true, .. }));
         assert!(matches!(events[4], InputEvent::MouseMoveAbs { .. }));
     }
+}
+
+/// Release metadata and APK integrity are verified by the same Rust code as
+/// desktop updates. Kotlin only handles permission and the system installer.
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_checkUpdate(env: JNIEnv, _: JClass) -> jstring {
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let manifest = sunna_update::fetch_manifest()?;
+        let apk = manifest.files.iter().find(|f| f.component == "android" && f.target == "android").ok_or_else(|| anyhow::anyhow!("No Android release"))?;
+        Ok(json!({"version": manifest.version, "notes": manifest.notes, "digest": apk.sha256}))
+    })();
+    let value = result.unwrap_or_else(|e| json!({"error": e.to_string()}));
+    env.new_string(value.to_string()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_dev_sunna_app_Native_downloadUpdate(mut env: JNIEnv, _: JClass, directory: JString, version: JString, digest: JString) -> jstring {
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let directory: String = env.get_string(&directory)?.into();
+        let manifest = sunna_update::fetch_manifest()?;
+        let file = manifest.files.iter().find(|f| f.component == "android" && f.target == "android").ok_or_else(|| anyhow::anyhow!("No Android download in this release"))?;
+        let expected_version: String = env.get_string(&version)?.into();
+        let expected_digest: String = env.get_string(&digest)?.into();
+        anyhow::ensure!(manifest.version == expected_version && file.sha256 == expected_digest, "Release changed. Check for updates again.");
+        let path = std::path::Path::new(&directory).join(format!("{}.apk", file.sha256));
+        sunna_update::download(file, &path)?;
+        Ok(json!({"version": manifest.version, "path": path}))
+    })();
+    let value = result.unwrap_or_else(|e| json!({"error": e.to_string()}));
+    env.new_string(value.to_string()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }

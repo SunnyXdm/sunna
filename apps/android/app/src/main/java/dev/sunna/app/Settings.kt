@@ -99,6 +99,7 @@ class SettingsView(context: Context, private val app: App, private val onClosed:
         body.addView(context.sectionTitle("About"))
         val version = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""
         body.addView(context.group(
+            context.linkRow("Check for updates", "Download a signed Sunna release") { Updates.check(context as android.app.Activity, true) },
             context.linkRow("Open source software", "The software Sunna is made with, and its licenses") { licenses() },
         ))
         body.addView(note("Sunna $version · protocol ${Native.protocol()}"))
