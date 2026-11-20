@@ -28,23 +28,22 @@ try {
   Object.assign(state,{shift,outside:[...outside]});
   if(state.overflow || state.outside.length || state.shift>0 || (mode!=='on' && (!state.paused||!state.controls)))throw Error(JSON.stringify(state));
   const {data}=await page.send('Page.captureScreenshot',{captureBeyondViewport:true,clip:{x:0,y:0,width,height,scale:1}});
-  writeFileSync(work+'/../shots/r4-page-'+width+'-'+mode+'.png',Buffer.from(data,'base64'));
-  for(const sequence of [['gallery','devices','wall','space','type'],['updates-menu','progress','finished'],['machine-greeter','same-viewer-desktop']]){
-    await page.eval(`document.querySelector('#${sequence[0]}-radio').focus()`);
-    for(const name of sequence.slice(1)){
-      await page.press('ArrowRight');
-      if(!await page.eval(`document.querySelector('#${name}-radio').checked && document.querySelector('.panel img[src$="/${name}.webp"]').offsetWidth>0`))throw Error('keyboard '+name);
+  writeFileSync(work+'/../shots/r5-page-'+width+'-'+mode+'.png',Buffer.from(data,'base64'));
+  for(const [group,images] of [['view',['gallery','devices','wall','space','type']],['update',['updates-menu','progress','finished']]]){
+    await page.eval(`document.querySelector('input[name="${group}"]').focus()`);
+    for(const [index,name] of images.entries()){
+      if(index) await page.press('ArrowRight');
+      if(!await page.eval(`document.querySelectorAll('input[name="${group}"]')[${index}].checked && document.querySelector('.panel img[src$="/${name}.webp"]').offsetWidth>0`))throw Error('keyboard '+name);
     }
   }
   if(mode==='on'){
-    await page.eval("document.querySelector('#sharing-play').click()");
-    await page.sleep(300);
-    if(!await page.eval("!document.querySelector('#sharing-film').paused && document.querySelector('#sharing-still').hidden"))throw Error('sharing playback');
-    await page.eval("document.querySelector('#sharing-play').click()");
+    await page.eval("document.querySelector('#sharing-film').scrollIntoView({block:'center'})");
+    await page.sleep(450);
+    if(!await page.eval("document.querySelector('#sharing-film').currentTime>0"))throw Error('sharing playback');
     if(width===1440){
-      const clip=await page.eval("(()=>{const r=document.querySelector('.lanes').getBoundingClientRect();return {x:r.x,y:r.y+scrollY,width:r.width,height:r.height,scale:1}})()");
+      const clip=await page.eval("(()=>{const r=document.querySelector('.race').getBoundingClientRect();return {x:r.x,y:r.y+scrollY,width:r.width,height:r.height,scale:1}})()");
       const shot=await page.send('Page.captureScreenshot',{captureBeyondViewport:true,clip});
-      writeFileSync(work+'/../shots/r4-typing.png',Buffer.from(shot.data,'base64'));
+      writeFileSync(work+'/../shots/r5-typing.png',Buffer.from(shot.data,'base64'));
     }
   }
   checks.push({width,mode,height,...state});console.log(JSON.stringify(checks.at(-1)));

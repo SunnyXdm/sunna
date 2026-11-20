@@ -17,7 +17,7 @@ Sunna shows another computer's screen, plays its sound, and sends your keyboard,
 - **Checks it's really your computer.** A link or QR code carries the computer's identity. The app checks it before it sends anything, proves it knows the key without sending the key, and refuses a computer whose identity has changed ([Security](docs/security.md)).
 - **Share a computer with a switch.** On Linux, Settings → Share this computer starts sharing and keeps it on after you close the window. The same switch is written for the Mac and waiting for its first test on one.
 - **Reach it after a restart.** A Linux host can run for the whole machine, so after a reboot you get the login screen and sign in from where you are. Experimental; proven on LightDM and SDDM in test machines.
-- **Updates itself.** Signed releases, a switch between versions that can't half-happen, and a return to the previous version if a new one doesn't start. There are downloads for Linux on x86-64 (a `.deb`, an `.rpm` and an install command) and for Android; a Mac builds from source for now.
+- **Updates itself.** Signed releases, a switch between versions that can't half-happen, and a return to the previous version if a new one doesn't start. There are downloads for Linux on x86-64 (a `.deb`, an `.rpm` and an install command), for Android, and for a Mac (a `.dmg`, which doesn't update itself yet).
 
 ## What runs where
 
@@ -30,10 +30,10 @@ Sunna shows another computer's screen, plays its sound, and sends your keyboard,
 
 ## Get started
 
-There are signed downloads for Linux on x86-64 and for Android. On a Mac and on ARM Linux you build Sunna from source for now; each guide has the one script that does it.
+There are downloads for a Mac (a `.dmg`), for Linux on x86-64 and for Android. On ARM Linux you build Sunna from source for now. The [website](https://sunna.sunnydx.dev/#downloads) lays out the steps for each device.
 
 1. **Put both devices on [Tailscale](https://tailscale.com)** (free for personal use). Sunna works on any network you trust, but Tailscale makes your computers reachable from anywhere and keeps everyone else out. Keep a host off the public internet.
-2. **Share a computer**: [Linux](docs/host-linux.md) or [Mac](docs/host-mac.md). On x86-64 Linux, install the host:
+2. **Share a computer**: [Linux](docs/host-linux.md) or [Mac](docs/host-mac.md). On a Mac, the app from step 3 does the sharing. On x86-64 Linux, install the host:
 
    | | |
    |---|---|
@@ -51,6 +51,7 @@ There are signed downloads for Linux on x86-64 and for Android. On a Mac and on 
    ```
    The link contains the key that grants access to that computer. Treat it like a password.
 3. **Install the app** on the device you'll use: [Mac](docs/app-mac.md), [Linux](docs/app-linux.md) or [Android](docs/app-android.md).
+   - Mac: the `.dmg` for [Apple silicon](https://sunna.sunnydx.dev/download/Sunna-apple-silicon.dmg) or [Intel](https://sunna.sunnydx.dev/download/Sunna-intel.dmg). Sunna isn't signed with a paid Apple certificate, so the first time you open it macOS stops it: choose **Open Anyway** in System Settings → Privacy & Security.
    - Linux on x86-64: [sunna.deb](https://sunna.sunnydx.dev/download/sunna.deb), [sunna.rpm](https://sunna.sunnydx.dev/download/sunna.rpm), or the command from step 2 with `app` in place of `host`.
    - Android: open [sunna.apk](https://sunna.sunnydx.dev/download/sunna.apk) on the phone.
 4. **Add the computer** in the app: paste the link, or scan the QR code with your phone. It shows **Ready** when it can be reached. Click or tap it to connect.
@@ -68,6 +69,7 @@ How a copy updates depends on how it was installed.
   sunna-host update --rollback   # go back to the version before
   ```
 - **On Android:** Settings → Check for updates downloads the new APK, and Android asks you to confirm it.
+- **From the Mac `.dmg`:** download the new `.dmg` and replace the app. That copy doesn't update itself.
 - **Built from source:** `git pull`, then run the same install script again.
 
 Every release is signed. The install command and the Android app check Sunna's release signature themselves; `apt` and `dnf` check the package source's signature ([how this was tested](docs/update-verification.md)).

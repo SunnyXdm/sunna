@@ -17,29 +17,49 @@ const KEY = "0123456789abcdef0123456789abcdef";
 
 // Who answers where, and what they are.
 const HOSTS = {
-  "100.124.64.79": { name: "archlinux", os: "Arch Linux", device: "desktop", width: 2560, height: 1440, rtt: 11.8 },
-  "100.111.171.4": { name: "Sunny's MacBook Air", os: "macOS 26.0", device: "laptop", model: "MacBook Air", width: 2940, height: 1912, rtt: 6.2 },
+  "100.124.64.79": { name: "debian", os: "Debian GNU/Linux 13", device: "desktop", width: 2560, height: 1600, rtt: 11.8 },
+  "100.111.171.4": { name: "macbook", os: "macOS 26.0", device: "laptop", model: "MacBook Air", width: 2940, height: 1912, rtt: 6.2 },
   "100.80.206.99": { name: "ubuntu", os: "Ubuntu 22.04.5 LTS", device: "vm", width: 1920, height: 1080, rtt: 38.4 },
-  "100.90.1.7": { name: "studio", os: "Fedora Linux 42", device: "desktop", width: 3440, height: 1440, rtt: 14.1, busy: true },
+  "100.90.1.7": { name: "studio", os: "Debian GNU/Linux 13", device: "desktop", width: 3440, height: 1440, rtt: 14.1, busy: true },
 };
 
 let machines =
   params.get("scene") === "empty"
     ? []
     : [
-        { id: "a1", name: "archlinux", address: "100.124.64.79", key: KEY, os: "Arch Linux", device: "desktop", model: "", width: 2560, height: 1440, added: 0, last_seen: now(), last_connected: 0 },
-        { id: "m1", name: "MacBook Air", address: "100.111.171.4", key: KEY, os: "macOS 26.0", device: "laptop", model: "MacBook Air", width: 2940, height: 1912, added: 0, last_seen: now(), last_connected: 0 },
-        { id: "s1", name: "studio", address: "100.90.1.7", key: KEY, os: "Fedora Linux 42", device: "desktop", model: "", width: 3440, height: 1440, added: 0, last_seen: now(), last_connected: 0 },
+        { id: "a1", name: "debian", address: "100.124.64.79", key: KEY, os: "Debian GNU/Linux 13", device: "desktop", model: "", width: 2560, height: 1600, added: 0, last_seen: now(), last_connected: 0 },
+        { id: "m1", name: "macbook", address: "100.111.171.4", key: KEY, os: "macOS 26.0", device: "laptop", model: "MacBook Air", width: 2940, height: 1912, added: 0, last_seen: now(), last_connected: 0 },
+        { id: "s1", name: "studio", address: "100.90.1.7", key: KEY, os: "Debian GNU/Linux 13", device: "desktop", model: "", width: 3440, height: 1440, added: 0, last_seen: now(), last_connected: 0 },
         { id: "u1", name: "ubuntu", address: "100.80.206.99", key: "an-old-key", os: "", device: "", model: "", width: 0, height: 0, added: 0, last_seen: 0, last_connected: 0 },
-        { id: "w1", name: "gaming-pc", address: "100.70.3.3", key: KEY, os: "Windows 11", device: "desktop", model: "", width: 2560, height: 1440, added: 0, last_seen: now() - 3 * 3600, last_connected: 0 },
+        { id: "w1", name: "windows", address: "100.70.3.3", key: KEY, os: "Windows 11", device: "desktop", model: "", width: 2560, height: 1440, added: 0, last_seen: now() - 3 * 3600, last_connected: 0 },
       ];
 
 const original = [...machines];
 const count = params.has('count') ? Math.max(0, Math.min(20,Number(params.get('count')))) : machines.length;
-const names = ['archlinux','thinkpad','studio','ubuntu','office','valkyris'];
-const kinds = ['desktop','laptop','mini','server','vm',''];
+// The first four entries have saved pictures from real Linux sessions.
+const samples = [
+  { name: 'debian', device: 'desktop', os: 'Debian GNU/Linux 13', width: 2560, height: 1600, picture: '05-mate-planning' },
+  { name: 'thinkpad', device: 'laptop', os: 'Debian GNU/Linux 13', width: 1920, height: 1080, picture: '02-gnome-notes' },
+  { name: 'studio', device: 'mini', os: 'Debian GNU/Linux 13', width: 3440, height: 1440, picture: '03-plasma-krita' },
+  { name: 'ubuntu', device: 'vm', os: 'Ubuntu', width: 1920, height: 1080, picture: '04-xfce-docs' },
+  { name: 'macbook', device: 'laptop', model: 'MacBook Air', os: 'macOS 26.0', width: 2940, height: 1912 },
+  { name: 'windows', device: 'desktop', os: 'Windows 11', width: 1920, height: 1280 },
+];
 const states = ['ready','ready','busy','ready','unreachable','wrong-key'];
-if(params.has('count')) machines = Array.from({length:count},(_,i)=>({ ...original[i%original.length], id:`c${i}`, name:params.has('long')?`Design and engineering workstation ${i+1} — San Francisco`:names[i%6]+(i>=6?` ${i+1}`:''), device:kinds[i%6], key:KEY, width:i%6===2?3440:1920,height:1080,kind:'',last_seen:i%6===4?now()-10800:now() }));
+if (params.has('count')) machines = Array.from({ length: count }, (_, i) => {
+  const sample = samples[i % samples.length];
+  const suffix = i >= samples.length ? ` ${i + 1}` : '';
+  return {
+    ...original[i % original.length], id: `c${i}`,
+    name: params.has('long') ? `Design and engineering workstation ${i+1} — San Francisco` : sample.name + suffix,
+    device: sample.device, os: sample.os, width: sample.width, height: sample.height,
+    model: sample.model || '', key: KEY, kind: '', last_seen: sample.name === 'macbook' ? now()-10800 : now(),
+  };
+});
+const pictures = new Map(machines.map((machine, i) => {
+  const sample = params.has('count') ? samples[i % samples.length] : samples.find(entry => entry.name === machine.name);
+  return [machine.id, sample?.picture];
+}));
 if(params.has('kind')) machines.forEach(m=>m.device=params.get('kind'));
 if(params.has('never')) machines.forEach(m=>m.last_seen=0);
 let settings = { view: params.get('view') || 'gallery', key: KEY, windowed: false, stats: true, menu_button: true, audio: true, pictures: params.get('pictures') || 'sharp' };
@@ -69,7 +89,7 @@ async function check(address, key) {
   }
   return {
     state: found.busy ? "busy" : "ready",
-    viewer: found.busy ? "Priya's MacBook Pro" : "",
+    viewer: found.busy ? "MacBook Pro" : "",
     name: found.name,
     os: found.os,
     device: found.device,
@@ -106,7 +126,7 @@ function sharingSnapshot() {
   return { supported:mode !== 'unsupported', state:on?'on':mode === 'unsupported'?'off':mode,
     managed_by:mode === 'system'?'system':'app', mode:'desktop', reach:'lan',
     address:on?'192.168.1.12:48800':null, link:on?'sunna://192.168.1.12:48800?key='+KEY:null,
-    viewer:mode==='busy'?"Priya’s MacBook":null, starts_by_itself:on, shows_login_screen:mode==='system',
+    viewer:mode==='busy'?"MacBook":null, starts_by_itself:on, shows_login_screen:mode==='system',
     permissions:mode==='needs-permission'?[{id:'portal',granted:false,label:'Choose your screen, allow remote interaction, and remember the selection when your desktop asks.'}]:[],
     reason:mode==='error'?'The background desktop needs system packages.':mode==='unsupported'?'This Wayland desktop can’t share its screen.':null,
     fix:mode==='error'?{label:'Install the desktop packages.',command:'aptXfce'}:mode==='system'?{label:'An administrator manages login-screen sharing.',command:'sudo systemctl disable --now sunna-host.service'}:null };
@@ -159,7 +179,7 @@ const commands = {
     }
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 37 37" shape-rendering="crispEdges"><rect width="37" height="37" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
   },
-  app_info: () => ({ version: appUpdate.version, protocol: 8, computer: "Sunny's MacBook Air", platform: "macos" }),
+  app_info: () => ({ version: appUpdate.version, protocol: 8, computer: "macbook", platform: "macos" }),
   get_settings: () => ({ ...settings }),
   // ?access=no previews the Accessibility prompt flow.
   keyboard_access: () => !location.search.includes("access=no"),
@@ -172,9 +192,8 @@ const commands = {
   list_machines: () => machines.map((machine) => ({ ...machine })),
   machine_picture: async ({id}) => {
     if(params.has('no-picture')) return null;
-    const index=machines.findIndex(m=>m.id===id);
-    if(index<0 || index%6===5)return null;
-    const file=['01-plasma-rust','02-gnome-notes','03-plasma-krita','04-xfce-docs','05-mate-planning'][index%6];
+    const file = pictures.get(id);
+    if (!file) return null;
     if(settings.pictures==='off') return null;
     const blob=await (await fetch(`../dev/design/frames/${file}.jpg`)).blob();
     if(settings.pictures!=='blurred') return [...new Uint8Array(await blob.arrayBuffer())];
@@ -184,7 +203,7 @@ const commands = {
     return [...new Uint8Array(await (await canvas.convertToBlob({type:'image/jpeg',quality:.9})).arrayBuffer())];
   },
   machine_statuses: async () => {
-    if(params.has('count')) return Object.fromEntries(machines.map((m,i)=>[m.id,{update:hostUpdate(m.address),state:params.get('state')||states[i%6],os:m.os,device:m.device,width:m.width,height:m.height,rtt_ms:[4,11,14,38,0,0][i%6],viewer:i%6===2?"Priya's MacBook Pro":"",detail:params.get('state')==='not-sharing'?'Nobody is signed in to the desktop.':''}]));
+    if(params.has('count')) return Object.fromEntries(machines.map((m,i)=>[m.id,{update:hostUpdate(m.address),state:params.get('state')||states[i%6],os:m.os,device:m.device,width:m.width,height:m.height,rtt_ms:[4,11,14,38,0,0][i%6],viewer:i%6===2?"MacBook Pro":"",detail:params.get('state')==='not-sharing'?'Nobody is signed in to the desktop.':''}]));
     const results = await Promise.all(machines.map((machine) => check(machine.address, machine.key)));
     return Object.fromEntries(machines.map((machine, index) => [machine.id, {...results[index],update:hostUpdate(machine.address)}]));
   },
@@ -232,11 +251,11 @@ const commands = {
       { name: "moto g52", ip: "100.101.4.3", os: "Android", state: "offline" },
       { name: "alpine", ip: "100.101.4.9", os: "Linux", state: "offline" },
     ].map((entry) => ({ dns_name: "", device: "", ...entry }));
-    return { this_device: "sunnys-macbook-air-3", machines: [...sharing, ...others] };
+    return { this_device: "macbook", machines: [...sharing, ...others] };
   },
   this_computer: async () => {
     await delay(500);
-    return { name: "Sunny's MacBook Air", address: "100.111.171.4", key: settings.key, sharing: "unreachable" };
+    return { name: "macbook", address: "100.111.171.4", key: settings.key, sharing: "unreachable" };
   },
   connect: async ({ id }) => {
     window.__sunnaMock.session = id;

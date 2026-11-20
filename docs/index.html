@@ -10,6 +10,14 @@
 <link rel="stylesheet" href="/home.css">
 </head>
 <body>
+<svg class="sr" aria-hidden="true">
+<!-- Our own marks, the ones the app uses: not the vendors' logos. -->
+<symbol id="os-command" viewBox="0 0 24 24"><path d="M9 6v12a3 3 0 1 1-3-3h12a3 3 0 1 1-3 3V6a3 3 0 1 1 3 3H6a3 3 0 1 1 3-3z"/></symbol>
+<!-- A penguin after Tux by Larry Ewing (lewing@isc.tamu.edu), who drew him with The GIMP. -->
+<symbol id="os-tux" viewBox="0 0 24 24"><path d="M8.2 8.2c0-3.2 1.4-5.700 3.800-5.700s3.800 2.5 3.8 5.700c0 1.500.6 2.600 1.500 4 1.100 1.700 1.900 3.300 1.900 5.200 0 1.200-.5 2.100-1.300 2.800M8.200 8.200c0 1.500-.6 2.600-1.500 4-1.100 1.700-1.900 3.300-1.900 5.200 0 1.200.5 2.100 1.300 2.800"/><path d="M9 13.200c-.6 1.100-1 2.400-1 3.800 0 1.300.3 2.300.9 3.100M15 13.200c.6 1.100 1 2.400 1 3.800 0 1.300-.3 2.300-.9 3.100"/><path d="M4.900 21.300c.2-1.100 1.300-1.800 2.600-1.800h2.300c.6 0 1 .4 1 1s-.4 1-1 1H5.600c-.5 0-.8-.1-.7-.2ZM19.100 21.300c-.2-1.100-1.300-1.800-2.600-1.800h-2.300c-.6 0-1 .4-1 1s.4 1 1 1h4.200c.5 0 .8-.1.700-.2Z"/><path d="M10.400 8.700 12 9.900l1.600-1.200L12 7.800Z"/><path class="dot" d="M10.500 6h.01M13.500 6h.01"/></symbol>
+<symbol id="os-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></symbol>
+<symbol id="os-window" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M3 9.5h18"/></symbol>
+</svg>
 <a class="skip" href="#main">Skip to content</a>
 <header class="mast">
 <a class="brand" href="/"><img src="/images/icon.png" width="28" height="28" alt="">Sunna</a>
@@ -41,7 +49,8 @@
   test -s sunna-install.sh &amp;&amp; sh sunna-install.sh app</code></pre>
 <button type="button" class="copy" hidden>Copy</button>
 </div>
-<p class="note">A signed download into your home folder: no root, no compiler. A .deb, an .rpm and the Android APK are under <a href="#downloads">Downloads</a>.</p>
+<a class="dl" id="go" href="#downloads" hidden>Get Sunna for your Mac <span aria-hidden="true">↓</span></a>
+<p class="note">A signed download into your home folder: no root, no compiler. On a Mac or an Android phone, or for a .deb or an .rpm, <a href="#downloads">pick your device</a>.</p>
 </div>
 <div class="sun" aria-hidden="true"><i></i></div>
 </section>
@@ -198,8 +207,8 @@
 </div>
 <div class="panels">
 <div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/updates-menu.webp" alt="The Updates menu in the app’s toolbar, listing the computers that have an update"></div>
-<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/progress.webp" alt="The computer named archlinux reads Updating…"></div>
-<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/finished.webp" alt="The computer named archlinux reads Updated to 0.2.0"></div>
+<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/progress.webp" alt="The computers named debian and thinkpad both show Updating…"></div>
+<div class="panel"><img loading="lazy" width="720" height="352" src="/images/recordings/finished.webp" alt="The computers named debian and thinkpad both show Updated to 0.2.0"></div>
 </div>
 </fieldset>
 <dl class="list">
@@ -211,69 +220,194 @@
 </div>
 </section>
 
-<section class="chapter" id="platforms">
-<header>
-<p class="label"><b>06</b> Platforms</p>
-<h2>What runs where.</h2>
-<div class="say">
-<p>Reach a Mac or a Linux computer from a Mac, a Linux computer or an Android phone. A Linux computer can share an X11 desktop, GNOME on Wayland, or a server with no screen.</p>
-<p class="small">Mac to Mac and Mac to Linux are in daily use. The Linux and Android apps are newer.</p>
-</div>
-</header>
-<table><caption class="sr">Platform support and setup guides</caption>
-<thead><tr><th scope="col"><span class="sr">Platform</span></th><th scope="col">Connect from it</th><th scope="col">Connect to it</th></tr></thead>
-<tbody>
-<tr><th scope="row">Mac</th><td><a href="/guides/app-mac.html">Mac app</a></td><td><a href="/guides/host-mac.html">Share a Mac</a></td></tr>
-<tr><th scope="row">Linux</th><td><a href="/guides/app-linux.html">Linux app</a></td><td><a href="/guides/host-linux.html">Share a Linux computer</a></td></tr>
-<tr><th scope="row">Android</th><td><a href="/guides/app-android.html">Android app</a></td><td>No</td></tr>
-<tr><th scope="row">Windows</th><td>Planned</td><td>Experimental</td></tr>
-</tbody>
-</table>
-</section>
-
-<section class="chapter" id="downloads">
-<header>
-<p class="label"><b>07</b> Downloads</p>
-<h2>Downloads, by system.</h2>
-<div class="say">
-<p>Every download is signed. A package updates with the rest of your system; the install command and the Android app update themselves.</p>
-<p class="small">The Linux downloads are for x86-64 processors. On a Mac and on ARM Linux you build Sunna from source for now.</p>
-</div>
-</header>
-<table><caption class="sr">Downloads for each system</caption>
-<thead><tr><th scope="col"><span class="sr">System</span></th><th scope="col">The app</th><th scope="col">The host</th></tr></thead>
-<tbody>
-<tr><th scope="row">Ubuntu, Debian</th><td><a href="/download/sunna.deb">sunna.deb</a></td><td><a href="/download/sunna-host.deb">sunna-host.deb</a></td></tr>
-<tr><th scope="row">Fedora</th><td><a href="/download/sunna.rpm">sunna.rpm</a></td><td><a href="/download/sunna-host.rpm">sunna-host.rpm</a></td></tr>
-<tr><th scope="row">Any Linux</th><td colspan="2"><a href="#main">The install command</a> at the top of this page</td></tr>
-<tr><th scope="row">Android</th><td><a href="/download/sunna.apk">sunna.apk</a></td><td>No</td></tr>
-<tr><th scope="row">Mac</th><td><a href="/guides/app-mac.html">Build from source</a></td><td><a href="/guides/host-mac.html">Build from source</a></td></tr>
-</tbody>
-</table>
-</section>
-
 <section class="chapter get">
 <header>
-<p class="label"><b>08</b> What you need</p>
+<p class="label"><b>06</b> What you need</p>
 <h2>Three things to have.</h2>
 </header>
 <ol class="parts">
 <li>
 <h3>Your network</h3>
-<p>Sunna works on any network you trust. With Tailscale, free for personal use, your computers are reachable from anywhere and closed to everyone else. Keep a host off the public internet.</p>
+<p>Sunna works on any network you trust. With Tailscale, free for personal use, your computers are reachable from anywhere and closed to everyone else. Keep a shared computer off the public internet.</p>
 <p class="links"><a href="https://tailscale.com/">Tailscale <span aria-hidden="true">↗</span></a></p>
 </li>
 <li>
 <h3>The computer you’ll reach</h3>
-<p>Install the host on it and turn on sharing.</p>
-<p class="links"><a href="/guides/host-linux.html">Linux guide</a><a href="/guides/host-mac.html">Mac guide</a></p>
+<p>A Mac or a Linux computer. Install Sunna on it and turn on sharing.</p>
 </li>
 <li>
 <h3>The device you’ll use</h3>
-<p>Install the app, then add the computer by its link.</p>
-<p class="links"><a href="/guides/app-mac.html">Mac guide</a><a href="/guides/app-linux.html">Linux guide</a><a href="/guides/app-android.html">Android guide</a></p>
+<p>A Mac, a Linux computer or an Android phone. Install Sunna on it, then add the computer by its link.</p>
 </li>
 </ol>
+</section>
+
+<section class="chapter" id="downloads">
+<header>
+<p class="label"><b>07</b> Get Sunna</p>
+<h2>Pick your device.</h2>
+<div class="say">
+<p>Sunna goes on both devices: the computer you’ll reach and the one in your hands. Pick each of them here and follow its steps.</p>
+</div>
+</header>
+<fieldset class="switcher pick">
+<legend class="sr">Your device</legend>
+<input type="radio" name="device" id="device-mac-arm" checked>
+<input type="radio" name="device" id="device-mac-intel">
+<input type="radio" name="device" id="device-linux">
+<input type="radio" name="device" id="device-android">
+<input type="radio" name="device" id="device-windows">
+<div class="tabs">
+<label for="device-mac-arm"><svg aria-hidden="true"><use href="#os-command"/></svg><span><b>Mac</b> Apple silicon</span></label>
+<label for="device-mac-intel"><svg aria-hidden="true"><use href="#os-command"/></svg><span><b>Mac</b> Intel</span></label>
+<label for="device-linux"><svg aria-hidden="true"><use href="#os-tux"/></svg><span><b>Linux</b> x86-64</span></label>
+<label for="device-android"><svg aria-hidden="true"><use href="#os-phone"/></svg><span><b>Android</b> Phone or tablet</span></label>
+<label for="device-windows"><svg aria-hidden="true"><use href="#os-window"/></svg><span><b>Windows</b> Not yet</span></label>
+</div>
+<div class="panels">
+<div class="panel device">
+<div class="get">
+<h3>Mac with Apple silicon</h3>
+<p class="small">An M1 or later, on macOS 13 or newer.</p>
+<a class="dl" href="/download/Sunna-apple-silicon.dmg" download>Download Sunna.dmg <span aria-hidden="true">↓</span></a>
+<dl class="can">
+<div><dt>Reach your computers from it</dt><dd>Yes</dd></div>
+<div><dt>Reach it from your other devices</dt><dd>Yes, new</dd></div>
+</dl>
+</div>
+<ol class="steps">
+<li>
+<h3>Install it</h3>
+<p>Open the .dmg and drag Sunna into Applications.</p>
+</li>
+<li>
+<h3>Open it past the warning</h3>
+<p>Sunna isn’t signed with a paid Apple certificate, so macOS stops it the first time. Open System Settings, go to Privacy &amp; Security, and click Open Anyway.</p>
+<p class="small">On macOS 14 and earlier, right-click Sunna and choose Open instead.</p>
+</li>
+<li>
+<h3>Reach a computer</h3>
+<p>Choose Add a Computer and paste the link from the computer you’re sharing. Click it when it shows Ready.</p>
+</li>
+<li>
+<h3>Or share this Mac</h3>
+<p>In Settings, turn on Share this computer. Allow Screen Recording and Accessibility when Sunna asks.</p>
+<p class="small">Sharing from the app is new on the Mac and hasn’t had a full test yet. <a href="/guides/host-mac.html">Share a Mac</a> has the details.</p>
+</li>
+</ol>
+<p class="after small">This copy doesn’t update itself. When there’s a new release, download the .dmg again; macOS may then ask for its permissions again. Not sure which Mac you have? Open the Apple menu and choose About This Mac: a Chip line means Apple silicon.</p>
+</div>
+<div class="panel device">
+<div class="get">
+<h3>Mac with an Intel processor</h3>
+<p class="small">On macOS 13 or newer. This build has been run on an Apple silicon Mac only, not yet on an Intel one.</p>
+<a class="dl" href="/download/Sunna-intel.dmg" download>Download Sunna.dmg <span aria-hidden="true">↓</span></a>
+<dl class="can">
+<div><dt>Reach your computers from it</dt><dd>Yes</dd></div>
+<div><dt>Reach it from your other devices</dt><dd>Yes, new</dd></div>
+</dl>
+</div>
+<ol class="steps">
+<li>
+<h3>Install it</h3>
+<p>Open the .dmg and drag Sunna into Applications.</p>
+</li>
+<li>
+<h3>Open it past the warning</h3>
+<p>Sunna isn’t signed with a paid Apple certificate, so macOS stops it the first time. Open System Settings, go to Privacy &amp; Security, and click Open Anyway.</p>
+<p class="small">On macOS 14 and earlier, right-click Sunna and choose Open instead.</p>
+</li>
+<li>
+<h3>Reach a computer</h3>
+<p>Choose Add a Computer and paste the link from the computer you’re sharing. Click it when it shows Ready.</p>
+</li>
+<li>
+<h3>Or share this Mac</h3>
+<p>In Settings, turn on Share this computer. Allow Screen Recording and Accessibility when Sunna asks.</p>
+<p class="small">Sharing from the app is new on the Mac and hasn’t had a full test yet. <a href="/guides/host-mac.html">Share a Mac</a> has the details.</p>
+</li>
+</ol>
+<p class="after small">This copy doesn’t update itself. When there’s a new release, download the .dmg again; macOS may then ask for its permissions again. Not sure which Mac you have? Open the Apple menu and choose About This Mac: a Processor line means Intel.</p>
+</div>
+<div class="panel device">
+<div class="get">
+<h3>Linux</h3>
+<p class="small">For x86-64 processors. Tested on Ubuntu 22.04 and 24.04, Debian 13 and Fedora 42.</p>
+<table class="files"><caption class="sr">Linux downloads</caption>
+<thead><tr><th scope="col"><span class="sr">System</span></th><th scope="col">The app</th><th scope="col">For a server</th></tr></thead>
+<tbody>
+<tr><th scope="row">Ubuntu, Debian</th><td><a href="/download/sunna.deb">sunna.deb</a></td><td><a href="/download/sunna-host.deb">sunna-host.deb</a></td></tr>
+<tr><th scope="row">Fedora</th><td><a href="/download/sunna.rpm">sunna.rpm</a></td><td><a href="/download/sunna-host.rpm">sunna-host.rpm</a></td></tr>
+<tr><th scope="row">Any other</th><td colspan="2"><a href="#main">The install command</a> at the top of this page</td></tr>
+</tbody>
+</table>
+<dl class="can">
+<div><dt>Reach your computers from it</dt><dd>Yes</dd></div>
+<div><dt>Reach it from your other devices</dt><dd>Yes</dd></div>
+</dl>
+</div>
+<ol class="steps">
+<li>
+<h3>Install the app</h3>
+<p>Download it, then run this in the folder it landed in:</p>
+<pre class="link"><code>sudo apt install ./sunna.deb</code></pre>
+<p class="small">On Fedora: <code>sudo dnf install ./sunna.rpm</code>. On any other distribution, or without root, use the install command at the top of this page.</p>
+</li>
+<li>
+<h3>Reach a computer</h3>
+<p>Open Sunna, choose Add a Computer and paste the link from the computer you’re sharing. Click it when it shows Ready.</p>
+</li>
+<li>
+<h3>Or share this computer</h3>
+<p>In Settings, turn on Share this computer. It gives you the link, and a QR code for your phone.</p>
+<p class="small">A server with no screen takes <code>sunna-host</code> instead of the app: install it and run <code>sunna-host setup</code>. <a href="/guides/host-linux.html">Share a Linux computer</a> has the details.</p>
+</li>
+</ol>
+<p class="after small">A package updates with the rest of your system. A copy from the install command updates itself. On ARM, <a href="/guides/building.html">build Sunna from source</a>.</p>
+</div>
+<div class="panel device">
+<div class="get">
+<h3>Android</h3>
+<p class="small">A phone or tablet on Android 10 or newer.</p>
+<a class="dl" href="/download/sunna.apk" download>Download sunna.apk <span aria-hidden="true">↓</span></a>
+<dl class="can">
+<div><dt>Reach your computers from it</dt><dd>Yes</dd></div>
+<div><dt>Reach it from your other devices</dt><dd>No</dd></div>
+</dl>
+</div>
+<ol class="steps">
+<li>
+<h3>Install it</h3>
+<p>Open sunna.apk on the phone. Android asks once whether your browser may install apps: allow it, then tap Install.</p>
+</li>
+<li>
+<h3>Add a computer</h3>
+<p>On the computer you’re sharing, open Sunna’s Settings and choose Show QR Code. Scan it with the phone’s camera.</p>
+</li>
+<li>
+<h3>Open it</h3>
+<p>Tap the computer when it shows Ready.</p>
+</li>
+</ol>
+<p class="after small">Sunna checks for a new version once a day, and Android asks you before installing it. <a href="/guides/app-android.html">Android guide</a></p>
+</div>
+<div class="panel device">
+<div class="get">
+<h3>Windows</h3>
+<p class="small">Nothing to download yet.</p>
+<dl class="can">
+<div><dt>Reach your computers from it</dt><dd>Planned</dd></div>
+<div><dt>Reach it from your other devices</dt><dd>Experimental</dd></div>
+</dl>
+</div>
+<div class="steps none">
+<p>There is no Sunna app for Windows yet; one is planned.</p>
+<p>Sharing a Windows PC exists as an experiment in the source code. It has no download and no guide.</p>
+<p class="small"><a href="https://github.com/SunnyXdm/sunna">Follow it on GitHub <span aria-hidden="true">↗</span></a></p>
+</div>
+</div>
+</div>
+</fieldset>
 </section>
 
 </main>
@@ -301,6 +435,20 @@ if ('IntersectionObserver' in window) {
     if (entry.isIntersecting) { sharing.currentTime = 0; sharing.play().catch(() => {}); }
     else sharing.pause();
   }, { threshold: 0.6 }).observe(sharing);
+}
+// Start the picker on the visitor's own kind of device.
+{
+  const agent = navigator.userAgent;
+  const mine = /Android/.test(agent) ? 'android' : /Windows/.test(agent) ? 'windows'
+    : /Linux|X11|CrOS/.test(agent) ? 'linux' : /Mac/.test(agent) ? 'mac-arm' : '';
+  if (mine) document.querySelector('#device-' + mine).checked = true;
+  // The command at the top is for Linux. Elsewhere, point at the picker instead.
+  const go = document.querySelector('#go');
+  if (mine === 'mac-arm' || mine === 'android') {
+    if (mine === 'android') go.firstChild.data = 'Get Sunna for Android ';
+    go.hidden = false;
+    go.parentElement.classList.add('elsewhere');
+  }
 }
 // Copy an install command, without its prompt.
 for (const box of document.querySelectorAll('.command')) {

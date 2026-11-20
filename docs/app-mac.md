@@ -4,6 +4,19 @@ The app lists your computers with a live preview of each one and opens sessions 
 
 [← Back to the README](../README.md)
 
+## Download
+
+Download the `.dmg` for your Mac, open it and drag Sunna into Applications:
+
+- [Sunna for Apple silicon](https://sunna.sunnydx.dev/download/Sunna-apple-silicon.dmg): an M1 or later.
+- [Sunna for Intel Macs](https://sunna.sunnydx.dev/download/Sunna-intel.dmg). This build has been run on an Apple silicon Mac only, not yet on an Intel one.
+
+Both need macOS 13 or newer. In the Apple menu, About This Mac shows a **Chip** line on Apple silicon and a **Processor** line on Intel.
+
+Sunna isn't signed with a paid Apple certificate, so macOS stops it the first time you open it. Open System Settings → Privacy & Security and click **Open Anyway** (on macOS 14 and earlier, right-click the app and choose **Open**).
+
+This copy doesn't update itself: download the new `.dmg` when there is a release and replace the app. Each release is a different program to macOS, so it may ask for the permissions below again; if System Settings shows Sunna as allowed but Sunna says it isn't, see Permissions below.
+
 ## Build and install
 
 To build locally:

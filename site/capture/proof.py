@@ -7,7 +7,7 @@ shots = Path('~/ext/work/site/shots').expanduser()
 shots.mkdir(exist_ok=True)
 # The teal wallpaper grows with the launch screen. Locate the spring in the
 # delivered encode so a variation in CDP timestamps cannot skip the transition.
-raw = sp.check_output(['ffmpeg','-loglevel','error','-i',str(media/'hero.mp4'),
+raw = sp.check_output(['ffmpeg','-loglevel','error','-i',str(media/'hero-2x.mp4'),
                        '-vf','scale=80:54','-f','rawvideo','-pix_fmt','rgb24','-'])
 scores = []
 for start in range(0,len(raw),80*54*3):
@@ -22,11 +22,18 @@ grow = [first_fraction(f) for f in (.08,.32,.65,.95)]
 shrink = [last_fraction(f) for f in (.9,.5,.12)]
 frames = [0, grow[0]-8, *grow, grow[-1]+30, grow[-1]+65, grow[-1]+100,
           grow[-1]+130,shrink[0]-25, *shrink,shrink[-1]+12,len(scores)-1]
+# Two thresholds may fall in the same frame of a fast spring.
+for i in range(1, len(frames)-1):
+    frames[i] = max(frames[i], frames[i-1]+1)
 assert len(set(frames))==16 and frames==sorted(frames),frames
 select = '+'.join(f'eq(n\\,{n})' for n in frames)
-sp.run(['ffmpeg','-y','-loglevel','error','-i',str(media/'hero.mp4'),
+sp.run(['ffmpeg','-y','-loglevel','error','-i',str(media/'hero-2x.mp4'),
         '-vf',f'select={select},scale=400:-2,tile=4x4','-frames:v','1',
-        str(shots/'r4-hero-sheet.png')],check=True)
+        str(shots/'r5-hero-sheet.png')],check=True)
 print('Hero sheet frame indices (24 fps)',frames)
 for path in media.glob('*.webp'):
-    sp.run(['magick',str(path),str(shots/f'r4-{path.stem}.png')],check=True)
+    sp.run(['magick',str(path),str(shots/f'r5-{path.stem}.png')],check=True)
+for name in ['hero.png', 'icon.png', 'gallery.webp', 'devices.webp', 'wall.webp', 'updates.webp']:
+    path = media.parent/name
+    sp.run(['magick',str(path),str(shots/f'r5-guide-{path.stem}.png')],check=True)
+sp.run(['magick',str(media.parent/'hero.webp')+'[0]',str(shots/'r5-readme-film-first.png')],check=True)

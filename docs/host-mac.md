@@ -1,6 +1,6 @@
 # Share a Mac
 
-Install Sunna.app with `scripts/install-mac-app.sh`, open Settings and turn on **Share this computer** under **This computer**. Use **Screen Recording…** to allow the picture and system sound and **Accessibility…** to allow mouse and keyboard input. On macOS 15 or later, allow local network access if prompted. Use the link or QR code in Settings to add the Mac on your viewer. The link contains its key.
+Install Sunna.app from [the `.dmg`](app-mac.md) or with `scripts/install-mac-app.sh`, open Settings and turn on **Share this computer** under **This computer**. Use **Screen Recording…** to allow the picture and system sound and **Accessibility…** to allow mouse and keyboard input. On macOS 15 or later, allow local network access if prompted. Use the link or QR code in Settings to add the Mac on your viewer. The link contains its key.
 
 Close the window. The background host owns the menu bar item. Its menu shows the listening address, whether permission is missing, and who is connected. **Open Sunna** brings back the window. **Stop Sharing** removes the login agent. **Quit Sunna Host** pauses the agent until the next login or until you enable sharing again.
 

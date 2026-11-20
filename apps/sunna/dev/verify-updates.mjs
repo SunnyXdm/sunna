@@ -49,7 +49,7 @@ try{
  await page.send('Emulation.setDeviceMetricsOverride',{width:980,height:660,deviceScaleFactor:1,mobile:false});
  await go('view=devices&host-update=available&app-update=ready');
  await page.click('#app-update-notice');
- await assert(`[...document.querySelectorAll('#menu .menu-item')].map(b=>b.textContent).join('|')==='Restart Sunna to update to 0.2.0|Update archlinux…|Update thinkpad…|Update studio…|Update mumbai…|Update office…|Update valkyris…'`,'Toolbar entries or order');
+ await assert(`[...document.querySelectorAll('#menu .menu-item')].map(b=>b.textContent).join('|')==='Restart Sunna to update to 0.2.0|Update debian…|Update thinkpad…|Update studio…|Update mumbai…|Update macbook…|Update windows…'`,'Toolbar entries or order');
  await page.shot(out+'updates-toolbar.png');
  await page.click('#menu .menu-item');await page.sleep(200);
  await assert(`window.__sunnaMock.commands.update_status().pending===null`,'Restart did not apply staged release');

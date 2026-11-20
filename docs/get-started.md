@@ -1,6 +1,6 @@
 # Get started with Sunna
 
-Install a host on the computer you want to reach and the app on the device in your hands. One computer can do both jobs. There are signed downloads for Linux on x86-64 (a `.deb`, an `.rpm` and an install command) and for Android (an APK). On a Mac and on ARM Linux you build Sunna from source for now.
+Install a host on the computer you want to reach and the app on the device in your hands. One computer can do both jobs. There are downloads for a Mac (a `.dmg`), for Linux on x86-64 (a `.deb`, an `.rpm` and an install command) and for Android (an APK). On ARM Linux you build Sunna from source for now.
 
 ## Share a computer
 

@@ -10,7 +10,6 @@ class Fixture(http.server.SimpleHTTPRequestHandler):
         if self.path.split('?')[0] != '/dev/mock.js':
             return super().send_head()
         script = Path('apps/sunna/dev/mock.js').read_text()
-        script = re.sub(r"[\w]+['’]s (MacBook(?: Pro| Air)?)", r"\1", script)
         script = re.sub(r"(?<=address:on\?')[0-9.]+|(?<=link:on\?'sunna://)[0-9.]+",
                         "192.0.2.12", script)
         # Present the app as it runs on Linux: the page's sharing claims are about Linux.

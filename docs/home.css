@@ -86,6 +86,10 @@ img, video { display: block; max-width: 100%; height: auto; }
 #install-app:checked ~ .tabs label:nth-of-type(2) { color: var(--ink); border-color: var(--sun); }
 #install-host:focus-visible ~ .tabs label:nth-of-type(1),
 #install-app:focus-visible ~ .tabs label:nth-of-type(2) { outline: 2px solid var(--sun); outline-offset: 3px; }
+.install .dl { margin-top: 0; }
+.dl[hidden] { display: none; }
+.elsewhere > .tabs, .elsewhere > .command { display: none !important; }
+.elsewhere > .note { display: none; }
 .note { margin-top: 14px; font-size: 14px; line-height: 1.5; color: var(--dim); }
 
 .sun { position: absolute; right: 0; bottom: 0; width: var(--d); height: calc(var(--d) / 2); overflow: hidden; pointer-events: none; }
@@ -179,6 +183,52 @@ thead th { padding-block: 0 14px; line-height: 1.5; vertical-align: bottom; }
 th, td { padding-right: 16px; }
 tbody th { width: 34%; color: var(--ink); font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
 
+/* Pick a device: five tabs with the app's own marks, then that device's steps. */
+.pick .tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; gap: 0; margin-bottom: 52px; }
+.pick .tabs label { display: grid; align-content: start; gap: 18px; padding: 4px 16px 20px 0; line-height: 1.5; }
+.pick .tabs svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.pick .tabs .dot { stroke-width: 2.2; }
+.pick .tabs b { display: block; font-weight: 500; }
+.pick > input:checked ~ .tabs label { color: var(--dim); }
+.pick > input:nth-of-type(1):checked ~ .tabs label:nth-child(1) b,
+.pick > input:nth-of-type(2):checked ~ .tabs label:nth-child(2) b,
+.pick > input:nth-of-type(3):checked ~ .tabs label:nth-child(3) b,
+.pick > input:nth-of-type(4):checked ~ .tabs label:nth-child(4) b,
+.pick > input:nth-of-type(5):checked ~ .tabs label:nth-child(5) b,
+.pick .tabs label:hover b { color: var(--ink); }
+.pick > input:nth-of-type(1):checked ~ .tabs label:nth-child(1) svg,
+.pick > input:nth-of-type(2):checked ~ .tabs label:nth-child(2) svg,
+.pick > input:nth-of-type(3):checked ~ .tabs label:nth-child(3) svg,
+.pick > input:nth-of-type(4):checked ~ .tabs label:nth-child(4) svg,
+.pick > input:nth-of-type(5):checked ~ .tabs label:nth-child(5) svg { color: var(--sun); }
+.pick > input:checked ~ .panels .device { grid-template-columns: repeat(12, minmax(0, 1fr)); column-gap: 24px; align-items: start; }
+.pick > input:nth-of-type(1):checked ~ .panels .device:nth-child(1),
+.pick > input:nth-of-type(2):checked ~ .panels .device:nth-child(2),
+.pick > input:nth-of-type(3):checked ~ .panels .device:nth-child(3),
+.pick > input:nth-of-type(4):checked ~ .panels .device:nth-child(4),
+.pick > input:nth-of-type(5):checked ~ .panels .device:nth-child(5) { display: grid; }
+.device .get { grid-column: 1 / 6; }
+.device .get h3 { font-size: clamp(26px, 2.6vw, 34px); line-height: 1.1; letter-spacing: -.028em; }
+.device .get > .small { margin-top: 12px; max-width: 30em; }
+.dl { display: flex; justify-content: space-between; gap: 16px; margin-top: 28px; max-width: 380px; padding: 17px 20px; background: var(--sun); color: #1b0f05; font-weight: 600; text-decoration: none; }
+.dl:hover { background: var(--sun-hi); }
+.dl:focus-visible { outline-offset: 4px; }
+.files { margin-top: 24px; }
+.files th, .files td { padding: 14px 16px 14px 0; font-size: 16px; }
+.files thead th { padding-block: 0 10px; font-size: 12px; }
+.files tbody th { width: 36%; font-size: 16px; letter-spacing: 0; }
+.can { margin-top: 30px; max-width: 380px; }
+.files + .can { max-width: none; }
+.can div { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); padding: 13px 0; font-size: 15px; }
+.can div:last-child { border-bottom: 1px solid var(--line); }
+.can dd { color: var(--ink); text-align: right; }
+.device .steps .link { max-width: 30em; }
+.device code { font: 13px/1.5 var(--mono); color: var(--ink); }
+.steps.none { border-top: 1px solid var(--line); padding-top: 24px; }
+.steps.none p + p { margin-top: 12px; }
+.steps.none p:not(.small) { color: var(--ink); font-size: 19px; line-height: 1.4; max-width: 30em; }
+.after { grid-column: 7 / -1; border-top: 1px solid var(--line); padding-top: 18px; }
+
 .parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; list-style: none; counter-reset: n; }
 .parts li { padding-top: 16px; }
 .parts li::before { display: block; padding: 0 0 18px; }
@@ -197,7 +247,8 @@ tbody th { width: 34%; color: var(--ink); font-size: 22px; font-weight: 600; let
   .chapter .say { grid-column: 1 / -1; margin-top: 20px; max-width: 40em; }
   .facts { grid-template-columns: 1fr 1fr; }
   .split > figure { grid-column: 1 / -1; margin: 0 auto 36px; }
-  .steps, .updates .switcher, .list { grid-column: 1 / -1; }
+  .steps, .updates .switcher, .list, .device .get, .after { grid-column: 1 / -1; }
+  .device .steps { margin-top: 40px; }
   .list { margin-top: 28px; }
 }
 @media (max-width: 740px) {
@@ -220,6 +271,13 @@ tbody th { width: 34%; color: var(--ink); font-size: 22px; font-weight: 600; let
   .race .lane { grid-template-columns: 1fr; }
   .time { grid-row: auto; margin-bottom: 16px; }
   .pair, .parts { grid-template-columns: 1fr; }
+  .pick .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 0; margin-bottom: 36px; }
+  .pick .tabs label { gap: 12px; margin-bottom: 0; padding: 16px 8px 14px 0; border-bottom-color: var(--line); font-size: 11px; letter-spacing: .08em; }
+  .pick .tabs svg { width: 26px; height: 26px; }
+  .dl, .can { max-width: none; }
+  .files th, .files td, .files tbody th { font-size: 15px; padding-left: 0; }
+  .files tbody th { width: 31%; }
+  .files a { white-space: nowrap; }
   tbody th { font-size: 18px; width: 28%; }
   th, td { padding: 16px 0; }
   td { font-size: 16px; padding-left: 10px; }

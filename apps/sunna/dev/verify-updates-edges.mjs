@@ -10,7 +10,7 @@ try{
  await page.eval(`{const hosts=window.__sunnaMock.commands.machine_statuses;window.__sunnaMock.commands.machine_statuses=async()=>{const all=await hosts();for(const c of Object.values(all))c.update.state.available=null;return all;};const app=window.__sunnaMock.commands.update_status;window.__sunnaMock.commands.update_status=()=>({...app(),latest_version:'0.2.0'});}`);
  await page.press('r',2);await page.sleep(2200);
  await page.click('#app-update-notice');
- await assert(`!document.querySelector('.computer-update') && document.querySelector('#menu .menu-item').textContent==='Update archlinux…'`,'Newest known release finds an older host even when its own check has no available version.');
+ await assert(`!document.querySelector('.computer-update') && document.querySelector('#menu .menu-item').textContent==='Update debian…'`,'Newest known release finds an older host even when its own check has no available version.');
  await go('host-update=done');
  await page.eval(`{const old=window.__sunnaMock.commands.machine_statuses;window.__sunnaMock.commands.machine_statuses=async()=>{const all=await old();for(const c of Object.values(all))c.update.state.failed=['0.1.1'];return all;};}`);
  await page.press('r',2);await page.sleep(350);
