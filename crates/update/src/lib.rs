@@ -116,11 +116,38 @@ pub fn base_url() -> String {
         .trim_end_matches('/')
         .into()
 }
+/// The manifest and its signature are a few kilobytes: two minutes covers the
+/// whole request.
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .redirects(0)
         .timeout(Duration::from_secs(120))
         .build()
+}
+/// A download is tens of megabytes, and on a slow line that takes longer than
+/// any sensible limit for the whole request. So the limit is on silence: a
+/// connection that sends nothing for a minute is dropped. `Until` bounds the
+/// total. Either way the part already received is kept and resumed next time.
+fn download_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(60))
+        .timeout_write(Duration::from_secs(60))
+        .build()
+}
+const DOWNLOAD_TIME: Duration = Duration::from_secs(30 * 60);
+struct Until<R>(R, std::time::Instant);
+impl<R: Read> Read for Until<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() >= self.1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "release download took too long",
+            ));
+        }
+        self.0.read(buf)
+    }
 }
 fn checked_url(raw: &str) -> Result<url::Url> {
     let url = url::Url::parse(raw)?;
@@ -137,8 +164,7 @@ fn checked_url(raw: &str) -> Result<url::Url> {
     );
     Ok(url)
 }
-fn get(raw: &str, offset: u64) -> Result<ureq::Response> {
-    let agent = agent();
+fn get(agent: ureq::Agent, raw: &str, offset: u64) -> Result<ureq::Response> {
     let mut url = checked_url(raw)?;
     for _ in 0..6 {
         let mut req = agent.get(url.as_str());
@@ -160,7 +186,7 @@ fn get(raw: &str, offset: u64) -> Result<ureq::Response> {
 }
 fn limited(url: &str, max: u64) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    get(url, 0)?
+    get(agent(), url, 0)?
         .into_reader()
         .take(max + 1)
         .read_to_end(&mut bytes)?;
@@ -287,7 +313,8 @@ pub fn download(file: &Artifact, dest: &Path) -> Result<File> {
     ensure!(out.metadata()?.is_file(), "invalid partial download");
     let size = out.metadata()?.len();
     let offset = if size < file.size { size } else { 0 };
-    let response = get(&file.url, offset)?;
+    let until = std::time::Instant::now() + DOWNLOAD_TIME;
+    let response = get(download_agent(), &file.url, offset)?;
     let append = offset > 0 && response.status() == 206;
     if append {
         ensure!(
@@ -306,7 +333,8 @@ pub fn download(file: &Artifact, dest: &Path) -> Result<File> {
         out.set_len(0)?;
     }
     let remaining = file.size - if append { offset } else { 0 };
-    let copied = std::io::copy(&mut response.into_reader().take(remaining + 1), &mut out)?;
+    let mut body = Until(response.into_reader(), until).take(remaining + 1);
+    let copied = std::io::copy(&mut body, &mut out)?;
     out.sync_all()?;
     ensure!(
         copied == remaining,
