@@ -1,0 +1,54 @@
+name: Build
+# The same Linux and Mac builds a release makes, on every push, so a release
+# tag is never the first time they run. Nothing is signed or published here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: stable
+      - name: Build the host and the app
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          scripts/release/build-linux.sh "$version" dist 2>&1 | tee build.log
+          ls -l dist
+      - name: Show the end of the log
+        if: failure()
+        shell: bash
+        run: scripts/release/ci-log-tail.sh build.log
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: stable
+      - name: Build the app
+        shell: bash
+        run: |
+          scripts/release/build-macos.sh dist 2>&1 | tee build.log
+          ls -l dist
+      - name: Show the end of the log
+        if: failure()
+        shell: bash
+        run: scripts/release/ci-log-tail.sh build.log
