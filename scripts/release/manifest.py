@@ -3,7 +3,12 @@
 from inventory import ALLOWED, JOBS, files as job_files
 import re
 import argparse, datetime, hashlib, json, os, pathlib, subprocess
-p=argparse.ArgumentParser();p.add_argument('version');p.add_argument('directory');p.add_argument('base_url');p.add_argument('--notes',default='');p.add_argument('--minimum-protocol',type=int,default=8);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('version');p.add_argument('directory');p.add_argument('base_url');p.add_argument('--notes',default='');p.add_argument('--minimum-protocol',type=int,default=8)
+# A release may be made for some of the platforms. Which ones is said out loud,
+# and the directory must hold exactly their files.
+p.add_argument('--targets',default=','.join(JOBS.values()));a=p.parse_args()
+targets=a.targets.split(',')
+if len(set(targets)) != len(targets) or not set(targets) <= set(JOBS.values()): raise ValueError("unknown or repeated release target")
 if not 1 <= a.minimum_protocol <= 65535: raise ValueError("invalid minimum protocol")
 r=pathlib.Path(a.directory);files=[]
 # Both templates interpolate the feed into quoted shell source.
@@ -12,7 +17,7 @@ if not (re.fullmatch(r"https://[a-zA-Z0-9.:-]+(?:/[a-zA-Z0-9._/-]*)?", a.base_ur
         or test_feed and os.environ.get("SUNNA_TEST_PUBLIC_KEY")):
     raise ValueError("invalid release base URL")
 if not os.environ.get("SUNNA_TEST_PUBLIC_KEY"):
-    expected_names = set.union(*(job_files(target) for target in JOBS.values()))
+    expected_names = set.union(*(job_files(target) for target in targets))
     if {p.name for p in r.iterdir()} != expected_names:
         raise ValueError("incomplete or unexpected production inventory")
 for f in sorted(r.iterdir()):

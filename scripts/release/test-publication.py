@@ -73,6 +73,24 @@ esac
             self.assertFalse((dist/'manifest.json.sig').exists())
             self.assertFalse((dist/'install.sh').exists())
 
+    def test_release_for_some_platforms_holds_exactly_their_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = pathlib.Path(tmp)
+            key = work/'fixture.key'
+            subprocess.run(['openssl','genpkey','-algorithm','ED25519','-out',key],check=True)
+            env=dict(os.environ,SUNNA_RELEASE_KEY=str(key))
+            env.pop('SUNNA_TEST_PUBLIC_KEY',None)
+            def sign(name, targets, extra=()):
+                dist=work/name;dist.mkdir()
+                for file in [*files('linux-x86_64'), *extra]: (dist/file).write_bytes(b'fixture')
+                return subprocess.run([sys.executable,'scripts/release/manifest.py','1.0.0',dist,'https://example.org/release','--targets',targets],env=env,capture_output=True)
+            # The stated platform's files and nothing else get as far as the key check.
+            self.assertIn(b'signing key differs',sign('exact','linux-x86_64').stderr)
+            self.assertIn(b'incomplete or unexpected',sign('extra','linux-x86_64',['sunna-android.apk']).stderr)
+            self.assertIn(b'incomplete or unexpected',sign('missing','linux-x86_64,android').stderr)
+            self.assertIn(b'unknown or repeated',sign('unknown','linux-x86_64,plan9').stderr)
+            self.assertIn(b'unknown or repeated',sign('twice','linux-x86_64,linux-x86_64').stderr)
+
     def test_unknown_helper_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             (pathlib.Path(tmp)/"sunna-update-unlisted").write_text("fixture")

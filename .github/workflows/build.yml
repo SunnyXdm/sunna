@@ -1,10 +1,10 @@
 name: Build
-# The same Linux and Mac builds a release makes, on every push, so a release
-# tag is never the first time they run. Nothing is signed or published here.
+# The same Linux and Mac builds a release makes, so a release tag is never the
+# first time they run. Nothing is signed or published here.
+# Started by hand (Actions, Build, Run workflow) while Actions can't run for
+# this account; add `push: {branches: [main]}` once it can.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
